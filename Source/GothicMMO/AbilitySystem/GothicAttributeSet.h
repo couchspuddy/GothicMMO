@@ -86,6 +86,16 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Vitals", ReplicatedUsing = OnRep_MaxSuperMeter)
     FGameplayAttributeData MaxSuperMeter;
     ATTRIBUTE_ACCESSORS(UGothicAttributeSet, MaxSuperMeter) 
+    
+    // =========================================================================
+    // SELAH — crystallized essence collected from Accursed deaths
+    // Never decays. Used for Binder exchanges.
+    // =========================================================================
+
+    /** Current Selah held by this character. */
+    UPROPERTY(BlueprintReadOnly, Category = "Selah", ReplicatedUsing = OnRep_Selah)
+    FGameplayAttributeData Selah;
+    ATTRIBUTE_ACCESSORS(UGothicAttributeSet, Selah)
 
     // =========================================================================
     // COMBAT ATTRIBUTES
@@ -143,4 +153,7 @@ protected:
 
     UFUNCTION()
     virtual void OnRep_MaxSuperMeter(const FGameplayAttributeData& OldMaxSuperMeter);
+    
+    UFUNCTION()
+    virtual void OnRep_Selah(const FGameplayAttributeData& OldSelah);
 };

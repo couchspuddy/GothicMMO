@@ -185,6 +185,16 @@ void AGothicHUD::CreateAndShowLayout(TSubclassOf<UGothicHUDWidget> WidgetClass)
     }
 }
 
+void AGothicHUD::UpdateSelah(float CurrentSelah)
+{
+    UE_LOG(LogTemp, Log, TEXT("GothicHUD: UpdateSelah called — %.0f"), CurrentSelah);
+
+    if (ActiveHUDWidget)
+    {
+        ActiveHUDWidget->OnSelahChanged(FMath::FloorToInt(CurrentSelah));
+    }
+}
+
 void AGothicHUD::CreateAndShowCrosshair(TSubclassOf<UGothicCrosshairWidget> CrosshairClass)
 {
     UE_LOG(LogTemp, Log, TEXT("CreateAndShowCrosshair called - Class: %s"),

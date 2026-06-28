@@ -21,6 +21,7 @@ UGothicAttributeSet::UGothicAttributeSet()
     InitIncomingDamage(0.f);
     InitSuperMeter(0.f);
     InitMaxSuperMeter(100.f);
+    InitSelah(0.f);
 }
 
 void UGothicAttributeSet::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -37,6 +38,7 @@ void UGothicAttributeSet::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, Defense,      COND_None, REPNOTIFY_Always);
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, SuperMeter,    COND_None, REPNOTIFY_Always);
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, MaxSuperMeter, COND_None, REPNOTIFY_Always);
+    DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, Selah, COND_None, REPNOTIFY_Always);
 }
 
 void UGothicAttributeSet::PreAttributeChange(const FGameplayAttribute& Attribute, float& NewValue)
@@ -59,6 +61,15 @@ void UGothicAttributeSet::PreAttributeChange(const FGameplayAttribute& Attribute
     {
         NewValue = FMath::Clamp(NewValue, 0.f, GetMaxSuperMeter());
     }
+    else if (Attribute == GetSelahAttribute())
+    {
+        NewValue = FMath::Max(0.f, NewValue);
+    }
+}
+
+void UGothicAttributeSet::OnRep_Selah(const FGameplayAttributeData& OldSelah)
+{
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, Selah, OldSelah);
 }
 
 void UGothicAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallbackData& Data)

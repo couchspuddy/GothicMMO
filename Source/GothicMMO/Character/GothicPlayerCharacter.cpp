@@ -122,7 +122,7 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     InitializeGAS();
 
     // Grant ability sets — data driven, replaces old StartupAbilities array
-    if (HasAuthority())
+    if (HasAuthority() && !bAbilitiesGranted)
     {
         for (const TObjectPtr<UGothicAbilitySet>& AbilitySet : StartupAbilitySets)
         {
@@ -132,11 +132,8 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
                     *AbilitySet->GetName());
                 AbilitySet->GiveToAbilitySystem(AbilitySystemComponent, this);
             }
-            else
-            {
-                UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: Null ability set in StartupAbilitySets"));
-            }
         }
+        bAbilitiesGranted = true;
     }
 
     // Setup ability input bindings now that ASC is confirmed valid
@@ -157,26 +154,22 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     if (IsLocallyControlled() && AbilitySystemComponent)
     {
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-            UGothicAttributeSet::GetHealthAttribute()).AddLambda(
-            [this](const FOnAttributeChangeData& Data)
-            {
-                if (!IsLocallyControlled()) return;
+    UGothicAttributeSet::GetSelahAttribute()).AddLambda(
+    [this](const FOnAttributeChangeData& Data)
+    {
+        if (!IsLocallyControlled()) return;
 
-                APlayerController* PC = GetWorld()->GetFirstPlayerController();
-                if (!PC) return;
+        UE_LOG(LogTemp, Log, TEXT("Selah changed: %.0f"), Data.NewValue);
 
-                AHUD* RawHUD = PC->GetHUD();
+        APlayerController* PC = GetWorld()->GetFirstPlayerController();
+        if (!PC) return;
 
-                UE_LOG(LogTemp, Log, TEXT("Health changed: %.1f | HUD: %s"),
-                    Data.NewValue,
-                    RawHUD ? *RawHUD->GetClass()->GetName() : TEXT("NULL"));
-
-                AGothicHUD* GothicHUD = Cast<AGothicHUD>(RawHUD);
-                if (GothicHUD)
-                {
-                    GothicHUD->UpdateHealth(Data.NewValue, AttributeSet->GetMaxHealth());
-                }
-            });
+        AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
+        if (GothicHUD)
+        {
+            GothicHUD->UpdateSelah(Data.NewValue);
+        }
+    });
 
         // Super meter delegate
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
@@ -395,4 +388,13 @@ void AGothicPlayerCharacter::OnMelee()
     {
         UE_LOG(LogTemp, Log, TEXT("OnMelee: No hit"));
     }
+}
+
+void AGothicPlayerCharacter::TriggerSelahMoment()
+{
+    UE_LOG(LogTemp, Log, TEXT("TriggerSelahMoment: Selah moment triggered on %s"),
+        *GetName());
+
+    // Blueprint handles the visual and audio — call the event
+    OnSelahMoment();
 }

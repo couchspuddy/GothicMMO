@@ -12,6 +12,9 @@
 #include "Perception/AISenseConfig_Sight.h"
 #include "Perception/AISenseConfig_Hearing.h"
 #include "Components/WidgetComponent.h"
+#include "Kismet/GameplayStatics.h"
+#include "Character/GothicPlayerCharacter.h"
+#include "AbilitySystemBlueprintLibrary.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
@@ -117,19 +120,15 @@ void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget)
         AIC->SetBlackboardTarget(NewTarget);
     }
 }
-
 void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
 {
-    // Don't call Super — we handle everything here for enemies
-    // Super disables all collision which breaks ragdoll
+    Super::OnDeath_Implementation(Killer);
 
-    // Apply dead tag and cancel abilities
-    if (AbilitySystemComponent)
-    {
-        AbilitySystemComponent->AddLooseGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Dead")));
-        AbilitySystemComponent->CancelAllAbilities();
-    }
+    UE_LOG(LogTemp, Log, TEXT("GothicEnemyBase: %s died — running Selah proximity check"),
+        *GetName());
+
+    // Check for nearby Embers and award Selah
+    AwardSelahToNearbyEmbers();
 
     // Hide health bar
     if (HealthBarWidget)
@@ -137,43 +136,22 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
         HealthBarWidget->SetVisibility(false);
     }
 
-    // Stop AI movement
+    // Ragdoll
+    if (GetMesh())
+    {
+        //GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+        //GetMesh()->SetSimulatePhysics(true);
+
+        // Small delay before impulse OR apply impulse after simulate is set
+        FVector ImpulseDir = GetActorForwardVector() * -1.f;
+        GetMesh()->AddImpulse(ImpulseDir * 500.f, NAME_None, true);
+    }
+
     if (GetController())
     {
         GetController()->StopMovement();
     }
 
-    // Disable capsule collision only
-    GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-    GetCapsuleComponent()->SetCollisionResponseToAllChannels(ECR_Ignore);
-
-    // Stop character movement
-    GetCharacterMovement()->DisableMovement();
-    GetCharacterMovement()->StopMovementImmediately();
-
-    // Detach mesh from capsule so it can fall freely
-    GetMesh()->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
-
-    // Set mesh collision to ragdoll profile BEFORE enabling physics
-    GetMesh()->SetCollisionProfileName(TEXT("Ragdoll"));
-    GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-    GetMesh()->SetCollisionObjectType(ECC_PhysicsBody);
-
-    // Enable physics simulation
-    GetMesh()->SetSimulatePhysics(true);
-
-    // Apply impulse after a tiny delay to let physics initialize
-    FTimerHandle ImpulseTimer;
-    GetWorldTimerManager().SetTimer(ImpulseTimer, [this]()
-    {
-        if (GetMesh())
-        {
-            const FVector ImpulseDir = GetActorForwardVector() * -1.f;
-            GetMesh()->AddImpulse(ImpulseDir * 30000.f, NAME_None, false);
-        }
-    }, 0.1f, false);
-
-    // Schedule corpse cleanup
     FTimerHandle CorpseTimer;
     GetWorldTimerManager().SetTimer(
         CorpseTimer,
@@ -181,8 +159,90 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
         &AGothicEnemyBase::DestroyCorpse,
         CorpseLifetime,
         false);
+}
 
-    UE_LOG(LogTemp, Log, TEXT("%s died."), *GetName());
+void AGothicEnemyBase::AwardSelahToNearbyEmbers()
+{
+    if (!GetWorld())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: No world"));
+        return;
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Checking %.0f unit radius around %s"),
+        SelahAwardRadius, *GetName());
+
+    // Find all player characters within radius
+    TArray<AActor*> NearbyActors;
+    UGameplayStatics::GetAllActorsOfClass(
+        GetWorld(),
+        AGothicPlayerCharacter::StaticClass(),
+        NearbyActors);
+
+    int32 PlayersAwarded = 0;
+
+    for (AActor* Actor : NearbyActors)
+    {
+        float Distance = FVector::Dist(GetActorLocation(), Actor->GetActorLocation());
+
+        UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Player %s is %.0f units away"),
+            *Actor->GetName(), Distance);
+
+        if (Distance > SelahAwardRadius)
+        {
+            UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Too far — no Selah"));
+            continue;
+        }
+
+        // Player is within range — award Selah
+        UGothicAbilitySystemComponent* PlayerASC =
+            Cast<UGothicAbilitySystemComponent>(
+                UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Actor));
+
+        if (!PlayerASC)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: No ASC on player %s"),
+                *Actor->GetName());
+            continue;
+        }
+
+        if (!SelahGainEffect)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: SelahGainEffect not assigned on %s"),
+                *GetName());
+            continue;
+        }
+
+        FGameplayEffectContextHandle Context = PlayerASC->MakeEffectContext();
+        Context.AddSourceObject(this);
+
+        FGameplayEffectSpecHandle Spec = PlayerASC->MakeOutgoingSpec(
+            SelahGainEffect, 1.f, Context);
+
+        if (Spec.IsValid())
+        {
+            Spec.Data->SetSetByCallerMagnitude(
+                FGameplayTag::RequestGameplayTag(FName("Data.Selah")),
+                SelahAwardAmount);
+
+            PlayerASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+
+            UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Awarded %.1f Selah to %s"),
+                SelahAwardAmount, *Actor->GetName());
+
+            PlayersAwarded++;
+
+            // Trigger the Selah moment on this player
+            AGothicPlayerCharacter* PlayerChar = Cast<AGothicPlayerCharacter>(Actor);
+            if (PlayerChar)
+            {
+                PlayerChar->TriggerSelahMoment();
+            }
+        }
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Awarded Selah to %d players"),
+        PlayersAwarded);
 }
 
 void AGothicEnemyBase::DestroyCorpse()

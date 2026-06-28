@@ -72,6 +72,9 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Gothic|HUD")
     float CachedSuperMeter = 0.f;
     
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
+    void OnSelahChanged(int32 NewSelah);
+    
 protected:
     virtual void NativeConstruct() override;
 

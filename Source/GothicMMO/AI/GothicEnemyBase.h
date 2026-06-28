@@ -89,6 +89,18 @@ protected:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
     TObjectPtr<UDataAsset> LootTable;
+    
+    /** Radius within which players receive Selah on this enemy's death. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
+    float SelahAwardRadius = 500.f;
+
+    /** Amount of Selah awarded to each nearby player on death. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
+    float SelahAwardAmount = 1.f;
+
+    /** The GameplayEffect that awards Selah. Assign GE_SelahGain in BP_Enemy_Draugr. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
+    TSubclassOf<UGameplayEffect> SelahGainEffect;
 
 private:
     UPROPERTY()
@@ -99,4 +111,5 @@ private:
 
     /** Delayed destruction after death animation plays out. */
     void DestroyCorpse();
+    void AwardSelahToNearbyEmbers();
 };

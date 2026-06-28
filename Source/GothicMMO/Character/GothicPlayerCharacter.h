@@ -45,6 +45,9 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Combat")
     void OnMelee();
+    
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+    void TriggerSelahMoment();
 
 protected:
     virtual void BeginPlay() override;
@@ -103,6 +106,10 @@ protected:
 
     UPROPERTY(EditDefaultsOnly, Category = "Combat")
     float MeleeDamage = 10.f;
+    
+    /** Override in Blueprint to handle visual and audio of the Selah moment. */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Selah")
+    void OnSelahMoment();
 
     // -------------------------------------------------------------------------
     // Input handlers — direct non-ability bindings
@@ -117,4 +124,5 @@ protected:
 
 private:
     bool bHUDReady = false;
+    bool bAbilitiesGranted = false;
 };

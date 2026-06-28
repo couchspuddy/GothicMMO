@@ -65,6 +65,9 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Gothic|HUD")
     UGothicHUDWidget* GetHUDWidget() const { return ActiveHUDWidget; }
+    
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
+    void UpdateSelah(float CurrentSelah);
 protected:
     // -------------------------------------------------------------------------
     // Widget classes — assign in BP_GothicHUD
