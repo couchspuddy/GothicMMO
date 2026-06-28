@@ -1,0 +1,28 @@
+# UE5 Generated
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+.vs/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+
+# Rider
+.idea/
+*.DotSettings.user
+
+# Compiled
+*.pdb
+*.exp
+*.lib
+*.dll
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
