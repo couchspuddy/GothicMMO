@@ -16,7 +16,9 @@
 
 #include "CoreMinimal.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
+#include "Camera/CameraShakeBase.h"
 #include "GA_HuntersStrike.generated.h"
+
 
 UCLASS()
 class GOTHICMMO_API UGA_HuntersStrike : public UGothicGameplayAbility
@@ -79,6 +81,9 @@ protected:
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     TSubclassOf<UGameplayEffect> SuperGainOnKillEffect;
+    
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
+    TSubclassOf<UCameraShakeBase> CameraShakeClass;
 
     // -------------------------------------------------------------------------
     // Called by the WaitGameplayEvent task when the anim notify fires.

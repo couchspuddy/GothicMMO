@@ -129,6 +129,14 @@ void UGA_HuntersStrike::PerformMeleeTrace()
 
         ApplyDamageToTarget(HitActor, DamageEffectClass, DamageMultiplier);
         AlreadyHit.Add(HitActor);
+        
+        // After ApplyDamageToTarget
+        if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
+        {
+            GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, 
+                TEXT("Camera shake triggered"));
+            PC->ClientStartCameraShake(CameraShakeClass);
+        }
 
         // Only gain super meter if we actually hit something
         if (SuperGainOnHitEffect)
