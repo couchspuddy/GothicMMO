@@ -139,6 +139,9 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
     // Ragdoll
     if (GetMesh())
     {
+        GetMesh()->SetCollisionProfileName(FName("Ragdoll"));
+        GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+        GetMesh()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
         //GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
         //GetMesh()->SetSimulatePhysics(true);
 

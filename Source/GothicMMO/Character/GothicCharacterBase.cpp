@@ -5,6 +5,7 @@
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
 #include "GameplayEffectTypes.h"
+#include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 AGothicCharacterBase::AGothicCharacterBase()
@@ -107,7 +108,7 @@ void AGothicCharacterBase::OnDeath_Implementation(AActor* Killer)
 
     AbilitySystemComponent->CancelAllAbilities();
 
-    SetActorEnableCollision(false);
+    GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);;
 
     // UE5.8: include GameFramework/CharacterMovementComponent.h to use these
     GetCharacterMovement()->DisableMovement();
