@@ -110,6 +110,9 @@ protected:
     /** Override in Blueprint to handle visual and audio of the Selah moment. */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Selah")
     void OnSelahMoment();
+    
+    UPROPERTY(BlueprintReadWrite, Category = "Gothic|Combat")
+    bool bPistolBound = false;
 
     // -------------------------------------------------------------------------
     // Input handlers — direct non-ability bindings
