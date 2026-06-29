@@ -100,6 +100,9 @@ protected:
     // -------------------------------------------------------------------------
     UPROPERTY(EditDefaultsOnly, Category = "Combat")
     TSubclassOf<UGameplayEffect> DamageEffectClass;
+    
+    UPROPERTY(EditDefaultsOnly, Category = "Input")
+    TObjectPtr<UInputAction> SprintAction;
 
     UPROPERTY(EditDefaultsOnly, Category = "Combat")
     float PistolDamage = 15.f;
@@ -124,6 +127,8 @@ protected:
     // GAS init
     // -------------------------------------------------------------------------
     void InitGASFromPlayerState();
+    void OnSprintStart();
+    void OnSprintStop();
 
 private:
     bool bHUDReady = false;

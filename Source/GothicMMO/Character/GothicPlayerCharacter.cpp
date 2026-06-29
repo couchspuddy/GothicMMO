@@ -219,6 +219,14 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
         EIC->BindAction(JumpAction, ETriggerEvent::Started,   this, &ACharacter::Jump);
         EIC->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
     }
+    
+    if (SprintAction)
+    {
+        EIC->BindAction(SprintAction, ETriggerEvent::Started, 
+            this, &AGothicPlayerCharacter::OnSprintStart);
+        EIC->BindAction(SprintAction, ETriggerEvent::Completed, 
+            this, &AGothicPlayerCharacter::OnSprintStop);
+    }
 
     // Non-GAS combat inputs — direct bindings
     if (FireAction)
@@ -390,6 +398,18 @@ void AGothicPlayerCharacter::OnMelee()
     {
         UE_LOG(LogTemp, Log, TEXT("OnMelee: No hit"));
     }
+}
+
+void AGothicPlayerCharacter::OnSprintStart()
+{
+    UE_LOG(LogTemp, Log, TEXT("Sprint started"));
+    GetCharacterMovement()->MaxWalkSpeed = 900.f;
+}
+
+void AGothicPlayerCharacter::OnSprintStop()
+{
+    UE_LOG(LogTemp, Log, TEXT("Sprint stopped"));
+    GetCharacterMovement()->MaxWalkSpeed = 500.f;
 }
 
 void AGothicPlayerCharacter::TriggerSelahMoment()
