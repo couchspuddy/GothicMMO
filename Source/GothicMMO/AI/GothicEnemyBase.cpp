@@ -143,8 +143,8 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
         //GetMesh()->SetSimulatePhysics(true);
 
         // Small delay before impulse OR apply impulse after simulate is set
-        FVector ImpulseDir = GetActorForwardVector() * -1.f;
-        GetMesh()->AddImpulse(ImpulseDir * 500.f, NAME_None, true);
+        //FVector ImpulseDir = GetActorForwardVector() * -1.f;
+        //GetMesh()->AddImpulse(ImpulseDir * 500.f, NAME_None, true);
     }
 
     if (GetController())
