@@ -89,6 +89,15 @@ void AGothicCharacterBase::InitializeGAS()
     }
 
     AbilitySystemComponent->GrantStartupAbilities(StartupAbilities, 1);
+    
+    UE_LOG(LogTemp, Log, TEXT("InitializeGAS on %s — granting %d startup abilities"), 
+    *GetName(), StartupAbilities.Num());
+
+    for (auto& Ab : StartupAbilities)
+    {
+        UE_LOG(LogTemp, Log, TEXT("  Startup ability: %s"), 
+            Ab ? *Ab->GetName() : TEXT("NULL"));
+    }
 }
 
 void AGothicCharacterBase::OnDeath_Implementation(AActor* Killer)
