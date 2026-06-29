@@ -59,6 +59,8 @@ void UGothicAttributeSet::PreAttributeChange(const FGameplayAttribute& Attribute
     }
     else if (Attribute == GetSuperMeterAttribute())
     {
+        UE_LOG(LogTemp, Log, TEXT("SuperMeter PreAttributeChange: NewValue=%.1f MaxSuperMeter=%.1f"), 
+            NewValue, GetMaxSuperMeter());
         NewValue = FMath::Clamp(NewValue, 0.f, GetMaxSuperMeter());
     }
     else if (Attribute == GetSelahAttribute())

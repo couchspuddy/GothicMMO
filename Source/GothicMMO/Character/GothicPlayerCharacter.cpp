@@ -159,7 +159,7 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     {
         if (!IsLocallyControlled()) return;
 
-        UE_LOG(LogTemp, Log, TEXT("Selah changed: %.0f"), Data.NewValue);
+        UE_LOG(LogTemp, Log, TEXT("Selah lambda fired: %.0f"), Data.NewValue);
 
         APlayerController* PC = GetWorld()->GetFirstPlayerController();
         if (!PC) return;
@@ -173,20 +173,22 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
 
         // Super meter delegate
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-            UGothicAttributeSet::GetSuperMeterAttribute()).AddLambda(
-            [this](const FOnAttributeChangeData& Data)
-            {
-                if (!IsLocallyControlled()) return;
+    UGothicAttributeSet::GetSuperMeterAttribute()).AddLambda(
+    [this](const FOnAttributeChangeData& Data)
+    {
+        if (!IsLocallyControlled()) return;
 
-                APlayerController* PC = GetWorld()->GetFirstPlayerController();
-                if (!PC) return;
+        UE_LOG(LogTemp, Log, TEXT("SuperMeter lambda fired: %.1f"), Data.NewValue);
 
-                AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
-                if (GothicHUD)
-                {
-                    GothicHUD->UpdateSuperMeter(Data.NewValue, AttributeSet->GetMaxSuperMeter());
-                }
-            });
+        APlayerController* PC = GetWorld()->GetFirstPlayerController();
+        if (!PC) return;
+
+        AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
+        if (GothicHUD)
+        {
+            GothicHUD->UpdateSuperMeter(Data.NewValue, AttributeSet->GetMaxSuperMeter());
+        }
+    });
 
         UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Attribute delegates registered"));
     }

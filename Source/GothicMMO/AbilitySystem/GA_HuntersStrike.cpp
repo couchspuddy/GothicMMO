@@ -148,6 +148,13 @@ void UGA_HuntersStrike::PerformMeleeTrace()
                     SuperGainOnHitEffect, 1.f, Context);
             if (Spec.IsValid())
             {
+                UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(
+                    Spec,
+                    FGameplayTag::RequestGameplayTag(FName("Data.SuperMeter")),
+                    15.f);
+
+                UE_LOG(LogTemp, Log, TEXT("GA_HuntersStrike: Applying SuperMeter gain 15.0"));
+
                 GetAbilitySystemComponentFromActorInfo()->ApplyGameplayEffectSpecToSelf(
                     *Spec.Data.Get());
             }
