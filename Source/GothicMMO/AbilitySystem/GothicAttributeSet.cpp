@@ -4,6 +4,8 @@
 #include "Net/UnrealNetwork.h"
 #include "GameplayEffectExtension.h"
 #include "GameFramework/Character.h"
+#include "AI/GothicCombatStateComponent.h"
+#include "AbilitySystemBlueprintLibrary.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
 #include "Character/GothicCharacterBase.h"
@@ -39,6 +41,8 @@ void UGothicAttributeSet::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, SuperMeter,    COND_None, REPNOTIFY_Always);
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, MaxSuperMeter, COND_None, REPNOTIFY_Always);
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, Selah, COND_None, REPNOTIFY_Always);
+    DOREPLIFETIME(UGothicAttributeSet, Steadfast);
+    DOREPLIFETIME(UGothicAttributeSet, MaxSteadfast);
 }
 
 void UGothicAttributeSet::PreAttributeChange(const FGameplayAttribute& Attribute, float& NewValue)
@@ -90,35 +94,71 @@ void UGothicAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCall
         TargetChar  = Cast<ACharacter>(TargetActor);
     }
 
-    if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
+if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
+{
+    const float RawDamage = GetIncomingDamage();
+    SetIncomingDamage(0.f);
+
+    if (RawDamage > 0.f)
     {
-        const float RawDamage = GetIncomingDamage();
-        SetIncomingDamage(0.f);
+        const float FinalDamage = FMath::Max(1.f, RawDamage - GetDefense());
+        const float NewHealth = FMath::Clamp(GetHealth() - FinalDamage, 0.f, GetMaxHealth());
+        SetHealth(NewHealth);
 
-        if (RawDamage > 0.f)
+        GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan,
+            FString::Printf(TEXT("%s Health: %.1f / %.1f"),
+            *GetOwningActor()->GetName(), NewHealth, GetMaxHealth()));
+
+        // Notify combat state on both target (received damage) and source (dealt damage)
+        if (TargetActor)
         {
-            const float FinalDamage = FMath::Max(1.f, RawDamage - GetDefense());
-            const float NewHealth = FMath::Clamp(GetHealth() - FinalDamage, 0.f, GetMaxHealth());
-            SetHealth(NewHealth);
-            
-            GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan,
-    FString::Printf(TEXT("%s Health: %.1f / %.1f"),
-    *GetOwningActor()->GetName(),
-    NewHealth,
-    GetMaxHealth()));
-
-            if (NewHealth <= 0.f && TargetChar)
+            if (UGothicCombatStateComponent* TargetCombatState =
+                TargetActor->FindComponentByClass<UGothicCombatStateComponent>())
             {
-                // Cast to our base class and call OnDeath directly
-                AGothicCharacterBase* GothicChar = Cast<AGothicCharacterBase>(TargetChar);
-                if (GothicChar)
+                TargetCombatState->NotifyCombatAction();
+            }
+        }
+
+        AActor* SourceActor = SourceASC ? SourceASC->GetAvatarActor() : nullptr;
+        if (SourceActor)
+        {
+            if (UGothicCombatStateComponent* SourceCombatState =
+                SourceActor->FindComponentByClass<UGothicCombatStateComponent>())
+            {
+                SourceCombatState->NotifyCombatAction();
+            }
+        }
+
+        if (NewHealth <= 0.f && TargetChar)
+        {
+            AGothicCharacterBase* GothicChar = Cast<AGothicCharacterBase>(TargetChar);
+            if (GothicChar)
+            {
+                UAbilitySystemComponent* TargetASC = GothicChar->GetAbilitySystemComponent();
+                if (TargetASC && !TargetASC->HasMatchingGameplayTag(
+                    FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
                 {
-                    GothicChar->OnDeath_Implementation(SourceASC ? SourceASC->GetAvatarActor() : nullptr);
+                    GothicChar->OnDeath_Implementation(
+                        SourceASC ? SourceASC->GetAvatarActor() : nullptr);
+
+                    // Notify the killer for Not At All / any future on-kill systems
+                    if (SourceActor)
+                    {
+                        FGameplayEventData KillEventPayload;
+                        KillEventPayload.Target = TargetActor;
+                        KillEventPayload.Instigator = SourceActor;
+
+                        UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(
+                            SourceActor,
+                            FGameplayTag::RequestGameplayTag(FName("Event.Kill.Confirmed")),
+                            KillEventPayload);
+                    }
                 }
             }
         }
     }
 }
+}  // closes PostGameplayEffectExecute
 
 void UGothicAttributeSet::OnRep_Health(const FGameplayAttributeData& OldHealth)
 {
@@ -167,4 +207,14 @@ void UGothicAttributeSet::OnRep_SuperMeter(const FGameplayAttributeData& OldSupe
 void UGothicAttributeSet::OnRep_MaxSuperMeter(const FGameplayAttributeData& OldMaxSuperMeter)
 {
     GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, MaxSuperMeter, OldMaxSuperMeter);
+}
+
+void UGothicAttributeSet::OnRep_Steadfast(const FGameplayAttributeData& OldSteadfast)
+{
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, Steadfast, OldSteadfast);
+}
+
+void UGothicAttributeSet::OnRep_MaxSteadfast(const FGameplayAttributeData& OldMaxSteadfast)
+{
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, MaxSteadfast, OldMaxSteadfast);
 }

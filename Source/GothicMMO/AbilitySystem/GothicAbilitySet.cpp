@@ -23,6 +23,8 @@ void UGothicAbilitySet::GiveToAbilitySystem(
     UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: Granting %d abilities to %s"),
         GrantedAbilities.Num(),
         ASC->GetOwnerActor() ? *ASC->GetOwnerActor()->GetName() : TEXT("Unknown"));
+    
+    
 
     // Grant abilities
     for (const FGothicAbilitySetEntry& Entry : GrantedAbilities)
@@ -39,6 +41,29 @@ void UGothicAbilitySet::GiveToAbilitySystem(
                 *Entry.AbilityClass->GetName());
             continue;
         }
+
+        // ---- ADD: idempotency guard ----
+        // If this ASC already has a spec of this ability class, don't grant a
+        // second one. The player init path runs twice (PossessedBy +
+        // OnRep_PlayerState), so without this a single input activates two
+        // identical specs.
+        bool bAlreadyGranted = false;
+        for (const FGameplayAbilitySpec& Existing : ASC->GetActivatableAbilities())
+        {
+            if (Existing.Ability && Existing.Ability->GetClass() == Entry.AbilityClass)
+            {
+                bAlreadyGranted = true;
+                break;
+            }
+        }
+
+        if (bAlreadyGranted)
+        {
+            UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: %s already granted — skipping duplicate"),
+                *Entry.AbilityClass->GetName());
+            continue;
+        }
+        // ---- END guard ----
 
         // Build the spec — level comes from the data asset entry
         FGameplayAbilitySpec Spec(Entry.AbilityClass, Entry.AbilityLevel);

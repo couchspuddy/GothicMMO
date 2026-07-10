@@ -10,17 +10,17 @@
 
 #include "CoreMinimal.h"
 #include "AI/GothicEnemyAIController.h"
-#include "GothicBossAIController.generated.h"
+#include "AGothicBossAIController.generated.h"
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnBossPhaseChanged, int32, NewPhase);
 
 UCLASS()
-class GOTHICMMO_API GothicBossAIController : public AGothicEnemyAIController
+class GOTHICMMO_API AGothicBossAIController : public AGothicEnemyAIController
 {
 	GENERATED_BODY()
 
 public:
-	GothicBossAIController();
+	AGothicBossAIController();
 
 	/** Current phase, starting at 1. Subclasses advance this via OnPhaseAdvance. */
 	UFUNCTION(BlueprintPure, Category = "Gothic|Boss")

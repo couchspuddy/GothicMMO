@@ -4,6 +4,7 @@
 #include "AI/GothicEnemyBase.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
+#include "TimerManager.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
 
 AGothicEnemyAIController::AGothicEnemyAIController()

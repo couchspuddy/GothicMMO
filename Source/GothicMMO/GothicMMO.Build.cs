@@ -17,6 +17,8 @@ public class GothicMMO : ModuleRules
 			"CoreUObject",
 			"Engine",
 			"InputCore",
+			"Niagara",
+			"NiagaraCore",
 			"EnhancedInput",
 			"NetCore",
 			"OnlineSubsystem",

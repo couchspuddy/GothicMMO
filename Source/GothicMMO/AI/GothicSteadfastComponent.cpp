@@ -66,6 +66,8 @@ void UGothicSteadfastComponent::TickComponent(float DeltaTime, ELevelTick TickTy
     // not something that needs a GameplayEffect spec for a per-tick fill.
     UGothicAttributeSet* MutableAttributeSet = const_cast<UGothicAttributeSet*>(AttributeSet);
     MutableAttributeSet->SetSteadfast(NewSteadfast);
+    UE_LOG(LogTemp, Log, TEXT("SteadfastTick: Set to %.2f, readback = %.2f"),
+    NewSteadfast, MutableAttributeSet->GetSteadfast());
 }
 
 float UGothicSteadfastComponent::TryConvertSteadfast(float SteadfastCost, float AmmoGranted)

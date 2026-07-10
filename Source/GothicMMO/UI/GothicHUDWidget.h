@@ -38,7 +38,7 @@ public:
      * @param Total         Total cooldown duration (for filling the overlay)
      */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
-    void OnAbilityCooldownChanged(int32 SlotIndex, float Remaining, float Total);
+    void OnAbilityCooldownChanged(EGothicAbilitySlot SlotIndex, float Remaining, float Total);
 
     /**
      * Flash a damage number on screen.
@@ -61,7 +61,7 @@ public:
      * @param SlotIndex  Which ability slot recharged.
      */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
-    void OnAbilityRecharged(int32 SlotIndex);
+    void OnAbilityRecharged(EGothicAbilitySlot SlotIndex);
 
     UPROPERTY(BlueprintReadOnly, Category = "Gothic|HUD")
     float CachedHealth = 100.f;

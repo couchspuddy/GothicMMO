@@ -96,6 +96,22 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Selah", ReplicatedUsing = OnRep_Selah)
     FGameplayAttributeData Selah;
     ATTRIBUTE_ACCESSORS(UGothicAttributeSet, Selah)
+    
+    // =========================================================================
+// STEADFAST — accumulates through combat presence, converts to ammo
+// via hold-to-reload. Per-player, never shared/pooled. Never decays
+// outside of being spent.
+// =========================================================================
+
+/** Current Steadfast. Fills through combat presence, spent via hold-reload. */
+UPROPERTY(BlueprintReadOnly, Category = "Steadfast", ReplicatedUsing = OnRep_Steadfast)
+    FGameplayAttributeData Steadfast;
+    ATTRIBUTE_ACCESSORS(UGothicAttributeSet, Steadfast)
+
+    /** Max Steadfast ceiling. */
+    UPROPERTY(BlueprintReadOnly, Category = "Steadfast", ReplicatedUsing = OnRep_MaxSteadfast)
+    FGameplayAttributeData MaxSteadfast;
+    ATTRIBUTE_ACCESSORS(UGothicAttributeSet, MaxSteadfast)
 
     // =========================================================================
     // COMBAT ATTRIBUTES
@@ -150,6 +166,12 @@ protected:
     
     UFUNCTION()
     virtual void OnRep_SuperMeter(const FGameplayAttributeData& OldSuperMeter);
+    
+    UFUNCTION()
+    void OnRep_Steadfast(const FGameplayAttributeData& OldSteadfast);
+
+    UFUNCTION()
+    void OnRep_MaxSteadfast(const FGameplayAttributeData& OldMaxSteadfast);
 
     UFUNCTION()
     virtual void OnRep_MaxSuperMeter(const FGameplayAttributeData& OldMaxSuperMeter);

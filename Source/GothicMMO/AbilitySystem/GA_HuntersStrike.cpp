@@ -34,6 +34,12 @@ void UGA_HuntersStrike::ActivateAbility(
     Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
 
     bool bCommitted = CommitAbility(Handle, ActorInfo, ActivationInfo);
+    
+    if (!bCommitted)
+    {
+        CancelAbility(Handle, ActorInfo, ActivationInfo, true);
+        return;
+    }
 
     UE_LOG(LogTemp, Log, TEXT("CommitAbility result: %s"),
         bCommitted ? TEXT("SUCCESS") : TEXT("FAILED"));
@@ -44,14 +50,22 @@ void UGA_HuntersStrike::ActivateAbility(
         return;
     }
 
-    // Debug cooldown after single commit
-    if (ActorInfo && ActorInfo->AbilitySystemComponent.IsValid())
+    if (MontageToPlay)
     {
-        FGameplayTagContainer CooldownTags;
-        CooldownTags.AddTag(FGameplayTag::RequestGameplayTag(FName("Cooldown.LightAttack")));
-        FGameplayEffectQuery Query = FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(CooldownTags);
-        TArray<float> Durations = ActorInfo->AbilitySystemComponent->GetActiveEffectsTimeRemaining(Query);
-        UE_LOG(LogTemp, Log, TEXT("Cooldown effects active after commit: %d"), Durations.Num());
+        UE_LOG(LogTemp, Log, TEXT("GA_HuntersStrike: MontageToPlay is valid, creating task"))
+        UAbilityTask_PlayMontageAndWait* MontageTask =
+            UAbilityTask_PlayMontageAndWait::CreatePlayMontageAndWaitProxy(
+                this, NAME_None, MontageToPlay, 1.0f);
+
+        MontageTask->OnCompleted.AddDynamic(this, &UGA_HuntersStrike::OnMontageCompleted);
+        MontageTask->OnInterrupted.AddDynamic(this, &UGA_HuntersStrike::OnMontageInterrupted);
+        MontageTask->OnCancelled.AddDynamic(this, &UGA_HuntersStrike::OnMontageInterrupted);
+     
+        MontageTask->ReadyForActivation();
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GA_HuntersStrike: MontageToPlay is NULL"));
     }
 
     if (GetOwningActorFromActorInfo()->HasAuthority())
@@ -62,7 +76,21 @@ void UGA_HuntersStrike::ActivateAbility(
             TEXT("Hunter's Strike fired!"));
     }
 
-    EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
+    // Don't end ability immediately if montage is playing — wait for it
+    if (!MontageToPlay)
+    {
+        EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
+    }
+}
+
+void UGA_HuntersStrike::OnMontageCompleted()
+{
+    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+}
+
+void UGA_HuntersStrike::OnMontageInterrupted()
+{
+    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 }
 
 void UGA_HuntersStrike::OnHitWindowOpened(FGameplayEventData Payload)

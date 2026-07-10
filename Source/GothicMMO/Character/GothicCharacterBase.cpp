@@ -6,6 +6,7 @@
 #include "AbilitySystem/GothicGameplayAbility.h"
 #include "GameplayEffectTypes.h"
 #include "Components/CapsuleComponent.h"
+#include "AI/GothicCombatStateComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 AGothicCharacterBase::AGothicCharacterBase()
@@ -103,6 +104,11 @@ void AGothicCharacterBase::InitializeGAS()
 
 void AGothicCharacterBase::OnDeath_Implementation(AActor* Killer)
 {
+    if (AbilitySystemComponent->HasMatchingGameplayTag(
+        FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
+    {
+        return;
+    }
     AbilitySystemComponent->AddLooseGameplayTag(
         FGameplayTag::RequestGameplayTag(FName("State.Dead")));
 

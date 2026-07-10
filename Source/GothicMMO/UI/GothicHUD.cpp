@@ -141,7 +141,7 @@ void AGothicHUD::UpdateSuperMeter(float CurrentValue, float MaxValue)
     }
 }
 
-void AGothicHUD::UpdateAbilityCooldown(int32 SlotIndex, float CooldownRemaining, float CooldownTotal)
+void AGothicHUD::UpdateAbilityCooldown(EGothicAbilitySlot SlotIndex, float CooldownRemaining, float CooldownTotal)
 {
     if (ActiveHUDWidget)
     {

@@ -15,6 +15,8 @@
 
 class UAIPerceptionComponent;
 class UWidgetComponent;
+class UGothicVitalPointComponent;
+class UGothicCombatStateComponent;
 
 /** Enemy tier affects loot tables and XP reward. */
 UENUM(BlueprintType)
@@ -51,7 +53,20 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Gothic|Enemy")
     AActor* GetCombatTarget() const { return CombatTarget; }
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+    void AwardSelahToNearbyEmbers();
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+    static void CollectAllNearbyCorpses(AActor* Collector, float Radius, UObject* WorldContext);
+    UPROPERTY(BlueprintReadWrite, Category = "Gothic|Selah")
+    bool bCollected = false;
+    
+    /** Amount of Selah awarded to each nearby player on death. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
+    float SelahAwardAmount = 1.f;
 
+    /** The GameplayEffect that awards Selah. Assign GE_SelahGain in BP_Enemy_Draugr. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
+    TSubclassOf<UGameplayEffect> SelahGainEffect;
 protected:
     // -------------------------------------------------------------------------
     // Components
@@ -64,6 +79,9 @@ protected:
     /** World-space health bar widget, visible to all nearby players. */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|UI")
     TObjectPtr<UWidgetComponent> HealthBarWidget;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|VitalPoint")
+    TObjectPtr<UGothicVitalPointComponent> VitalPointComponent;
 
     // -------------------------------------------------------------------------
     // Data — set in Blueprint
@@ -93,14 +111,11 @@ protected:
     /** Radius within which players receive Selah on this enemy's death. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
     float SelahAwardRadius = 500.f;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Combat")
+    TObjectPtr<UGothicCombatStateComponent> CombatStateComponent;
 
-    /** Amount of Selah awarded to each nearby player on death. */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
-    float SelahAwardAmount = 1.f;
 
-    /** The GameplayEffect that awards Selah. Assign GE_SelahGain in BP_Enemy_Draugr. */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
-    TSubclassOf<UGameplayEffect> SelahGainEffect;
 
 private:
     UPROPERTY()
@@ -111,5 +126,4 @@ private:
 
     /** Delayed destruction after death animation plays out. */
     void DestroyCorpse();
-    void AwardSelahToNearbyEmbers();
 };

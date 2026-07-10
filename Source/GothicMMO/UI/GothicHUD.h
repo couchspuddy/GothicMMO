@@ -58,7 +58,7 @@ public:
     void UpdateSuperMeter(float CurrentValue, float MaxValue);
 
     UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
-    void UpdateAbilityCooldown(int32 SlotIndex, float CooldownRemaining, float CooldownTotal);
+    void UpdateAbilityCooldown(EGothicAbilitySlot SlotIndex, float CooldownRemaining, float CooldownTotal);
 
     UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
     void ShowDamageIndicator(float DamageAmount);

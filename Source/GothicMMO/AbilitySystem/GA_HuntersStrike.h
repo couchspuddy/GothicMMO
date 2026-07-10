@@ -17,6 +17,7 @@
 #include "CoreMinimal.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
 #include "Camera/CameraShakeBase.h"
+#include "Abilities/Tasks/AbilityTask_PlayMontageAndWait.h"
 #include "GA_HuntersStrike.generated.h"
 
 
@@ -84,6 +85,12 @@ protected:
     
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     TSubclassOf<UCameraShakeBase> CameraShakeClass;
+    
+    UFUNCTION()
+    void OnMontageCompleted();
+
+    UFUNCTION()
+    void OnMontageInterrupted();
 
     // -------------------------------------------------------------------------
     // Called by the WaitGameplayEvent task when the anim notify fires.

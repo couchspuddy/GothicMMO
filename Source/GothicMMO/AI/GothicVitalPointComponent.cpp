@@ -1,1 +1,182 @@
-﻿#include "GothicVitalPointComponent.h"
+﻿// GothicVitalPointComponent.cpp
+
+#include "AI/GothicVitalPointComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "GameFramework/Character.h"
+#include "Net/UnrealNetwork.h"
+#include "TimerManager.h"
+
+UGothicVitalPointComponent::UGothicVitalPointComponent()
+{
+    PrimaryComponentTick.bCanEverTick = true;
+    SetIsReplicatedByDefault(true);
+}
+
+void UGothicVitalPointComponent::BeginPlay()
+{
+    Super::BeginPlay();
+
+    // Cache the skeletal mesh from the owning character
+    if (ACharacter* OwnerChar = Cast<ACharacter>(GetOwner()))
+    {
+        CachedMesh = OwnerChar->GetMesh();
+    }
+
+    if (!CachedMesh)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GothicVitalPointComponent: No skeletal mesh found on %s"),
+            *GetOwner()->GetName());
+    }
+
+    // Validate that we have at least one vital point defined
+    if (VitalPointLocations.Num() == 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GothicVitalPointComponent: No vital point locations defined on %s — assign in Blueprint"),
+            *GetOwner()->GetName());
+        return;
+    }
+
+    // Start the independent timer if configured
+    // Only runs on server — shift logic is authoritative
+    if (bShiftOnTimer && GetOwner()->HasAuthority())
+    {
+        GetWorld()->GetTimerManager().SetTimer(
+            ShiftTimerHandle,
+            this,
+            &UGothicVitalPointComponent::OnShiftTimerFired,
+            ShiftTimerInterval,
+            true); // looping
+    }
+}
+
+void UGothicVitalPointComponent::TickComponent(float DeltaTime, ELevelTick TickType,
+    FActorComponentTickFunction* ThisTickFunction)
+{
+    Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+    // Tick is active but currently unused at the component level.
+    // The shimmer visual update happens in Blueprint via GetCurrentVitalWorldLocation.
+    // If performance becomes a concern, disable tick and drive from a timer instead.
+}
+
+void UGothicVitalPointComponent::GetLifetimeReplicatedProps(
+    TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(UGothicVitalPointComponent, ActiveVitalIndex);
+}
+
+void UGothicVitalPointComponent::NotifyDamageTaken(float DamageAmount)
+{
+    // Server only — clients never drive shift logic
+    if (!GetOwner()->HasAuthority())
+    {
+        return;
+    }
+
+    if (VitalPointLocations.Num() <= 1)
+    {
+        return;
+    }
+
+    AccumulatedDamage += DamageAmount;
+
+    UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s accumulated %.1f / %.1f damage"),
+        *GetOwner()->GetName(), AccumulatedDamage, ShiftThreshold);
+
+    if (AccumulatedDamage >= ShiftThreshold)
+    {
+        ShiftVitalPoint();
+    }
+}
+
+void UGothicVitalPointComponent::ShiftVitalPoint()
+{
+    if (VitalPointLocations.Num() <= 1)
+    {
+        return;
+    }
+
+    // Advance to next index, wrapping around
+    ActiveVitalIndex = (ActiveVitalIndex + 1) % VitalPointLocations.Num();
+    AccumulatedDamage = 0.f;
+
+    const FVector NewLocation = ComputeWorldLocation(ActiveVitalIndex);
+
+    UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s shifted to index %d — location %s"),
+        *GetOwner()->GetName(), ActiveVitalIndex, *NewLocation.ToString());
+
+    // Broadcast so The Read ability and any other listeners know
+    OnVitalPointShifted.Broadcast(ActiveVitalIndex, NewLocation);
+
+    // OnRep will fire automatically on clients via replication
+}
+
+FVector UGothicVitalPointComponent::ComputeWorldLocation(int32 Index) const
+{
+    if (!CachedMesh || !VitalPointLocations.IsValidIndex(Index))
+    {
+        return GetOwner() ? GetOwner()->GetActorLocation() : FVector::ZeroVector;
+    }
+
+    const FVitalPointLocation& VPL = VitalPointLocations[Index];
+
+    if (VPL.BoneName == NAME_None)
+    {
+        return GetOwner()->GetActorLocation() + VPL.LocalOffset;
+    }
+
+    // Get the bone's world transform and apply the local offset
+    const FTransform BoneTransform = CachedMesh->GetBoneTransform(
+        CachedMesh->GetBoneIndex(VPL.BoneName));
+
+    return BoneTransform.GetLocation() + BoneTransform.TransformVector(VPL.LocalOffset);
+}
+
+FVector UGothicVitalPointComponent::GetCurrentVitalWorldLocation() const
+{
+    return ComputeWorldLocation(ActiveVitalIndex);
+}
+
+FVector UGothicVitalPointComponent::GetNextVitalWorldLocation() const
+{
+    if (VitalPointLocations.Num() <= 1)
+    {
+        return FVector::ZeroVector;
+    }
+
+    const int32 NextIndex = (ActiveVitalIndex + 1) % VitalPointLocations.Num();
+    return ComputeWorldLocation(NextIndex);
+}
+
+bool UGothicVitalPointComponent::IsVitalPointHit(const FVector& HitWorldLocation) const
+{
+    const FVector CurrentLocation = GetCurrentVitalWorldLocation();
+    const float Distance = FVector::Dist(HitWorldLocation, CurrentLocation);
+    return Distance <= HitDetectionRadius;
+}
+
+void UGothicVitalPointComponent::OnShiftTimerFired()
+{
+    // Independent timer shift — only on server, only if alive
+    if (!GetOwner()->HasAuthority())
+    {
+        return;
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s timer-triggered shift"),
+        *GetOwner()->GetName());
+
+    ShiftVitalPoint();
+}
+
+void UGothicVitalPointComponent::OnRep_ActiveVitalIndex()
+{
+    // Called on clients when ActiveVitalIndex replicates
+    // Compute the new world location and broadcast so Blueprint
+    // can update the shimmer visual without any additional RPC
+    const FVector NewLocation = ComputeWorldLocation(ActiveVitalIndex);
+    OnVitalPointShifted.Broadcast(ActiveVitalIndex, NewLocation);
+
+    UE_LOG(LogTemp, Log, TEXT("VitalPoint: Client received shift — index %d"),
+        ActiveVitalIndex);
+}

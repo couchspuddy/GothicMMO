@@ -4,10 +4,12 @@
 #include "Character/GothicInputHandlerComponent.h"
 #include "AbilitySystem/GothicAbilitySet.h"
 #include "AbilitySystem/GothicInputConfig.h"
+#include "AI/GothicCombatStateComponent.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "Game/GothicPlayerState.h"
 #include "UI/GothicHUD.h"
+#include "AI/GothicSteadfastComponent.h"
 #include "UI/GothicHUDWidget.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -18,6 +20,11 @@
 #include "InputActionValue.h"
 #include "TimerManager.h"
 #include "Engine/World.h"
+#include "AI/GothicVitalPointComponent.h"
+#include "Engine/Engine.h"
+#include "Components/CapsuleComponent.h"
+#include "AI/GothicVitalPointComponent.h"
+#include "Engine/Engine.h"
 #include "AbilitySystemBlueprintLibrary.h"
 
 AGothicPlayerCharacter::AGothicPlayerCharacter()
@@ -40,10 +47,10 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     GetCharacterMovement()->bOrientRotationToMovement = false;
     GetCharacterMovement()->MaxWalkSpeed              = 500.f;
     GetCharacterMovement()->JumpZVelocity             = 700.f;
-
+    CombatStateComponent = CreateDefaultSubobject<UGothicCombatStateComponent>(TEXT("CombatStateComponent"));
     // Create the input handler component
     InputHandler = CreateDefaultSubobject<UGothicInputHandlerComponent>(TEXT("InputHandler"));
-
+    SteadfastComponent = CreateDefaultSubobject<UGothicSteadfastComponent>(TEXT("SteadfastComponent"));
     UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Constructor complete"));
 }
 
@@ -122,7 +129,7 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     InitializeGAS();
 
     // Grant ability sets — data driven, replaces old StartupAbilities array
-    if (HasAuthority() && !bAbilitiesGranted)
+    if (HasAuthority())
     {
         for (const TObjectPtr<UGothicAbilitySet>& AbilitySet : StartupAbilitySets)
         {
@@ -132,8 +139,11 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
                     *AbilitySet->GetName());
                 AbilitySet->GiveToAbilitySystem(AbilitySystemComponent, this);
             }
+            else
+            {
+                UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: Null ability set in StartupAbilitySets"));
+            }
         }
-        bAbilitiesGranted = true;
     }
 
     // Setup ability input bindings now that ASC is confirmed valid
@@ -154,41 +164,43 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     if (IsLocallyControlled() && AbilitySystemComponent)
     {
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-    UGothicAttributeSet::GetSelahAttribute()).AddLambda(
-    [this](const FOnAttributeChangeData& Data)
-    {
-        if (!IsLocallyControlled()) return;
+            UGothicAttributeSet::GetHealthAttribute()).AddLambda(
+            [this](const FOnAttributeChangeData& Data)
+            {
+                if (!IsLocallyControlled()) return;
 
-        UE_LOG(LogTemp, Log, TEXT("Selah lambda fired: %.0f"), Data.NewValue);
+                APlayerController* PC = GetWorld()->GetFirstPlayerController();
+                if (!PC) return;
 
-        APlayerController* PC = GetWorld()->GetFirstPlayerController();
-        if (!PC) return;
+                AHUD* RawHUD = PC->GetHUD();
 
-        AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
-        if (GothicHUD)
-        {
-            GothicHUD->UpdateSelah(Data.NewValue);
-        }
-    });
+                UE_LOG(LogTemp, Log, TEXT("Health changed: %.1f | HUD: %s"),
+                    Data.NewValue,
+                    RawHUD ? *RawHUD->GetClass()->GetName() : TEXT("NULL"));
+
+                AGothicHUD* GothicHUD = Cast<AGothicHUD>(RawHUD);
+                if (GothicHUD)
+                {
+                    GothicHUD->UpdateHealth(Data.NewValue, AttributeSet->GetMaxHealth());
+                }
+            });
 
         // Super meter delegate
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-    UGothicAttributeSet::GetSuperMeterAttribute()).AddLambda(
-    [this](const FOnAttributeChangeData& Data)
-    {
-        if (!IsLocallyControlled()) return;
+            UGothicAttributeSet::GetSuperMeterAttribute()).AddLambda(
+            [this](const FOnAttributeChangeData& Data)
+            {
+                if (!IsLocallyControlled()) return;
 
-        UE_LOG(LogTemp, Log, TEXT("SuperMeter lambda fired: %.1f"), Data.NewValue);
+                APlayerController* PC = GetWorld()->GetFirstPlayerController();
+                if (!PC) return;
 
-        APlayerController* PC = GetWorld()->GetFirstPlayerController();
-        if (!PC) return;
-
-        AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
-        if (GothicHUD)
-        {
-            GothicHUD->UpdateSuperMeter(Data.NewValue, AttributeSet->GetMaxSuperMeter());
-        }
-    });
+                AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
+                if (GothicHUD)
+                {
+                    GothicHUD->UpdateSuperMeter(Data.NewValue, AttributeSet->GetMaxSuperMeter());
+                }
+            });
 
         UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Attribute delegates registered"));
     }
@@ -219,19 +231,21 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
         EIC->BindAction(JumpAction, ETriggerEvent::Started,   this, &ACharacter::Jump);
         EIC->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
     }
-    
-    if (SprintAction)
-    {
-        EIC->BindAction(SprintAction, ETriggerEvent::Started, 
-            this, &AGothicPlayerCharacter::OnSprintStart);
-        EIC->BindAction(SprintAction, ETriggerEvent::Completed, 
-            this, &AGothicPlayerCharacter::OnSprintStop);
-    }
 
     // Non-GAS combat inputs — direct bindings
     if (FireAction)
         EIC->BindAction(FireAction, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnFire);
-
+    if (ADSAction)
+    {
+        EIC->BindAction(ADSAction, ETriggerEvent::Started,   this, &AGothicPlayerCharacter::OnADSStart);
+        EIC->BindAction(ADSAction, ETriggerEvent::Completed, this, &AGothicPlayerCharacter::OnADSEnd);
+    }
+    
+    if (ReloadAction)
+    {
+        EIC->BindAction(ReloadAction, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnReloadPressed);
+        EIC->BindAction(ReloadAction, ETriggerEvent::Completed, this, &AGothicPlayerCharacter::OnReloadReleased);
+    }
     // Ability inputs go through InputHandler → ASC tag pipeline
     // ASC may not be ready here — bindings are set up again in InitGASFromPlayerState
     if (InputHandler && AbilitySystemComponent)
@@ -248,7 +262,20 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
 void AGothicPlayerCharacter::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
-
+    float PreviousRecoilPitch = CurrentRecoilPitch;
+    CurrentRecoilPitch = FMath::FInterpTo(CurrentRecoilPitch, 0.f, DeltaTime, RecoilRecoverySpeed);
+    float RecoilDelta = CurrentRecoilPitch - PreviousRecoilPitch;
+    if (Controller)
+    {
+        AddControllerPitchInput(RecoilDelta);
+    }
+    // ADS FOV interpolation
+    if (FirstPersonCamera)
+    {
+        float TargetFOV = bIsADS ? ADSFOV : HipFireFOV;
+        FirstPersonCamera->SetFieldOfView(
+            FMath::FInterpTo(FirstPersonCamera->FieldOfView, TargetFOV, DeltaTime, ADSInterpSpeed));
+    }
     if (!IsLocallyControlled() || !AbilitySystemComponent || !bHUDReady) return;
 
     APlayerController* PC = GetWorld()->GetFirstPlayerController();
@@ -257,18 +284,18 @@ void AGothicPlayerCharacter::Tick(float DeltaTime)
 
     UGothicHUDWidget* HUDWidget = GothicHUD->GetHUDWidget();
     if (!HUDWidget) return;
-
+    
     // Poll cooldown for each ability slot
-    GothicHUD->UpdateAbilityCooldown(0,
-        AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::LightAttack),
+    GothicHUD->UpdateAbilityCooldown(EGothicAbilitySlot::Ability1,
+        AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::Ability1),
         0.5f);
 
-    GothicHUD->UpdateAbilityCooldown(1,
-        AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::Ability1),
+    GothicHUD->UpdateAbilityCooldown(EGothicAbilitySlot::Ability2,
+        AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::Ability2),
         12.f);
 
-    GothicHUD->UpdateAbilityCooldown(2,
-        AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::Ability2),
+    GothicHUD->UpdateAbilityCooldown(EGothicAbilitySlot::Ability3,
+        AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::Ability3),
         18.f);
 }
 
@@ -304,6 +331,13 @@ void AGothicPlayerCharacter::OnFire()
         UE_LOG(LogTemp, Warning, TEXT("OnFire: FirstPersonCamera is null"));
         return;
     }
+    
+    if (CurrentMagazineAmmo <= 0)
+    {
+        UE_LOG(LogTemp, Log, TEXT("OnFire: Out of ammo"));
+        return;
+    }
+    CurrentMagazineAmmo--;
 
     const FVector Start = FirstPersonCamera->GetComponentLocation();
     const FVector End   = Start + (FirstPersonCamera->GetForwardVector() * 5000.f);
@@ -323,6 +357,25 @@ void AGothicPlayerCharacter::OnFire()
 
         if (TargetASC && DamageEffectClass)
         {
+            float FinalDamage = PistolDamage;
+
+            UGothicVitalPointComponent* VitalPoint =
+                Hit.GetActor()->FindComponentByClass<UGothicVitalPointComponent>();
+
+            bool bIsVitalHit = false;
+            if (VitalPoint)
+            {
+                bIsVitalHit = IsReckoningActive() || VitalPoint->IsVitalPointHit(Hit.ImpactPoint);
+            }
+
+            if (bIsVitalHit)
+            {
+                FinalDamage *= 2.f;
+                UE_LOG(LogTemp, Log, TEXT("OnFire: VITAL HIT on %s — damage %.1f"),
+                    *Hit.GetActor()->GetName(), FinalDamage);
+                GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, TEXT("VITAL HIT"));
+            }
+
             FGameplayEffectContextHandle Context =
                 AbilitySystemComponent->MakeEffectContext();
             FGameplayEffectSpecHandle Spec =
@@ -332,8 +385,7 @@ void AGothicPlayerCharacter::OnFire()
             {
                 Spec.Data->SetSetByCallerMagnitude(
                     FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
-                    PistolDamage);
-
+                    FinalDamage);
                 AbilitySystemComponent->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
                 UE_LOG(LogTemp, Log, TEXT("OnFire: Damage applied to %s"), *Hit.GetActor()->GetName());
             }
@@ -400,23 +452,120 @@ void AGothicPlayerCharacter::OnMelee()
     }
 }
 
-void AGothicPlayerCharacter::OnSprintStart()
-{
-    UE_LOG(LogTemp, Log, TEXT("Sprint started"));
-    GetCharacterMovement()->MaxWalkSpeed = 900.f;
-}
-
-void AGothicPlayerCharacter::OnSprintStop()
-{
-    UE_LOG(LogTemp, Log, TEXT("Sprint stopped"));
-    GetCharacterMovement()->MaxWalkSpeed = 500.f;
-}
-
 void AGothicPlayerCharacter::TriggerSelahMoment()
 {
     UE_LOG(LogTemp, Log, TEXT("TriggerSelahMoment: Selah moment triggered on %s"),
         *GetName());
-
-    // Blueprint handles the visual and audio — call the event
     OnSelahMoment();
+}
+
+void AGothicPlayerCharacter::OnADSStart()
+{
+    bIsADS = true;
+    GetCharacterMovement()->MaxWalkSpeed = ADSMovementSpeed;
+}
+
+void AGothicPlayerCharacter::OnADSEnd()
+{
+    bIsADS = false;
+    GetCharacterMovement()->MaxWalkSpeed = 500.f;
+}
+
+void AGothicPlayerCharacter::CancelCollectionRite()
+{
+    UE_LOG(LogTemp, Log, TEXT("CancelCollectionRite: Called"));
+}
+
+// cpp implementations
+void AGothicPlayerCharacter::OnReloadPressed()
+{
+    ReloadPressStartTime = GetWorld()->GetTimeSeconds();
+}
+
+void AGothicPlayerCharacter::OnReloadReleased()
+{
+    const float HeldDuration = GetWorld()->GetTimeSeconds() - ReloadPressStartTime;
+
+    if (HeldDuration >= HoldThreshold)
+    {
+        HoldReload();
+    }
+    else
+    {
+        TapReload();
+    }
+}
+
+void AGothicPlayerCharacter::TapReload()
+{
+    const int32 AmmoNeeded = MagazineCapacity - CurrentMagazineAmmo;
+    const int32 AmmoToTransfer = FMath::Min(AmmoNeeded, CurrentReserveAmmo);
+
+    CurrentMagazineAmmo += AmmoToTransfer;
+    CurrentReserveAmmo -= AmmoToTransfer;
+
+    UE_LOG(LogTemp, Log, TEXT("TapReload: Magazine %d/%d, Reserve %d"),
+        CurrentMagazineAmmo, MagazineCapacity, CurrentReserveAmmo);
+}
+
+void AGothicPlayerCharacter::HoldReload()
+{
+    if (!SteadfastComponent)
+    {
+        return;
+    }
+
+    const float CurrentSteadfast = SteadfastComponent->GetCurrentSteadfast();
+
+    // Tier thresholds — placeholder values, tune to feel once testable in engine.
+    float SteadfastCost = 0.f;
+    float AmmoGranted = 0.f;
+
+    if (CurrentSteadfast >= 60.f)
+    {
+        // High tier
+        SteadfastCost = 50.f;
+        AmmoGranted = 12.f;
+    }
+    else if (CurrentSteadfast >= 30.f)
+    {
+        // Mid tier
+        SteadfastCost = 30.f;
+        AmmoGranted = 8.f;
+    }
+    else if (CurrentSteadfast >= 10.f)
+    {
+        // Low tier
+        SteadfastCost = 10.f;
+        AmmoGranted = 4.f;
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log, TEXT("HoldReload: Insufficient Steadfast for any tier (%.1f current)"),
+            CurrentSteadfast);
+        return;
+    }
+
+    const float ActualAmmoGranted = SteadfastComponent->TryConvertSteadfast(SteadfastCost, AmmoGranted);
+
+    if (ActualAmmoGranted > 0.f)
+    {
+        CurrentReserveAmmo = FMath::Min(CurrentReserveAmmo + FMath::RoundToInt(ActualAmmoGranted), MaxReserveAmmo);
+        UE_LOG(LogTemp, Log, TEXT("HoldReload: Tier conversion — cost %.1f, granted %d ammo, Reserve now %d"),
+            SteadfastCost, FMath::RoundToInt(ActualAmmoGranted), CurrentReserveAmmo);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log, TEXT("HoldReload: Conversion failed unexpectedly"));
+    }
+}
+
+bool AGothicPlayerCharacter::IsReckoningActive() const
+{
+    if (AbilitySystemComponent)
+    {
+        return AbilitySystemComponent->HasMatchingGameplayTag(
+            FGameplayTag::RequestGameplayTag(FName("State.Reckoning")));
+    }
+    return false;
 }

@@ -1,7 +1,7 @@
 // GothicEnemyBase.cpp
 
 #include "AI/GothicEnemyBase.h"
-
+#include "AI/GothicCombatStateComponent.h"
 #include "TimerManager.h"
 #include "AI/GothicEnemyAIController.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
@@ -15,6 +15,11 @@
 #include "Kismet/GameplayStatics.h"
 #include "Character/GothicPlayerCharacter.h"
 #include "AbilitySystemBlueprintLibrary.h"
+#include "AIController.h"
+#include "BrainComponent.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
+#include "AI/GothicVitalPointComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
@@ -51,7 +56,10 @@ AGothicEnemyBase::AGothicEnemyBase()
     HealthBarWidget->SetWidgetSpace(EWidgetSpace::World);
     HealthBarWidget->SetDrawSize(FVector2D(200.f, 20.f));
     HealthBarWidget->SetVisibility(false);
-
+    
+    VitalPointComponent = CreateDefaultSubobject<UGothicVitalPointComponent>(
+    TEXT("VitalPointComponent"));
+    CombatStateComponent = CreateDefaultSubobject<UGothicCombatStateComponent>(TEXT("CombatStateComponent"));
     bReplicates = true;
 }
 
@@ -70,11 +78,16 @@ void AGothicEnemyBase::BeginPlay()
     if (AbilitySystemComponent && AttributeSet)
     {
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-            UGothicAttributeSet::GetHealthAttribute()).AddLambda(
-            [this](const FOnAttributeChangeData& Data)
-            {
-                // Health changed — Blueprint widget can poll this
-            });
+    UGothicAttributeSet::GetHealthAttribute()).AddLambda(
+    [this](const FOnAttributeChangeData& Data)
+    {
+        // Notify vital point component of damage taken
+        if (VitalPointComponent && Data.NewValue < Data.OldValue)
+        {
+            const float DamageTaken = Data.OldValue - Data.NewValue;
+            VitalPointComponent->NotifyDamageTaken(DamageTaken);
+        }
+    });
     }
 }
 
@@ -122,13 +135,17 @@ void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget)
 }
 void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
 {
+    // Stop AI before Super — controller is still valid here
+    if (AAIController* AIC = Cast<AAIController>(GetController()))
+    {
+        AIC->StopMovement();
+        if (AIC->GetBrainComponent())
+        {
+            AIC->GetBrainComponent()->StopLogic(TEXT("Dead"));
+        }
+    }
+
     Super::OnDeath_Implementation(Killer);
-
-    UE_LOG(LogTemp, Log, TEXT("GothicEnemyBase: %s died — running Selah proximity check"),
-        *GetName());
-
-    // Check for nearby Embers and award Selah
-    AwardSelahToNearbyEmbers();
 
     // Hide health bar
     if (HealthBarWidget)
@@ -139,21 +156,13 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
     // Ragdoll
     if (GetMesh())
     {
+        GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
         GetMesh()->SetCollisionProfileName(FName("Ragdoll"));
-        GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
         GetMesh()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
-        //GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-        //GetMesh()->SetSimulatePhysics(true);
-
-        // Small delay before impulse OR apply impulse after simulate is set
-        //FVector ImpulseDir = GetActorForwardVector() * -1.f;
-        //GetMesh()->AddImpulse(ImpulseDir * 500.f, NAME_None, true);
+        GetMesh()->SetSimulatePhysics(true);
     }
 
-    if (GetController())
-    {
-        GetController()->StopMovement();
-    }
+    GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
     FTimerHandle CorpseTimer;
     GetWorldTimerManager().SetTimer(
@@ -162,6 +171,81 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
         &AGothicEnemyBase::DestroyCorpse,
         CorpseLifetime,
         false);
+}
+
+void AGothicEnemyBase::CollectAllNearbyCorpses(AActor* Collector, float Radius, UObject* WorldContextObject)
+{
+    if (!Collector || !WorldContextObject)
+    {
+        return;
+    }
+
+    UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+    if (!World)
+    {
+        return;
+    }
+
+    TArray<AActor*> AllEnemies;
+    UGameplayStatics::GetAllActorsOfClass(World, AGothicEnemyBase::StaticClass(), AllEnemies);
+
+    int32 CorpsesCollected = 0;
+
+    for (AActor* Actor : AllEnemies)
+    {
+        AGothicEnemyBase* Enemy = Cast<AGothicEnemyBase>(Actor);
+        if (!Enemy) continue;
+        UE_LOG(LogTemp, Log, TEXT("CollectAllNearbyCorpses: Checking %s | bCollected=%d | IsAlive=%d"),
+    *Enemy->GetName(), Enemy->bCollected, Enemy->IsAlive());
+        if (!Enemy || Enemy->bCollected || Enemy->IsAlive())
+        {
+            continue;
+        }
+
+        const float Distance = FVector::Dist(Collector->GetActorLocation(), Enemy->GetActorLocation());
+        UE_LOG(LogTemp, Log, TEXT("CollectAllNearbyCorpses: Distance to %s = %.0f (Radius=%.0f)"),
+    *Enemy->GetName(), Distance, Radius);
+        
+        if (Distance > Radius)
+        {
+            continue;
+        }
+
+        UGothicAbilitySystemComponent* PlayerASC =
+            Cast<UGothicAbilitySystemComponent>(
+                UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Collector));
+
+        if (PlayerASC && Enemy->SelahGainEffect)
+        {
+            FGameplayEffectContextHandle Context = PlayerASC->MakeEffectContext();
+            Context.AddSourceObject(Enemy);
+            FGameplayEffectSpecHandle Spec = PlayerASC->MakeOutgoingSpec(
+                Enemy->SelahGainEffect, 1.f, Context);
+            if (Spec.IsValid())
+            {
+                Spec.Data->SetSetByCallerMagnitude(
+                    FGameplayTag::RequestGameplayTag(FName("Data.Selah")),
+                    Enemy->SelahAwardAmount);
+                PlayerASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+                UE_LOG(LogTemp, Log, TEXT("CollectAllNearbyCorpses: Awarded %.1f Selah from %s"),
+                    Enemy->SelahAwardAmount, *Enemy->GetName());
+            }
+        }
+
+        Enemy->bCollected = true;
+        CorpsesCollected++;
+    }
+
+    if (CorpsesCollected > 0)
+    {
+        AGothicPlayerCharacter* PlayerChar = Cast<AGothicPlayerCharacter>(Collector);
+        if (PlayerChar)
+        {
+            PlayerChar->TriggerSelahMoment();
+        }
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("CollectAllNearbyCorpses: Collected from %d corpses"), CorpsesCollected);
 }
 
 void AGothicEnemyBase::AwardSelahToNearbyEmbers()
@@ -247,6 +331,8 @@ void AGothicEnemyBase::AwardSelahToNearbyEmbers()
     UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Awarded Selah to %d players"),
         PlayersAwarded);
 }
+
+
 
 void AGothicEnemyBase::DestroyCorpse()
 {

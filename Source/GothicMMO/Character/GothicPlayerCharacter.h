@@ -19,11 +19,14 @@
 #include "Character/GothicCharacterBase.h"
 #include "GothicPlayerCharacter.generated.h"
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCollectionInterrupted);
+
 class UCameraComponent;
 class UInputMappingContext;
 class UInputAction;
 class UGothicInputHandlerComponent;
 class UGothicAbilitySet;
+class UGothicCombatStateComponent;
 struct FInputActionValue;
 
 UCLASS()
@@ -57,6 +60,41 @@ protected:
     // -------------------------------------------------------------------------
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
     TObjectPtr<UCameraComponent> FirstPersonCamera;
+    
+    UPROPERTY(EditDefaultsOnly, Category = "Combat|Recoil")
+    float RecoilKickPitch = 2.0f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Combat|Recoil")
+    float RecoilRecoverySpeed = 8.0f;
+    
+    // ── ADS ──────────────────────────────────────────────────────────────────
+    UPROPERTY(EditDefaultsOnly, Category = "Combat")
+    float HipFireFOV = 100.f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Combat")
+    float ADSFOV = 70.f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Combat")
+    float ADSInterpSpeed = 10.f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Combat")
+    float ADSMovementSpeed = 250.f;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Combat")
+    TObjectPtr<UGothicCombatStateComponent> CombatStateComponent;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Steadfast")
+    TObjectPtr<class UGothicSteadfastComponent> SteadfastComponent;
+    
+    
+
+    bool bIsADS = false;
+
+    void OnADSStart();
+    void OnADSEnd();
+
+    float CurrentRecoilOffset = 0.f;
+    float TargetRecoilOffset = 0.f;
 
     // -------------------------------------------------------------------------
     // Input Mapping Context
@@ -78,6 +116,12 @@ protected:
 
     UPROPERTY(EditDefaultsOnly, Category = "Input")
     TObjectPtr<UInputAction> FireAction;
+    UPROPERTY(EditDefaultsOnly, Category = "Input")
+    TObjectPtr<UInputAction> ADSAction;
+    
+    
+    
+    
 
     // -------------------------------------------------------------------------
     // Input Handler Component
@@ -116,6 +160,41 @@ protected:
     
     UPROPERTY(BlueprintReadWrite, Category = "Gothic|Combat")
     bool bPistolBound = false;
+    
+    UPROPERTY(BlueprintReadWrite, Category = "Gothic|Selah")
+    bool bCollecting = false;
+    
+    UPROPERTY(BlueprintAssignable, Category = "Gothic|Selah")
+    FOnCollectionInterrupted OnCollectionInterrupted;
+
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+    void CancelCollectionRite();
+    // Per-weapon ammo state — belongs in GothicPlayerCharacter.h
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Ammo")
+    int32 MagazineCapacity = 6;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Gothic|Ammo")
+    int32 CurrentMagazineAmmo = 6;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Ammo")
+    int32 MaxReserveAmmo = 18;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Gothic|Ammo")
+    int32 CurrentReserveAmmo = 18;
+    
+    // Header additions
+    UPROPERTY(EditDefaultsOnly, Category = "Input")
+    TObjectPtr<class UInputAction> ReloadAction;
+
+    float ReloadPressStartTime = 0.f;
+    static constexpr float HoldThreshold = 0.4f; // seconds — tune to feel
+
+    void OnReloadPressed();
+    void OnReloadReleased();
+    void TapReload();
+    void HoldReload();
+    
+    
 
     // -------------------------------------------------------------------------
     // Input handlers — direct non-ability bindings
@@ -133,4 +212,6 @@ protected:
 private:
     bool bHUDReady = false;
     bool bAbilitiesGranted = false;
+    float CurrentRecoilPitch = 0.f;
+    bool IsReckoningActive() const;
 };

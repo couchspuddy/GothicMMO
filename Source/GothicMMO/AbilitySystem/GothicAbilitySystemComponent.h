@@ -20,6 +20,8 @@ class UGothicGameplayAbility;
 UENUM(BlueprintType)
 enum class EGothicAbilitySlot : uint8
 {
+    PassiveAbility1 UMETA(DisplayName = "Passive Ability 1"),
+    PassiveAbility2 UMETA(DisplayName = "Passive Ability 2"),
     LightAttack   UMETA(DisplayName = "Light Attack"),
     HeavyAttack   UMETA(DisplayName = "Heavy Attack"),
     Ability1      UMETA(DisplayName = "Ability 1"),

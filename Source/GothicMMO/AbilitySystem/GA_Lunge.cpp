@@ -19,7 +19,13 @@ void UGA_Lunge::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
     const FGameplayEventData* TriggerEventData)
 {
     Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
-
+    bool bCommitted = CommitAbility(Handle, ActorInfo, ActivationInfo);
+    
+    if (!bCommitted)
+    {
+        CancelAbility(Handle, ActorInfo, ActivationInfo, true);
+        return;
+    }
     ACharacter* Character = Cast<ACharacter>(GetAvatarActorFromActorInfo());
     if (!Character)
     {

@@ -96,6 +96,7 @@ float UGothicAbilitySystemComponent::GetCooldownRemainingForSlot(EGothicAbilityS
 
 void UGothicAbilitySystemComponent::AbilityInputTagPressed(const FGameplayTag& InputTag)
 {
+    UE_LOG(LogTemp, Warning, TEXT(">>> AbilityInputTagPressed: %s"), *InputTag.ToString());
     ABILITYLIST_SCOPE_LOCK();
     for (FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
     {
