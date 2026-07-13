@@ -14,20 +14,14 @@ UGA_Slicer::UGA_Slicer()
     InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
 }
 
-void UGA_Slicer::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
+void UGA_Slicer::ActivateAbility(    
+    const FGameplayAbilitySpecHandle Handle,
     const FGameplayAbilityActorInfo* ActorInfo,
     const FGameplayAbilityActivationInfo ActivationInfo,
     const FGameplayEventData* TriggerEventData)
 {
     Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
-    UE_LOG(LogTemp, Warning, TEXT(">>> Slicer Activate | Handle: %s"), *Handle.ToString());
-    bool bCommitted = CommitAbility(Handle, ActorInfo, ActivationInfo);
-    
-    if (!bCommitted)
-    {
-        CancelAbility(Handle, ActorInfo, ActivationInfo, true);
-        return;
-    }
+
     ACharacter* Character = Cast<ACharacter>(GetAvatarActorFromActorInfo());
     if (!Character || !ProjectileClass)
     {
@@ -43,20 +37,21 @@ void UGA_Slicer::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
         CancelAbility(Handle, ActorInfo, ActivationInfo, true);
         return;
     }
+
     if (!Character->HasAuthority())
     {
         // Client side of a predicted activation — the server owns the projectile.
         return;
     }
-    
+
     if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
     {
         UE_LOG(LogTemp, Warning, TEXT("GA_Slicer: CommitAbility failed — cancelling"));
         CancelAbility(Handle, ActorInfo, ActivationInfo, true);
         return;
     }
-    const FVector SpawnLocation = Camera->GetComponentLocation() +
-        (Camera->GetForwardVector() * SpawnDistance);
+
+    const FVector SpawnLocation = Camera->GetComponentLocation() + (Camera->GetForwardVector() * SpawnDistance);
     const FRotator SpawnRotation = Camera->GetComponentRotation();
 
     FActorSpawnParameters SpawnParams;
@@ -74,6 +69,7 @@ void UGA_Slicer::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
     {
         SpawnedProjectile->InitializeProjectile(Character);
         SpawnedProjectile->OnSlicerHit.AddDynamic(this, &UGA_Slicer::HandleSlicerHit);
+        SpawnedProjectile->OnSlicerExpired.AddDynamic(this, &UGA_Slicer::HandleSlicerExpired);
 
         UE_LOG(LogTemp, Log, TEXT("GA_Slicer: Projectile spawned"));
     }
@@ -140,7 +136,11 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
             GetCurrentActivationInfo(), true, false);
     }
 }
-
+void UGA_Slicer::HandleSlicerExpired()
+{
+    EndAbility(GetCurrentAbilitySpecHandle(), GetCurrentActorInfo(),
+        GetCurrentActivationInfo(), true, false);
+}
 void UGA_Slicer::EndAbility(const FGameplayAbilitySpecHandle Handle,
     const FGameplayAbilityActorInfo* ActorInfo,
     const FGameplayAbilityActivationInfo ActivationInfo,
@@ -150,6 +150,7 @@ void UGA_Slicer::EndAbility(const FGameplayAbilitySpecHandle Handle,
     if (SpawnedProjectile)
     {
         SpawnedProjectile->OnSlicerHit.RemoveDynamic(this, &UGA_Slicer::HandleSlicerHit);
+        SpawnedProjectile->OnSlicerExpired.RemoveDynamic(this, &UGA_Slicer::HandleSlicerExpired); 
         SpawnedProjectile = nullptr;
     }
 

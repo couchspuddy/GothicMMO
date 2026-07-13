@@ -1,6 +1,6 @@
 # Production Status Tracker
 **Vigil — Living Project State Document**
-*Last updated: July 2026 — updated to reflect Warden and Penitent full kit design completion
+*Last updated: July 2026 — engine session: Reckoning wiring, Steadfast tiers, HUD health/cooldown/Steadfast fixes all completed and verified
 
 ---
 
@@ -26,8 +26,8 @@ Every other document in `/docs` answers "what is this system and why." This docu
 | Eagle's Landing Encounter 1 (Edge of Town) | 🟢 | Built and playable |
 | Eagle's Landing Encounter 2 (Collapsed Building / Retained ambush) | 🟢 | Built and playable |
 | Eagle's Landing Encounter 3 (Plaza, interrupted Selah) | 🟢 | Built and playable |
-| Eagle's Landing Mini-Boss (Feral Retained) | 🔴 | Fully designed, zero implementation |
-| Eagle's Landing Boss (Bestial Lucid) | 🔴 | Fully designed, zero implementation |
+| Eagle's Landing Mini-Boss (Feral Retained) | 🟡 | Fully configured in engine — vital points, AI Perception, dedicated BT_FeralRetained (no patrol, immediate aggressive pursuit). Not yet playtested end-to-end |
+| Eagle's Landing Boss (Bestial Lucid) | 🟡 | Blueprint created, vital point component configured (timer + threshold shift), boss AI controller architecture built in C++ (AGothicBossAIController base + BestialLucid subclass with Phase 1→2 trigger on designated vital index). Two-phase Behavior Tree not yet built |
 | Interaction prompt UI (text display on interactables) | 🟡 | Interaction functions; visible prompt text not implemented |
 
 ---
@@ -39,7 +39,10 @@ Every other document in `/docs` answers "what is this system and why." This docu
 | Vital point system (shimmer, threshold shift, damage bonus) | 🟢 | Functional, server-authoritative, needs feel-tuning pass |
 | ADS | 🟢 | Functional, smooth FOV interpolation, movement penalty |
 | Camera / locomotion | 🟢 | Fixed after extended debugging session; stable |
-| Steadfast (fill, hold-to-reload conversion) | 🔴 | Fully designed (solo + multiplayer scope), zero implementation |
+| Steadfast (fill, hold-to-reload conversion) | 🟢 | Fully built and confirmed working — combat-state-driven fill, tap/hold reload distinction, Steadfast-to-ammo conversion via GothicSteadfastComponent |
+| Ammo & Reload system | 🟢 | Built from scratch this session — magazine/reserve tracking, tap reload from reserves, hold reload converts Steadfast |
+| Combat State tracking (State.InCombat) | 🟢 | GothicCombatStateComponent built, wired into damage pipeline on both dealer and receiver |
+| Kill Confirmation (Event.Kill.Confirmed) | 🟢 | Wired into GothicAttributeSet, fires on confirmed kills, drives Not At All |
 | Selah collection UI/prompt | 🔴 | Designed (appears after encounter clear, full restock), zero implementation |
 | Death & failure states (Contract-scale) | 🔴 | Fully designed, zero implementation |
 | Death & failure states (open world) | 🔴 | Fully designed, zero implementation |
@@ -51,13 +54,13 @@ Every other document in `/docs` answers "what is this system and why." This docu
 
 | Item | Status | Notes |
 |---|---|---|
-| The Slicer | 🔴 | Fully designed, zero implementation |
-| The Lunge | 🔴 | Fully designed, zero implementation |
-| The Read | 🟡 | C++ ability class built and compiling; untested in PIE |
-| The Reckoning (Covenant) | 🔴 | Fully designed, zero implementation |
-| The Loved and The Lost (passive) | 🔴 | Fully designed, zero implementation |
-| Not At All (passive) | 🔴 | Fully designed, zero implementation |
-| GA_HuntersStrike | 🟢 | Built earlier in project, functional |
+| The Slicer | 🟢 | Built and functional — projectile, centralized damage/stagger application via GA_Slicer |
+| The Lunge | 🟢 | Built and wired — directional, fixed-distance, no target lock |
+| The Read | 🟢 | Built, wired, rapid-activation delegate bug fixed |
+| The Reckoning (Covenant) | 🟢 | Built and wired — GE_ReckoningState grants State.Reckoning; guaranteed-vital-hit wiring completed for OnFire. Slicer and HuntersStrike confirmed as intentionally not vital-point-interactive (Slicer is a stagger tool by design; HuntersStrike is a deliberately simple, always-available light attack — no systemic integration, minimal damage, no Resonance mechanics — consistent with Draw's role in the Warden kit as "the one deliberately simple tool") |
+| The Loved and The Lost (passive) | 🟡 | C++ built; Blueprint created but RampEffect blocked — Steadfast attributes now exist, but this ability's actual regen/rate targets still need definition and a real GameplayEffect built against them |
+| Not At All (passive) | 🟢 | Built and wired — stun-on-kill, Reckoning duration extension confirmed functional |
+| GA_HuntersStrike | 🟢 | Built earlier in project, functional. Confirmed design intent: Hunter-specific light attack, quick and minimal damage, deliberately no interaction with vital points, stagger, or Resonance mechanics — always-available low-commitment option, not a Resonance-fork-eligible ability |
 | Resonance fork variants (Gone / The Close, etc.) | 🔴 | Designed as concept and framework; specific variant kits not detailed |
 
 ---
@@ -132,18 +135,54 @@ Every other document in `/docs` answers "what is this system and why." This docu
 
 ---
 
-## Immediate Priority Order (Given Current Constraints)
+## Noted Future Task — Art Direction Consolidation
 
-Given engine time is the scarce resource right now, not design capacity, the following order maximizes validated progress per engine-hour:
+**Not yet built.** As of this note, Vigil's visual doctrine exists across multiple separate documents (Environment Art Direction, Tone & Sensory Bible, plus menu/title-screen direction discussed but not yet written up). This is correct for internal design use — each document is detailed and cross-referenced for good reason — but is not the right format to hand an artist unfamiliar with the project.
 
-1. **Mini-boss implementation** — fully designed, no blockers, closes a real content gap in the vertical slice
-2. **Boss implementation** — fully designed, no blockers, closes the vertical slice's actual climax
-3. **Hunter kit completion** — The Lunge, The Reckoning, and both passives remain unimplemented; The Slicer and The Read are functional
-4. **Selah collection UI + Steadfast implementation** — both fully designed, both required for the loop to feel complete rather than just functional
-5. **Death/failure state implementation (Contract-scale)** — fully designed, closes the last major "this doesn't exist yet and other systems assume it does" gap
-6. **Playtest with a person who isn't you** — the actual validation gate; everything above this line is prerequisite to this being meaningful
+**When onboarding actual art collaborators**, a single, consolidated visual brief should be built first — shorter, front-loaded, absorbable in ~10 minutes, pointing to the fuller docs for anyone who wants the complete reasoning behind a given rule. This is not a replacement for the detailed doctrine, just a front door into it.
 
-All three launch classes (Hunter, Warden, Penitent) are now fully designed at the kit level. Warden and Penitent implementation is correctly deferred until the Hunter's kit is fully built and validated first — the framework (Resonance Fork model, the six-slot template, Be-At-Peace/I-Am-the-Wall-style passive-as-hub patterns) should be proven once, in engine, before being applied twice more. Economy implementation, progression systems, and raid design remain **correctly deferred** beyond that — not neglected, just genuinely lower priority than closing the loop between "fully designed" and "fully playable" for what already exists.
+**Not urgent — flagged for whenever actual artist conversations become imminent, not before.**
+
+---
+
+## Vertical Slice Gate Checklist — What Actually Must Be True to Call This Done
+
+Re-scoped after a full-project inventory surfaced significant confusion between "gating requirement" and "valuable future work." This section is the single, unambiguous answer to "what's left." Everything else in this document is real and correctly documented, but does **not** block the slice.
+
+**Standing gotcha, worth checking on every ability going forward:** discovered during tonight's cooldown debugging — the ability set was granting the raw C++ class (`GA_Read`) instead of the configured Blueprint child (`BP_GA_Read`), meaning every Blueprint-side value (cooldown effect, damage numbers, everything) was silently never reaching the running instance despite looking correctly configured in the editor. Worth explicitly re-confirming every ability in the ability set is granting its `BP_GA_X` variant, not the bare C++ class, since this exact mistake could easily have been made more than once and would produce no compile error and no obvious symptom beyond "my Blueprint changes don't seem to do anything."
+
+### Required — the slice is not done until every item below is true
+
+1. **Eagle's Landing map rework** — current geometry does not yet reflect the locked encounter design (Z-route collapsed building, isolated mini-boss room, boss den structural decay). No level editing has been done yet. This is gating, not polish — the encounters were designed against a space that doesn't exist yet.
+2. **Bestial Lucid two-phase Behavior Tree** — Blueprint, vital point timer+threshold config, and C++ phase-trigger logic all exist; only the actual tree structure and Stillness beat pause timing remain.
+3. ~~**Guaranteed-vital-hit wiring for The Reckoning**~~ — **DONE.** `IsReckoningActive()` added to `GothicPlayerCharacter`, wired into `OnFire`'s vital hit check via `IsReckoningActive() || VitalPoint->IsVitalPointHit(...)`. Confirmed during design review that Slicer and Hunter's Strike do not check vital points at all, by design — Slicer is a stagger tool, not a precision tool; Hunter's Strike is a deliberately simple, always-available light attack with no systemic integration (minimal damage, no vital/stagger/Resonance interaction, consistent with Draw's role as "the deliberately simple tool" in the Warden kit) — so `OnFire` was the only place this wiring was actually needed. Scope was correctly narrowed rather than force-fit onto abilities that don't use vital detection.
+4. **Minimum weapon/ability visual and audio feedback** — confirmed currently missing or unconfirmed: muzzle flash, projectile/tracer visibility, hit impact feedback. A shooter with no visible feedback on firing is not a playable slice regardless of how correct the underlying damage math is. Placeholder-quality VFX/SFX is acceptable; total absence is not.
+5. **Enemy death feedback beyond ragdoll** — confirmed currently ragdoll-only. At minimum needs some visual marker (blood, a death VFX beat) before the Selah prompt appears, so the kill itself registers before the reward does.
+6. **Selah collection UI** — fully designed, zero implementation. The loop currently has no visible collection moment at all.
+7. **Death/failure state implementation (Contract-scale)** — fully designed, zero implementation.
+8. ~~**Steadfast tier logic (even single-weapon)**~~ — **DONE.** `HoldReload()` rewritten to select the highest tier the player currently has enough Steadfast for (10/30/60 placeholder thresholds, tune to feel), replacing the old hardcoded flat 20/6 values. Matches the "chunked segments" reticle design — whatever tier is lit is what conversion yields right now.
+9. ~~**HUD elements actually rendering per the UI/UX Doctrine**~~ — **Largely done, one item remains.** Direct in-engine check performed. Findings and fixes:
+   - Health number display was bound to the normalized 0-1 fill value instead of raw Health/MaxHealth (showing values like ".48" instead of "48/100") — **fixed**, text now has its own binding to raw attribute values, bar fill percentage binding left untouched.
+   - Steadfast reticle display did not exist — **built.** Consolidated multiple stray/duplicate reticle widgets down to one (`WBP_Crosshair_Pistol`, embedded as a child inside the main persistent HUD widget rather than as a separate top-level widget), added 3 chunked segment images bound to `SteadfastComponent::GetCurrentSteadfast()`/`GetMaxSteadfast()`, thresholds matching the 10/30/60 tier breakpoints above.
+   - Ability cooldown bars were not correctly mapped to ability slots — root cause was a chain of two bugs: (1) the `OnAbilityCooldownChanged` delegate and `UpdateAbilityCooldown` were passing a raw `int32` slot index rather than the `EGothicAbilitySlot` enum, causing an off-by-two-plus misalignment once Passive1/Passive2 were added to the enum ahead of the numbered ability slots; (2) separately, the ability set was granting the raw C++ `GA_Read` class rather than the configured `BP_GA_Read` Blueprint, meaning Blueprint-side cooldown configuration was silently never reaching the running ability instance. Both fixed — cooldown delegate chain now passes the enum end-to-end, `Switch on EGothicAbilitySlot` used in place of `Switch on Int`, ability set corrected to grant Blueprint variants.
+   - **Remaining:** scale/opacity pass (HUD reads too small/transparent even at full screen) — explicitly left as a solo visual-tuning task, not requiring further design input.
+10. **Mini-boss and boss end-to-end playtest** — not a build task; requires items 1-9 above to be meaningful.
+11. **Playtest with a person who isn't you** — the actual finish line.
+
+### Explicitly Not Gating — valuable, correctly deferred, does not block the slice
+
+- **Weapon slot expansion (Primary/Secondary/Heavy as three distinct weapons)** — Steadfast's design doesn't require three weapons to exist to be internally coherent, only for the tier *contrast* to be demonstrable. One weapon with correct tier logic (item 8 above) satisfies the slice; a second and third weapon are a stretch goal, not a requirement, unless the explicit goal of the demo becomes "show weapon variety" specifically.
+- Warden and Penitent implementation
+- Full sound design doctrine (beyond the minimum feedback in item 4)
+- Menu doctrine beyond the title screen
+- Solo activity, Holds, economy, progression implementation
+- Everything else in this document not listed under Required above
+
+---
+
+## Prior Priority Notes (Superseded by Checklist Above, Retained for Context)
+
+All three launch classes (Hunter, Warden, Penitent) are fully designed at the kit level. The Hunter kit is now essentially complete in engine (6 of 6 abilities built, 1 partially blocked on The Loved and The Lost's RampEffect, itself non-gating since it's a passive refinement rather than a core-loop requirement). Warden and Penitent implementation should follow the same proven pattern — C++ ability classes staged ahead of engine sessions, Blueprint wiring done in-session — once the slice gate above is cleared. Economy implementation, progression systems, and raid design remain **correctly deferred** — not neglected, just genuinely lower priority than closing the loop between "fully designed" and "fully playable" for what already exists.
 
 ---
 

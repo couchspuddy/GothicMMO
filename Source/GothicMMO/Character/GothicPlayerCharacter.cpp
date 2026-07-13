@@ -288,15 +288,15 @@ void AGothicPlayerCharacter::Tick(float DeltaTime)
     // Poll cooldown for each ability slot
     GothicHUD->UpdateAbilityCooldown(EGothicAbilitySlot::Ability1,
         AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::Ability1),
-        0.5f);
+        4.0f);
 
     GothicHUD->UpdateAbilityCooldown(EGothicAbilitySlot::Ability2,
         AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::Ability2),
-        12.f);
+        8.0f);
 
     GothicHUD->UpdateAbilityCooldown(EGothicAbilitySlot::Ability3,
         AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::Ability3),
-        18.f);
+        3.5f);
 }
 
 void AGothicPlayerCharacter::OnMove(const FInputActionValue& Value)

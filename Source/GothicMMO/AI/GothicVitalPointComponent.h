@@ -92,6 +92,16 @@ public:
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|VitalPoint")
     FVector GetNextVitalWorldLocation() const;
+    
+    // GothicVitalPointComponent.h — add near the other public accessors
+    /**
+     * Permanently stops the vital point from shifting, from either the
+     * damage threshold or the independent timer. Used by boss phase
+     * transitions (e.g. Bestial Lucid Phase 2) where the vital becomes
+     * a fixed, known target. Not reversible — bosses don't un-freeze mid-fight.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|VitalPoint")
+    void FreezeVitalPoint();
 
     /**
      * Returns true if the given world position is close enough to the
@@ -166,6 +176,10 @@ protected:
 
     /** Timer handle for the independent shift timer (Lucid/Boss tier). */
     FTimerHandle ShiftTimerHandle;
+    
+    // GothicVitalPointComponent.h — add to the protected section, alongside ShiftTimerHandle
+    /** Once true, ShiftVitalPoint() becomes a no-op regardless of cause. */
+    bool bIsFrozen = false;
 
     // ── Internal ─────────────────────────────────────────────────────────────
 

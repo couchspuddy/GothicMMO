@@ -69,3 +69,9 @@ void AGothicSlicerProjectile::OnHit(UPrimitiveComponent* HitComp, AActor* OtherA
 
     Destroy();
 }
+
+void AGothicSlicerProjectile::Destroyed()
+{
+    OnSlicerExpired.Broadcast();
+    Super::Destroyed();
+}

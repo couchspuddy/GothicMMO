@@ -35,7 +35,7 @@ void UGothicAbilitySet::GiveToAbilitySystem(
             continue;
         }
 
-        if (!Entry.InputTag.IsValid())
+        if (!Entry.bActivateOnGranted && !Entry.InputTag.IsValid())
         {
             UE_LOG(LogTemp, Warning, TEXT("GothicAbilitySet: Invalid input tag for ability %s — skipping"),
                 *Entry.AbilityClass->GetName());
@@ -82,6 +82,13 @@ void UGothicAbilitySet::GiveToAbilitySystem(
             *Entry.AbilityClass->GetName(),
             *Entry.InputTag.ToString(),
             (int32)Entry.AbilitySlot);
+        
+        if (Entry.bActivateOnGranted)   // <-- new
+        {
+            const bool bActivated = ASC->TryActivateAbility(Handle);
+            UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: %s activate-on-grant %s"),
+                *Entry.AbilityClass->GetName(), bActivated ? TEXT("succeeded") : TEXT("FAILED"));
+        }
     }
 
     // Apply granted effects

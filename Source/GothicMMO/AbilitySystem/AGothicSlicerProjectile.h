@@ -13,6 +13,7 @@ class UProjectileMovementComponent;
 class USphereComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSlicerHit, AActor*, HitActor, FVector, HitLocation);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnSlicerExpired);
 
 UCLASS()
 class GOTHICMMO_API AGothicSlicerProjectile : public AActor
@@ -23,6 +24,7 @@ public:
     AGothicSlicerProjectile();
 
     virtual void BeginPlay() override;
+    virtual void Destroyed() override;
 
     UFUNCTION(BlueprintCallable, Category = "Gothic|Slicer")
     void InitializeProjectile(AActor* InInstigator);
@@ -30,6 +32,9 @@ public:
     /** Fired when the projectile hits something valid. The spawning ability binds to this. */
     UPROPERTY(BlueprintAssignable, Category = "Gothic|Slicer")
     FOnSlicerHit OnSlicerHit;
+    UPROPERTY(BlueprintAssignable, Category = "Gothic|Slicer")
+    FOnSlicerExpired OnSlicerExpired; 
+
 
 protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Slicer")

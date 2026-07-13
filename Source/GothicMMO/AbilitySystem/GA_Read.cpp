@@ -20,13 +20,6 @@ void UGA_Read::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
     const FGameplayEventData* TriggerEventData)
 {
     Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
-    bool bCommitted = CommitAbility(Handle, ActorInfo, ActivationInfo);
-    
-    if (!bCommitted)
-    {
-        CancelAbility(Handle, ActorInfo, ActivationInfo, true);
-        return;
-    }
     // Trace for a valid enemy with a vital point component
     TrackedVitalPoint = TraceForVitalPoint();
 

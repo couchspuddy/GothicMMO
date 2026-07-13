@@ -91,6 +91,10 @@ void UGothicVitalPointComponent::NotifyDamageTaken(float DamageAmount)
 
 void UGothicVitalPointComponent::ShiftVitalPoint()
 {
+    if (bIsFrozen)
+    {
+        return;
+    }
     if (VitalPointLocations.Num() <= 1)
     {
         return;
@@ -179,4 +183,25 @@ void UGothicVitalPointComponent::OnRep_ActiveVitalIndex()
 
     UE_LOG(LogTemp, Log, TEXT("VitalPoint: Client received shift — index %d"),
         ActiveVitalIndex);
+}
+
+// GothicVitalPointComponent.cpp — new function
+void UGothicVitalPointComponent::FreezeVitalPoint()
+{
+    if (!GetOwner()->HasAuthority())
+    {
+        return;
+    }
+
+    bIsFrozen = true;
+
+    // Kill the timer outright rather than relying solely on the guard below —
+    // no reason to let it keep firing into a no-op every ShiftTimerInterval.
+    if (ShiftTimerHandle.IsValid())
+    {
+        GetWorld()->GetTimerManager().ClearTimer(ShiftTimerHandle);
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s frozen at index %d"),
+        *GetOwner()->GetName(), ActiveVitalIndex);
 }

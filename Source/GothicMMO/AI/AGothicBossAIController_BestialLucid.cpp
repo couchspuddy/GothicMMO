@@ -3,6 +3,9 @@
 #include "AI/AGothicBossAIController_BestialLucid.h"
 #include "AI/GothicVitalPointComponent.h"
 #include "GameFramework/Pawn.h"
+#include "Kismet/GameplayStatics.h"
+#include "TimerManager.h"
+#include "Engine/World.h"
 
 void AGothicBossAIController_BestialLucid::OnPossess(APawn* InPawn)
 {
@@ -25,6 +28,12 @@ void AGothicBossAIController_BestialLucid::OnPossess(APawn* InPawn)
             UE_LOG(LogTemp, Warning, TEXT("BestialLucid AI: No VitalPointComponent found on %s"),
                 *InPawn->GetName());
         }
+        // AGothicBossAIController_BestialLucid.cpp — extend OnPossess, after the existing
+        // vital point binding block, before the closing brace of the outer if(InPawn)
+        UGameplayStatics::GetAllActorsWithTag(GetWorld(), DestructibleZoneTag, DestructibleZones);
+
+        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Found %d destructible zones tagged '%s'"),
+            DestructibleZones.Num(), *DestructibleZoneTag.ToString());
     }
 }
 
@@ -36,7 +45,11 @@ void AGothicBossAIController_BestialLucid::OnUnPossess()
             this, &AGothicBossAIController_BestialLucid::HandleVitalPointShifted);
         CachedVitalPointComponent = nullptr;
     }
-
+    // AGothicBossAIController_BestialLucid.cpp — extend OnUnPossess, before Super::OnUnPossess()
+    if (ZoneCollapseTimerHandle.IsValid())
+    {
+        GetWorldTimerManager().ClearTimer(ZoneCollapseTimerHandle);
+    }
     Super::OnUnPossess();
 }
 
@@ -54,18 +67,50 @@ void AGothicBossAIController_BestialLucid::HandleVitalPointShifted(int32 NewInde
     }
 }
 
+// AGothicBossAIController_BestialLucid.cpp — replace the stub OnPhaseAdvance() body
 void AGothicBossAIController_BestialLucid::OnPhaseAdvance()
 {
-    Super::OnPhaseAdvance(); // handles the generic bookkeeping, Blackboard write, broadcast
+    Super::OnPhaseAdvance(); // generic bookkeeping, Blackboard write, broadcast
 
-    // Bestial Lucid-specific Phase 2 entry behavior goes here once designed —
-    // e.g. triggering the Stillness beat's brief pause, swapping to a
-    // faster vital shift timer interval, enabling environment-as-weapon
-    // behavior flags on the Blackboard for BT nodes to read.
-    //
-    // Left as a stub for now — the Stillness beat itself (a moment of
-    // absolute stillness before Phase 2 combat resumes) likely needs a
-    // short delay/timer here before Phase 2 behavior actually becomes
-    // active, rather than an instant cut. Revisit once in-engine testing
-    // shows how the transition actually feels.
+    // Vital Point Freeze — per design doc, Phase 2's deliberate inversion:
+    // the vital becomes a fixed, known target the moment the fight gets harder.
+    if (CachedVitalPointComponent)
+    {
+        CachedVitalPointComponent->FreezeVitalPoint();
+    }
+
+    // Timed Ceiling Collapse — starts only if we actually found tagged zones.
+    if (DestructibleZones.Num() > 0)
+    {
+        GetWorldTimerManager().SetTimer(
+            ZoneCollapseTimerHandle,
+            this,
+            &AGothicBossAIController_BestialLucid::HandleZoneCollapseTimer,
+            ZoneCollapseInterval,
+            true); // looping
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("BestialLucid AI: Phase 2 entered but no destructible zones found — tag debris actors '%s' in the level"),
+            *DestructibleZoneTag.ToString());
+    }
+}
+
+// AGothicBossAIController_BestialLucid.cpp — new function
+void AGothicBossAIController_BestialLucid::HandleZoneCollapseTimer()
+{
+    if (DestructibleZones.Num() == 0)
+    {
+        return; // shouldn't happen — timer only starts if zones exist — but cheap to guard
+    }
+
+    const int32 ZoneIndex = NextZoneCollapseIndex;
+    NextZoneCollapseIndex = (NextZoneCollapseIndex + 1) % DestructibleZones.Num();
+
+    AActor* ZoneActor = DestructibleZones[ZoneIndex];
+
+    UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Triggering zone collapse — index %d (%s)"),
+        ZoneIndex, ZoneActor ? *ZoneActor->GetName() : TEXT("NULL"));
+
+    TriggerZoneCollapse(ZoneIndex, ZoneActor);
 }

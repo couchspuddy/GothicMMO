@@ -1,0 +1,88 @@
+KILL CONFIRMATION — INTEGRATION NOTES
+======================================
+
+There's no new class needed for this — it's a small addition to code you
+already have (GothicAttributeSet::PostGameplayEffectExecute, where health
+changes are already being processed for the vital point system).
+
+WHAT TO ADD
+-----------
+
+In GothicAttributeSet.cpp, inside PostGameplayEffectExecute, wherever health
+is reduced to <= 0 and the character is confirmed dead (you likely already
+have death-handling logic near the vital point damage notification code from
+GothicEnemyBase) — add a call that sends a GameplayEvent to the KILLER's ASC,
+not the victim's. This is the piece that's currently missing: your existing
+death handling knows the target died, but nothing currently tells the
+attacker "you got the kill."
+
+You'll need the instigator/killer actor, which should already be available
+via the GameplayEffectSpec's context (EffectContext.GetInstigator()) at the
+point damage is applied — the same context object OnFire and GA_Slicer
+already build via MakeEffectContext().
+
+SNIPPET — add near your existing death-detection code in
+GothicAttributeSet.cpp:
+
+    if (NewHealth <= 0.f && !bAlreadyProcessedDeath)
+    {
+        // ... your existing death handling ...
+
+        // NEW: notify the killer for Not At All / any future on-kill systems
+        if (AActor* Killer = Data.EffectSpec.GetEffectContext().GetInstigator())
+        {
+            if (UAbilitySystemComponent* KillerASC =
+                UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Killer))
+            {
+                FGameplayEventData KillEventPayload;
+                KillEventPayload.Target = GetOwningActor(); // the character that died
+                KillEventPayload.Instigator = Killer;
+
+                UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(
+                    Killer,
+                    FGameplayTag::RequestGameplayTag(FName("Event.Kill.Confirmed")),
+                    KillEventPayload);
+            }
+        }
+    }
+
+REQUIRED INCLUDES (if not already present in GothicAttributeSet.cpp):
+    #include "AbilitySystemBlueprintLibrary.h"
+
+GAMEPLAY TAG TO REGISTER (Project Settings > GameplayTags):
+    Event.Kill.Confirmed  — "Sent to a killer's ASC when they land a killing blow"
+    State.InCombat        — "Character is currently engaged in combat"
+
+WHY THIS APPROACH
+------------------
+Centralizing kill-confirmation in GothicAttributeSet rather than in each
+individual ability (OnFire, GA_Slicer, GA_HuntersStrike) means every future
+ability that deals damage automatically produces correct kill events without
+needing its own duplicate logic — the same "centralize it once" principle
+already applied when damage application was consolidated into GA_Slicer
+rather than living in the projectile.
+
+ALSO NEEDED — Combat state notification hookup
+------------------------------------------------
+GothicCombatStateComponent (see companion files) needs NotifyCombatAction()
+called whenever damage is dealt OR received. Two call sites:
+
+1. In GothicAttributeSet.cpp's PostGameplayEffectExecute, whenever health
+   decreases (the character receiving damage) — call:
+     if (UGothicCombatStateComponent* CombatState =
+         GetOwningActor()->FindComponentByClass<UGothicCombatStateComponent>())
+     {
+         CombatState->NotifyCombatAction();
+     }
+
+2. On the DEALER's side — same PostGameplayEffectExecute block, using the
+   instigator actor found above:
+     if (UGothicCombatStateComponent* KillerCombatState =
+         Killer->FindComponentByClass<UGothicCombatStateComponent>())
+     {
+         KillerCombatState->NotifyCombatAction();
+     }
+
+Add UGothicCombatStateComponent to GothicPlayerCharacter and GothicEnemyBase
+constructors (CreateDefaultSubobject, same pattern as VitalPointComponent)
+before any of this will have something to call into.

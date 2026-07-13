@@ -26,7 +26,12 @@ void UGA_Reckoning::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
         CancelAbility(Handle, ActorInfo, ActivationInfo, true);
         return;
     }
-
+    if (!CommitAbility(Handle, ActorInfo, ActivationInfo))   // <-- new
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GA_Reckoning: CommitAbility failed — cancelling"));
+        CancelAbility(Handle, ActorInfo, ActivationInfo, true);
+        return;
+    }
     FGameplayEffectContextHandle Context = CachedASC->MakeEffectContext();
     FGameplayEffectSpecHandle Spec = CachedASC->MakeOutgoingSpec(ReckoningStateEffect, 1.f, Context);
 

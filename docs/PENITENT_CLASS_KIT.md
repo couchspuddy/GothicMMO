@@ -119,7 +119,7 @@ This was deliberately reworked and simplified. Diagnosing an Accursed's category
 
 Be At Peace and Antecedent Blood Vial were both simplified to universal, non-categorized effects as a result. The Shape-keyed variants explored during design are recorded here for reference but are **not canon** — the simplified, universal versions in this document are final.
 
-**Assembled was never resolved during this design process** and remains an open narrative question independent of this correction — unlike Feral, Predatory, and Wraith, Assembled was never defined in terms of a single virtue in existing lore, and resolving "who Assembled were in life" requires narrative work not yet done.
+**Assembled's "who they were" was resolved in a later design session** (see Tone & Sensory Bible, Humanity Spectrum section) — Assembled emerged from people who were most audaciously individual and self-possessed, inverted by the Bleed into a desperate, ongoing need to disappear into a mass rather than be singularly seen. This resolution arrived after the Shape-keying correction described above, so it was never actually applied to any Penitent ability — Be At Peace and Antecedent Blood Vial remain universal/non-categorized by design regardless, per the Academic-coding concern this section describes. This note is retained for historical accuracy only.
 
 ---
 
@@ -139,7 +139,7 @@ Every active ability in this kit either responds differently while Be At Peace i
 
 ## Open Items for Future Development
 
-- Assembled's "who they were" narrative resolution — required before Assembled can be meaningfully referenced by any Penitent ability in the future
+- ~~Assembled's "who they were" narrative resolution~~ — resolved, see Tone & Sensory Bible
 - Exact numerical tuning across the full kit (heal amounts, Recede's threat-reduction magnitude, suffering's damage-reduction percentage, Grief Given Voice's healing/resistance values) — entirely unaddressed, pending implementation and playtesting
 - Penitent Prior Flame color — must be selected and checked against the exclusion rule in the Environment Art Direction doc's VFX Language section (no overlap with Shaped signatures, warm-register colors, or the Hunter's established blue; likely also worth checking against any eventual Warden Prior Flame color once selected)
 - Whether Last Rites' execute effect and Recede's threat reduction need any interaction rules with existing aggro/threat systems once those are formally specified elsewhere

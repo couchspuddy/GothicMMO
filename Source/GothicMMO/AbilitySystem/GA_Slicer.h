@@ -21,7 +21,8 @@ class GOTHICMMO_API UGA_Slicer : public UGothicGameplayAbility
 public:
 	UGA_Slicer();
 
-	virtual void ActivateAbility(const FGameplayAbilitySpecHandle Handle,
+	virtual void ActivateAbility(
+		const FGameplayAbilitySpecHandle Handle,
 		const FGameplayAbilityActorInfo* ActorInfo,
 		const FGameplayAbilityActivationInfo ActivationInfo,
 		const FGameplayEventData* TriggerEventData) override;
@@ -53,6 +54,9 @@ protected:
 private:
 	UFUNCTION()
 	void HandleSlicerHit(AActor* HitActor, FVector HitLocation);
+	
+	UFUNCTION()
+	void HandleSlicerExpired();   
 
 	UPROPERTY()
 	TObjectPtr<AGothicSlicerProjectile> SpawnedProjectile;

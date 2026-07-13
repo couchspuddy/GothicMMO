@@ -42,6 +42,11 @@ struct FGothicAbilitySetEntry
     /** Ability level when granted. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability")
     int32 AbilityLevel = 1;
+    
+    /** If true, this ability is activated immediately when granted, rather than
+ *  waiting for input. Use for passives — anything with no InputTag. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Ability")
+    bool bActivateOnGranted = false;   // <-- new
 };
 
 /**
