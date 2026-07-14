@@ -6,7 +6,9 @@
 #include "Game/GothicPlayerState.h"
 #include "Character/GothicPlayerCharacter.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
+#include "AI/GothicEnemySpawnPoint.h"
 #include "AbilitySystem/GothicAttributeSet.h"
+#include "GothicEnemySpawnPoint.h"
 #include "Engine/World.h"
 
 AGothicEncounterVolume::AGothicEncounterVolume()
@@ -99,7 +101,35 @@ void AGothicEncounterVolume::CompleteCollection()
     {
         return;
     }
+    // GothicEncounterVolume.cpp — insert at the top of CompleteCollection(),
+    // right after the existing ActivePromptCorpse validity check, before Selah is awarded
+    // GothicEncounterVolume.cpp — replace last message's interrupt branch in CompleteCollection
+    if (!bPendingWaveTriggered && PendingWaveSpawnPoints.Num() > 0)
+    {
+        bPendingWaveTriggered = true;
 
+        TArray<AGothicEnemyBase*> SpawnedWave;
+        for (AGothicEnemySpawnPoint* Point : PendingWaveSpawnPoints)
+        {
+            if (!Point || !Point->EnemyClass) continue;
+
+            AGothicEnemyBase* NewEnemy = GetWorld()->SpawnActor<AGothicEnemyBase>(
+                Point->EnemyClass, Point->GetActorTransform());
+
+            if (NewEnemy)
+            {
+                SpawnedWave.Add(NewEnemy);
+            }
+        }
+
+        UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: Spawned wave of %d on first collection attempt"),
+            *GetName(), SpawnedWave.Num());
+
+        AddWaveToEncounter(SpawnedWave); // retracts the prompt too
+        return; // no reward yet — Wave 2 has to fall first
+    }
+
+    // ...existing reward/checkpoint/corpse-cleanup code continues unchanged below...
     if (CachedGainEffect)
     {
         for (APlayerState* PS : GS->PlayerArray)
@@ -137,5 +167,38 @@ void AGothicEncounterVolume::CompleteCollection()
         {
             Enemy->Destroy();
         }
+    }
+}
+
+void AGothicEncounterVolume::AddWaveToEncounter(const TArray<AGothicEnemyBase*>& NewWaveEnemies)
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    int32 AddedCount = 0;
+    for (AGothicEnemyBase* Enemy : NewWaveEnemies)
+    {
+        if (!Enemy) continue;
+
+        EncounterEnemies.Add(Enemy);
+        Enemy->OwningEncounter = this;
+        Enemy->OnEnemyDied.AddDynamic(this, &AGothicEncounterVolume::HandleEnemyDied);
+        ++AddedCount;
+    }
+
+    RemainingEnemyCount += AddedCount;
+
+    UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: Added wave of %d — %d now remaining"),
+        *GetName(), AddedCount, RemainingEnemyCount);
+
+    AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr;
+    if (GS && LastEnemyToDie && GS->ActivePromptCorpse == LastEnemyToDie)
+    {
+        GS->ActivePromptCorpse = nullptr;
+        GS->ForceNetUpdate();
+        UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: Prompt retracted — new wave arrived"),
+            *GetName());
     }
 }

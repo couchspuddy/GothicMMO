@@ -13,6 +13,7 @@
 
 class AGothicEnemyBase;
 class UGameplayEffect;
+class AGothicEnemySpawnPoint;
 
 UCLASS()
 class GOTHICMMO_API AGothicEncounterVolume : public AActor
@@ -27,6 +28,9 @@ public:
 	/** True once every enemy in this encounter is dead. */
 	UFUNCTION(BlueprintPure, Category = "Gothic|Encounter")
 	bool IsComplete() const { return RemainingEnemyCount <= 0; }
+	
+	UFUNCTION(BlueprintCallable, Category = "Gothic|Encounter")
+	void AddWaveToEncounter(const TArray<AGothicEnemyBase*>& NewWaveEnemies);
 
 	/**
 	 * Server-only. Called via the player's ServerCollectEncounterSelah RPC once
@@ -39,6 +43,12 @@ protected:
 	/** Hand-placed in the level — the specific enemies that make up this encounter. */
 	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter")
 	TArray<TObjectPtr<AGothicEnemyBase>> EncounterEnemies;
+	
+	/** Optional second wave — spawn point markers, not live enemies. If set and
+	 *  not yet sprung, the player's first collection attempt spawns fresh enemies
+	 *  here instead of completing the encounter — Encounter 3's interrupted Selah. */
+	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter")
+	TArray<TObjectPtr<AGothicEnemySpawnPoint>> PendingWaveSpawnPoints;
 
 private:
 	int32 RemainingEnemyCount = 0;
@@ -54,4 +64,7 @@ private:
 
 	UPROPERTY()
 	TSubclassOf<UGameplayEffect> CachedGainEffect;
+	
+	// GothicEncounterVolume.h — add to private section
+	bool bPendingWaveTriggered = false;
 };
