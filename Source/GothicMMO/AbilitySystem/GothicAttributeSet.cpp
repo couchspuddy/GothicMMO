@@ -138,7 +138,8 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
                 if (TargetASC && !TargetASC->HasMatchingGameplayTag(
                     FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
                 {
-                    GothicChar->OnDeath_Implementation(
+                    // GothicAttributeSet.cpp — replace the direct call
+                    IGothicCombatInterface::Execute_OnDeath(GothicChar,
                         SourceASC ? SourceASC->GetAvatarActor() : nullptr);
 
                     // Notify the killer for Not At All / any future on-kill systems

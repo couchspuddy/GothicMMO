@@ -68,6 +68,10 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
     void UpdateSelah(float CurrentSelah);
+    
+    // AGothicHUD.h — add to public section, alongside the other Update* passthroughs
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
+    void NotifyOwningPawnChanged(APawn* NewPawn);
 protected:
     // -------------------------------------------------------------------------
     // Widget classes — assign in BP_GothicHUD

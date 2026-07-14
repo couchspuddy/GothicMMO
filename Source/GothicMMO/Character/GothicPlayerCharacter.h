@@ -49,8 +49,15 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Combat")
     void OnMelee();
     
-    UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+    UFUNCTION(Client, Reliable, BlueprintCallable, Category = "Gothic|Selah")
     void TriggerSelahMoment();
+    
+    /** Called by the player when they trigger a completed encounter's shared Selah prompt. */
+    UFUNCTION(Server, Reliable, BlueprintCallable, Category = "Gothic|Selah")
+    void ServerCollectEncounterSelah(class AGothicEncounterVolume* Encounter);
+    
+    // GothicPlayerCharacter.h — add to public section
+    virtual void OnDeath_Implementation(AActor* Killer) override;
 
 protected:
     virtual void BeginPlay() override;

@@ -237,3 +237,20 @@ void AGothicHUD::RemoveActiveWidgets()
         ActiveCrosshairWidget = nullptr;
     }
 }
+
+// AGothicHUD.cpp — new function, same passthrough-to-widgets pattern as UpdateHealth/UpdateSelah
+void AGothicHUD::NotifyOwningPawnChanged(APawn* NewPawn)
+{
+    if (ActiveHUDWidget)
+    {
+        ActiveHUDWidget->OnOwningPawnChanged(NewPawn);
+    }
+
+    if (ActiveCrosshairWidget)
+    {
+        ActiveCrosshairWidget->OnOwningPawnChanged(NewPawn);
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("AGothicHUD: Notified widgets of owning pawn change — %s"),
+        NewPawn ? *NewPawn->GetName() : TEXT("NULL"));
+}

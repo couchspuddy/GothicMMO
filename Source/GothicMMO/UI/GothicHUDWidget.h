@@ -75,6 +75,10 @@ public:
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
     void OnSelahChanged(int32 NewSelah);
     
+    // UGothicHUDWidget.h — same addition, in case the main HUD widget caches anything pawn-specific too
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
+    void OnOwningPawnChanged(APawn* NewPawn);
+    
 protected:
     virtual void NativeConstruct() override;
 

@@ -33,6 +33,26 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Gothic|PlayerState")
     UGothicAttributeSet* GetGothicAttributeSet() const { return AttributeSet; }
+    
+    // GothicPlayerState.h — add to public section
+    /**
+     * Cached SuperMeter value at moment of death, consumed once on the next
+     * respawn's GAS init to restore it (SuperMeter/Reckoning progress persists
+     * through death; other stats reset via GE_InitStats_Player as normal).
+     * -1.f = no cached value pending.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|PlayerState")
+    float GetCachedSuperMeterOnDeath() const { return CachedSuperMeterOnDeath; }
+
+    void CacheSuperMeterOnDeath(float Value) { CachedSuperMeterOnDeath = Value; }
+
+    /** Returns the cached value and clears it — call once, right after restoring it. */
+    float ConsumeCachedSuperMeterOnDeath()
+    {
+        const float Value = CachedSuperMeterOnDeath;
+        CachedSuperMeterOnDeath = -1.f;
+        return Value;
+    }
 
 protected:
     // The ASC lives here — it is replicated and survives respawns.
@@ -42,4 +62,7 @@ protected:
     // The attribute set also lives here for the same reason.
     UPROPERTY()
     TObjectPtr<UGothicAttributeSet> AttributeSet;
+    
+    // GothicPlayerState.h — add to protected section
+    float CachedSuperMeterOnDeath = -1.f;
 };

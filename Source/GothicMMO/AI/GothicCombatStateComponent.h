@@ -42,6 +42,15 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Gothic|Combat")
     bool IsInCombat() const { return bInCombat; }
+    
+    // GothicCombatStateComponent.h — add to public section
+    /**
+     * Immediately exits combat state, bypassing the normal exit grace period.
+     * Call this on death — a dead character shouldn't be considered "in combat"
+     * for the several seconds the grace period would otherwise wait.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Combat")
+    void ForceLeaveCombat();
 
 protected:
     /** Tag applied to the owning ASC while in combat. */

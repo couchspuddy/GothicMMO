@@ -17,6 +17,9 @@ class UAIPerceptionComponent;
 class UWidgetComponent;
 class UGothicVitalPointComponent;
 class UGothicCombatStateComponent;
+class AGothicEncounterVolume;
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEnemyDied, AGothicEnemyBase*, DeadEnemy);
 
 /** Enemy tier affects loot tables and XP reward. */
 UENUM(BlueprintType)
@@ -59,6 +62,18 @@ public:
     static void CollectAllNearbyCorpses(AActor* Collector, float Radius, UObject* WorldContext);
     UPROPERTY(BlueprintReadWrite, Category = "Gothic|Selah")
     bool bCollected = false;
+    /** Broadcast when this enemy dies. AGothicEncounterVolume subscribes to track encounter completion. */
+    UPROPERTY(BlueprintAssignable, Category = "Gothic|Enemy")
+    FOnEnemyDied OnEnemyDied;
+
+    /**
+     * Set by AGothicEncounterVolume at BeginPlay if this enemy belongs to a staged
+     * encounter. Null means open-world behavior — individually collectible, no
+     * gating, exactly as before. Non-null means CollectAllNearbyCorpses skips it;
+     * its Selah is only available through the encounter's shared prompt.
+     */
+    UPROPERTY(BlueprintReadOnly, Category = "Gothic|Encounter")
+    TObjectPtr<AGothicEncounterVolume> OwningEncounter;
     
     /** Amount of Selah awarded to each nearby player on death. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")

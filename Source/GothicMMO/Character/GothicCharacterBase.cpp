@@ -114,7 +114,7 @@ void AGothicCharacterBase::OnDeath_Implementation(AActor* Killer)
 
     AbilitySystemComponent->CancelAllAbilities();
 
-    GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);;
+    GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
     // UE5.8: include GameFramework/CharacterMovementComponent.h to use these
     GetCharacterMovement()->DisableMovement();

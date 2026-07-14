@@ -5,7 +5,9 @@
 #include "Game/GothicPlayerState.h"
 #include "GameFramework/PlayerStart.h"
 #include "EngineUtils.h"
+#include "TimerManager.h"
 #include "Kismet/GameplayStatics.h"
+#include "Game/GothicGameState.h"
 
 AGothicGameMode::AGothicGameMode()
 {
@@ -13,6 +15,7 @@ AGothicGameMode::AGothicGameMode()
     // These point to the C++ classes; replace with BP_GothicPlayerCharacter etc.
     DefaultPawnClass          = AGothicPlayerCharacter::StaticClass();
     PlayerStateClass          = AGothicPlayerState::StaticClass();
+    GameStateClass = AGothicGameState::StaticClass();
     // HUDClass and GameStateClass set in Blueprint child BP_GothicGameMode.
 }
 
@@ -61,6 +64,7 @@ void AGothicGameMode::RequestRespawn(AController* DeadController)
     {
         DeadController->UnPossess();
         // The corpse's timer (set in OnDeath) will destroy it after CorpseLifetime.
+        DeadPawn->Destroy();
     }
 
     // Schedule respawn after the delay.

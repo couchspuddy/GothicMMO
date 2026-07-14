@@ -26,6 +26,13 @@
 #include "AI/GothicVitalPointComponent.h"
 #include "Engine/Engine.h"
 #include "AbilitySystemBlueprintLibrary.h"
+#include "Game/GothicGameMode.h"
+#include "Kismet/GameplayStatics.h"
+#include "AI/GothicEnemyBase.h"
+#include "AI/GothicEnemyAIController.h"
+#include "AI/GothicEncounterVolume.h"
+#include "AI/GothicCombatStateComponent.h"
+
 
 AGothicPlayerCharacter::AGothicPlayerCharacter()
 {
@@ -90,6 +97,11 @@ void AGothicPlayerCharacter::BeginPlay()
             GothicHUD ? TEXT("Valid") : TEXT("NULL"),
             GothicHUD && GothicHUD->GetHUDWidget() ? TEXT("Valid") : TEXT("NULL"));
 
+        if (GothicHUD)
+        {
+            GothicHUD->NotifyOwningPawnChanged(this);
+        }
+
         bHUDReady = true;
     }, 0.1f, false);
 }
@@ -127,6 +139,21 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         AttributeSet ? TEXT("Valid") : TEXT("NULL"));
 
     InitializeGAS();
+    
+    // Restore SuperMeter if this is a respawn — everything else in
+    // GE_InitStats_Player resets normally, but Reckoning progress persists
+    // through death. HasAuthority() gated since this is a direct attribute
+    // write and should be server-authoritative, same as InitializeGAS itself.
+    if (HasAuthority() && AttributeSet)
+    {
+        const float CachedSuper = PS->GetCachedSuperMeterOnDeath();
+        if (CachedSuper >= 0.f)
+        {
+            AttributeSet->SetSuperMeter(PS->ConsumeCachedSuperMeterOnDeath());
+            UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Restored SuperMeter to %.1f after respawn"), CachedSuper);
+        }
+    }
+
 
     // Grant ability sets — data driven, replaces old StartupAbilities array
     if (HasAuthority())
@@ -452,11 +479,19 @@ void AGothicPlayerCharacter::OnMelee()
     }
 }
 
-void AGothicPlayerCharacter::TriggerSelahMoment()
+void AGothicPlayerCharacter::TriggerSelahMoment_Implementation()
 {
     UE_LOG(LogTemp, Log, TEXT("TriggerSelahMoment: Selah moment triggered on %s"),
         *GetName());
     OnSelahMoment();
+}
+
+void AGothicPlayerCharacter::ServerCollectEncounterSelah_Implementation(AGothicEncounterVolume* Encounter)
+{
+    if (Encounter)
+    {
+        Encounter->CompleteCollection();
+    }
 }
 
 void AGothicPlayerCharacter::OnADSStart()
@@ -529,7 +564,7 @@ void AGothicPlayerCharacter::HoldReload()
     }
     else if (CurrentSteadfast >= 30.f)
     {
-        // Mid tier
+        // Mid-tier
         SteadfastCost = 30.f;
         AmmoGranted = 8.f;
     }
@@ -568,4 +603,50 @@ bool AGothicPlayerCharacter::IsReckoningActive() const
             FGameplayTag::RequestGameplayTag(FName("State.Reckoning")));
     }
     return false;
+}
+
+void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
+{
+    if (AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>())
+    {
+        if (AttributeSet)
+        {
+            PS->CacheSuperMeterOnDeath(AttributeSet->GetSuperMeter());
+        }
+    }
+
+    Super::OnDeath_Implementation(Killer);
+
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    // Force out of combat immediately — don't wait for the grace-period timeout.
+    if (UGothicCombatStateComponent* CombatState = FindComponentByClass<UGothicCombatStateComponent>())
+    {
+        CombatState->ForceLeaveCombat();
+    }
+
+    // Clear this pawn as a target from any enemy still tracking it — otherwise
+    // their in-progress attack routine silently carries over onto whatever
+    // pawn respawns here next.
+    TArray<AActor*> Enemies;
+    UGameplayStatics::GetAllActorsOfClass(GetWorld(), AGothicEnemyBase::StaticClass(), Enemies);
+    for (AActor* EnemyActor : Enemies)
+    {
+        AGothicEnemyBase* Enemy = Cast<AGothicEnemyBase>(EnemyActor);
+        if (Enemy && Enemy->GetCombatTarget() == this)
+        {
+            if (AGothicEnemyAIController* AIC = Cast<AGothicEnemyAIController>(Enemy->GetController()))
+            {
+                AIC->ClearCombatTarget();
+            }
+        }
+    }
+
+    if (AGothicGameMode* GM = GetWorld()->GetAuthGameMode<AGothicGameMode>())
+    {
+        GM->RequestRespawn(GetController());
+    }
 }

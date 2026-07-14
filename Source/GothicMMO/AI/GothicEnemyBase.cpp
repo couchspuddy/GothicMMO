@@ -146,6 +146,7 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
     }
 
     Super::OnDeath_Implementation(Killer);
+    OnEnemyDied.Broadcast(this);
 
     // Hide health bar
     if (HealthBarWidget)
@@ -163,14 +164,16 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
     }
 
     GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-
-    FTimerHandle CorpseTimer;
-    GetWorldTimerManager().SetTimer(
-        CorpseTimer,
-        this,
-        &AGothicEnemyBase::DestroyCorpse,
-        CorpseLifetime,
-        false);
+    if (!OwningEncounter)  
+        {
+        FTimerHandle CorpseTimer;
+        GetWorldTimerManager().SetTimer(
+            CorpseTimer,
+            this,
+            &AGothicEnemyBase::DestroyCorpse,
+            CorpseLifetime,
+            false);
+    }
 }
 
 void AGothicEnemyBase::CollectAllNearbyCorpses(AActor* Collector, float Radius, UObject* WorldContextObject)
@@ -197,7 +200,7 @@ void AGothicEnemyBase::CollectAllNearbyCorpses(AActor* Collector, float Radius, 
         if (!Enemy) continue;
         UE_LOG(LogTemp, Log, TEXT("CollectAllNearbyCorpses: Checking %s | bCollected=%d | IsAlive=%d"),
     *Enemy->GetName(), Enemy->bCollected, Enemy->IsAlive());
-        if (!Enemy || Enemy->bCollected || Enemy->IsAlive())
+        if (!Enemy || Enemy->bCollected || Enemy->IsAlive() || Enemy->OwningEncounter)
         {
             continue;
         }

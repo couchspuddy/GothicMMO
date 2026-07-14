@@ -50,6 +50,9 @@ public:
      */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Crosshair")
     void OnEnemyDetected(bool bEnemyInSights);
+    
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Crosshair")
+    void OnOwningPawnChanged(APawn* NewPawn);
 
 protected:
     /** Base spread at rest — set per crosshair type in Blueprint. */

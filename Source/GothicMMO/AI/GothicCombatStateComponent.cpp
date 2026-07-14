@@ -67,3 +67,13 @@ void UGothicCombatStateComponent::OnExitGraceExpired()
 		UE_LOG(LogTemp, Log, TEXT("CombatState: %s left combat"), *GetOwner()->GetName());
 	}
 }
+
+// GothicCombatStateComponent.cpp — new function
+void UGothicCombatStateComponent::ForceLeaveCombat()
+{
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(ExitGraceTimerHandle);
+	}
+	OnExitGraceExpired();
+}
