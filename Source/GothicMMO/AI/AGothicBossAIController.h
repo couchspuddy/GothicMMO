@@ -20,6 +20,8 @@ class GOTHICMMO_API AGothicBossAIController : public AGothicEnemyAIController
 	GENERATED_BODY()
 
 public:
+	// AGothicBossAIController.h — add to public section
+	virtual void OnPossess(APawn* InPawn) override;
 	AGothicBossAIController();
 
 	/** Current phase, starting at 1. Subclasses advance this via OnPhaseAdvance. */
