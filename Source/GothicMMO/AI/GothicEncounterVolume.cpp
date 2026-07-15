@@ -7,6 +7,7 @@
 #include "Character/GothicPlayerCharacter.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AI/GothicEnemySpawnPoint.h"
+#include "Components/BoxComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "GothicEnemySpawnPoint.h"
 #include "Engine/World.h"
@@ -15,6 +16,18 @@ AGothicEncounterVolume::AGothicEncounterVolume()
 {
     PrimaryActorTick.bCanEverTick = false;
     bReplicates = false; // effects go through GameState, this actor itself never needs to replicate
+
+    TriggerBox = CreateDefaultSubobject<UBoxComponent>(TEXT("TriggerBox"));
+    SetRootComponent(TriggerBox);
+
+    TriggerBox->SetBoxExtent(FVector(500.f, 500.f, 300.f));
+    TriggerBox->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+    TriggerBox->SetCollisionObjectType(ECC_WorldStatic);
+    TriggerBox->SetCollisionResponseToAllChannels(ECR_Ignore);
+    TriggerBox->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+    TriggerBox->SetGenerateOverlapEvents(true);
+    TriggerBox->SetHiddenInGame(true);
+    TriggerBox->ShapeColor = FColor(255, 128, 0);
 }
 
 void AGothicEncounterVolume::BeginPlay()
@@ -24,6 +37,11 @@ void AGothicEncounterVolume::BeginPlay()
     if (!HasAuthority())
     {
         return; // encounter tracking is server-only
+    }
+    if (bAggroEnemiesOnOverlap && TriggerBox)
+    {
+        TriggerBox->OnComponentBeginOverlap.AddDynamic(
+            this, &AGothicEncounterVolume::HandleTriggerBeginOverlap);
     }
 
     RemainingEnemyCount = EncounterEnemies.Num();
@@ -47,6 +65,43 @@ void AGothicEncounterVolume::BeginPlay()
         Enemy->OwningEncounter = this;
         Enemy->OnEnemyDied.AddDynamic(this, &AGothicEncounterVolume::HandleEnemyDied);
     }
+}
+
+void AGothicEncounterVolume::HandleTriggerBeginOverlap(
+    UPrimitiveComponent* OverlappedComponent,
+    AActor* OtherActor,
+    UPrimitiveComponent* OtherComp,
+    int32 OtherBodyIndex,
+    bool bFromSweep,
+    const FHitResult& SweepResult)
+{
+    // bReplicates is false, so this actor exists independently on every machine and
+    // this overlap fires locally on clients too. Aggro is a server decision.
+    if (!HasAuthority() || bAggroTriggered)
+    {
+        return;
+    }
+
+    AGothicPlayerCharacter* Player = Cast<AGothicPlayerCharacter>(OtherActor);
+    if (!Player)
+    {
+        return;
+    }
+
+    bAggroTriggered = true;
+
+    int32 AggroedCount = 0;
+    for (AGothicEnemyBase* Enemy : EncounterEnemies)
+    {
+        if (Enemy)
+        {
+            Enemy->SetCombatTarget(Player);
+            ++AggroedCount;
+        }
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: %s entered — aggroed %d/%d enemies"),
+        *GetName(), *Player->GetName(), AggroedCount, EncounterEnemies.Num());
 }
 
 // AGothicEncounterVolume.cpp — replace HandleEnemyDied's completion block

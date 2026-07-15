@@ -14,6 +14,8 @@
 class AGothicEnemyBase;
 class UGameplayEffect;
 class AGothicEnemySpawnPoint;
+class UBoxComponent;
+class AGothicPlayerCharacter;
 
 UCLASS()
 class GOTHICMMO_API AGothicEncounterVolume : public AActor
@@ -40,6 +42,25 @@ public:
 	void CompleteCollection();
 
 protected:
+	
+	/**
+	 * Aggro trigger. Sized per instance in the level — the default extent is a
+	 * placeholder, not a suggestion. Root component, so moving the actor moves it.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Encounter")
+	TObjectPtr<UBoxComponent> TriggerBox;
+
+	/**
+	 * Opt-in. When true, the first player to enter TriggerBox sets every living
+	 * enemy in EncounterEnemies onto them.
+	 *
+	 * Defaults false deliberately: five volumes are already placed in Eagle's
+	 * Landing and none of them have a sized box yet. Enabling this by default
+	 * would have Encounter 2's second-floor group aggroing through the floor.
+	 * Size the box first, then turn this on, one encounter at a time.
+	 */
+	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter")
+	bool bAggroEnemiesOnOverlap = false;
 	/** Hand-placed in the level — the specific enemies that make up this encounter. */
 	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter")
 	TArray<TObjectPtr<AGothicEnemyBase>> EncounterEnemies;
@@ -67,4 +88,15 @@ private:
 	
 	// GothicEncounterVolume.h — add to private section
 	bool bPendingWaveTriggered = false;
+	/** Aggro fires once per encounter, not once per player. */
+	bool bAggroTriggered = false;
+
+	UFUNCTION()
+	void HandleTriggerBeginOverlap(
+		UPrimitiveComponent* OverlappedComponent,
+		AActor* OtherActor,
+		UPrimitiveComponent* OtherComp,
+		int32 OtherBodyIndex,
+		bool bFromSweep,
+		const FHitResult& SweepResult);
 };

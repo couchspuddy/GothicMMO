@@ -185,12 +185,28 @@ void UGothicVitalPointComponent::OnRep_ActiveVitalIndex()
         ActiveVitalIndex);
 }
 
-// GothicVitalPointComponent.cpp — new function
-void UGothicVitalPointComponent::FreezeVitalPoint()
+void UGothicVitalPointComponent::FreezeVitalPoint(int32 LockIndex)
 {
     if (!GetOwner()->HasAuthority())
     {
         return;
+    }
+
+    // Snap to the designated index before locking, if one was given and it's real.
+    if (VitalPointLocations.IsValidIndex(LockIndex) && LockIndex != ActiveVitalIndex)
+    {
+        ActiveVitalIndex = LockIndex;
+        AccumulatedDamage = 0.f;
+
+        const FVector NewLocation = ComputeWorldLocation(ActiveVitalIndex);
+
+        UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s locked to index %d — location %s"),
+            *GetOwner()->GetName(), ActiveVitalIndex, *NewLocation.ToString());
+
+        // Same pattern as ShiftVitalPoint: ActiveVitalIndex replicates and OnRep
+        // covers clients, but the server has to broadcast for itself or The Read
+        // and the shimmer won't follow the jump.
+        OnVitalPointShifted.Broadcast(ActiveVitalIndex, NewLocation);
     }
 
     bIsFrozen = true;

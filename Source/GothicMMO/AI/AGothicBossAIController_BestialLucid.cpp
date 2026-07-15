@@ -6,35 +6,56 @@
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
 #include "Engine/World.h"
+#include "AbilitySystemComponent.h"
+#include "AbilitySystemBlueprintLibrary.h"
+#include "AbilitySystem/GothicAttributeSet.h"
 
 void AGothicBossAIController_BestialLucid::OnPossess(APawn* InPawn)
 {
     Super::OnPossess(InPawn);
 
-    if (InPawn)
+    if (!InPawn)
     {
-        CachedVitalPointComponent = InPawn->FindComponentByClass<UGothicVitalPointComponent>();
-
-        if (CachedVitalPointComponent)
-        {
-            CachedVitalPointComponent->OnVitalPointShifted.AddDynamic(
-                this, &AGothicBossAIController_BestialLucid::HandleVitalPointShifted);
-
-            UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Bound to vital point shifts on %s"),
-                *InPawn->GetName());
-        }
-        else
-        {
-            UE_LOG(LogTemp, Warning, TEXT("BestialLucid AI: No VitalPointComponent found on %s"),
-                *InPawn->GetName());
-        }
-        // AGothicBossAIController_BestialLucid.cpp — extend OnPossess, after the existing
-        // vital point binding block, before the closing brace of the outer if(InPawn)
-        UGameplayStatics::GetAllActorsWithTag(GetWorld(), DestructibleZoneTag, DestructibleZones);
-
-        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Found %d destructible zones tagged '%s'"),
-            DestructibleZones.Num(), *DestructibleZoneTag.ToString());
+        return;
     }
+
+    CachedVitalPointComponent = InPawn->FindComponentByClass<UGothicVitalPointComponent>();
+
+    if (CachedVitalPointComponent)
+    {
+        CachedVitalPointComponent->OnVitalPointShifted.AddDynamic(
+            this, &AGothicBossAIController_BestialLucid::HandleVitalPointShifted);
+
+        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Bound to vital point shifts on %s"),
+            *InPawn->GetName());
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("BestialLucid AI: No VitalPointComponent found on %s"),
+            *InPawn->GetName());
+    }
+
+    // Phase 2 now triggers off health, not the vital index.
+    CachedASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(InPawn);
+    if (CachedASC)
+    {
+        HealthChangedHandle = CachedASC->GetGameplayAttributeValueChangeDelegate(
+            UGothicAttributeSet::GetHealthAttribute())
+            .AddUObject(this, &AGothicBossAIController_BestialLucid::HandleHealthChanged);
+
+        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Bound to health changes on %s — Phase 2 at %.0f%%"),
+            *InPawn->GetName(), Phase2HealthThreshold * 100.f);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("BestialLucid AI: No ASC on %s — Phase 2 can never fire"),
+            *InPawn->GetName());
+    }
+
+    UGameplayStatics::GetAllActorsWithTag(GetWorld(), DestructibleZoneTag, DestructibleZones);
+
+    UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Found %d destructible zones tagged '%s'"),
+        DestructibleZones.Num(), *DestructibleZoneTag.ToString());
 }
 
 void AGothicBossAIController_BestialLucid::OnUnPossess()
@@ -45,26 +66,27 @@ void AGothicBossAIController_BestialLucid::OnUnPossess()
             this, &AGothicBossAIController_BestialLucid::HandleVitalPointShifted);
         CachedVitalPointComponent = nullptr;
     }
-    // AGothicBossAIController_BestialLucid.cpp — extend OnUnPossess, before Super::OnUnPossess()
+
+    if (CachedASC && HealthChangedHandle.IsValid())
+    {
+        CachedASC->GetGameplayAttributeValueChangeDelegate(
+            UGothicAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
+        HealthChangedHandle.Reset();
+    }
+    CachedASC = nullptr;
+
     if (ZoneCollapseTimerHandle.IsValid())
     {
         GetWorldTimerManager().ClearTimer(ZoneCollapseTimerHandle);
     }
+
     Super::OnUnPossess();
 }
 
 void AGothicBossAIController_BestialLucid::HandleVitalPointShifted(int32 NewIndex, FVector NewWorldLocation)
 {
-    // Only trigger the phase advance once, on reaching the designated index,
-    // and only from Phase 1 -> Phase 2 (guard against re-triggering if the
-    // vital later cycles back through this index in Phase 2's faster shifting).
-    if (GetCurrentPhase() == 1 && NewIndex == Phase2TriggerVitalIndex)
-    {
-        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Vital reached trigger index %d — advancing phase"),
-            NewIndex);
-
-        OnPhaseAdvance();
-    }
+    // No longer drives the phase — that's HandleHealthChanged's job. Kept bound
+    // because a Phase 1 reaction to her own vital shifting is a plausible beat.
 }
 
 // AGothicBossAIController_BestialLucid.cpp — replace the stub OnPhaseAdvance() body
@@ -76,7 +98,7 @@ void AGothicBossAIController_BestialLucid::OnPhaseAdvance()
     // the vital becomes a fixed, known target the moment the fight gets harder.
     if (CachedVitalPointComponent)
     {
-        CachedVitalPointComponent->FreezeVitalPoint();
+        CachedVitalPointComponent->FreezeVitalPoint(Phase2LockedVitalIndex);
     }
 
     // Timed Ceiling Collapse — starts only if we actually found tagged zones.
@@ -93,6 +115,30 @@ void AGothicBossAIController_BestialLucid::OnPhaseAdvance()
     {
         UE_LOG(LogTemp, Warning, TEXT("BestialLucid AI: Phase 2 entered but no destructible zones found — tag debris actors '%s' in the level"),
             *DestructibleZoneTag.ToString());
+    }
+}
+
+void AGothicBossAIController_BestialLucid::HandleHealthChanged(const FOnAttributeChangeData& Data)
+{
+    // The phase guard is what stops this re-firing on every damage tick below 50%.
+    if (GetCurrentPhase() != 1 || !CachedASC)
+    {
+        return;
+    }
+
+    const float MaxHealth = CachedASC->GetNumericAttribute(UGothicAttributeSet::GetMaxHealthAttribute());
+    if (MaxHealth <= 0.f)
+    {
+        return;
+    }
+
+    const float Fraction = Data.NewValue / MaxHealth;
+    if (Fraction <= Phase2HealthThreshold)
+    {
+        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Health %.1f/%.1f (%.0f%%) crossed %.0f%% — advancing phase"),
+            Data.NewValue, MaxHealth, Fraction * 100.f, Phase2HealthThreshold * 100.f);
+
+        OnPhaseAdvance();
     }
 }
 
