@@ -89,8 +89,13 @@ void AGothicEnemyBase::BeginPlay()
         }
     });
     }
+    
 }
 
+void AGothicEnemyBase::MulticastOnHit_Implementation(FVector_NetQuantize ImpactLocation, bool bWasVital)
+{
+    OnHitFeedback(ImpactLocation, bWasVital);
+}
 void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
 {
     for (AActor* Actor : UpdatedActors)
@@ -148,24 +153,11 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
     Super::OnDeath_Implementation(Killer);
     OnEnemyDied.Broadcast(this);
 
-    // Hide health bar
-    if (HealthBarWidget)
-    {
-        HealthBarWidget->SetVisibility(false);
-    }
+    // Cosmetics fan out to every machine, this one included.
+    MulticastOnDeath(Killer);
 
-    // Ragdoll
-    if (GetMesh())
+    if (!OwningEncounter)
     {
-        GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-        GetMesh()->SetCollisionProfileName(FName("Ragdoll"));
-        GetMesh()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
-        GetMesh()->SetSimulatePhysics(true);
-    }
-
-    GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-    if (!OwningEncounter)  
-        {
         FTimerHandle CorpseTimer;
         GetWorldTimerManager().SetTimer(
             CorpseTimer,
@@ -335,7 +327,44 @@ void AGothicEnemyBase::AwardSelahToNearbyEmbers()
         PlayersAwarded);
 }
 
+void AGothicEnemyBase::MulticastOnDeath_Implementation(AActor* Killer)
+{
+    PlayDeathCosmetics();
+    OnDeathFeedback(Killer);
+}
 
+void AGothicEnemyBase::PlayDeathCosmetics()
+{
+    if (bDeathCosmeticsPlayed)
+    {
+        return;
+    }
+    bDeathCosmeticsPlayed = true;
+
+    if (HealthBarWidget)
+    {
+        HealthBarWidget->SetVisibility(false);
+    }
+
+    if (GetMesh())
+    {
+        GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+        GetMesh()->SetCollisionProfileName(FName("Ragdoll"));
+        GetMesh()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+        GetMesh()->SetSimulatePhysics(true);
+    }
+
+    GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+    // Clients never ran Super::OnDeath_Implementation, so their movement component
+    // is still live and will fight the ragdoll. Shut it down locally on every machine.
+    if (GetCharacterMovement())
+    {
+        GetCharacterMovement()->StopMovementImmediately();
+        GetCharacterMovement()->DisableMovement();
+        GetCharacterMovement()->SetComponentTickEnabled(false);
+    }
+}
 
 void AGothicEnemyBase::DestroyCorpse()
 {

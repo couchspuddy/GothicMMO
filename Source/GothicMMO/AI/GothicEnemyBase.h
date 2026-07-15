@@ -11,7 +11,9 @@
 #include "CoreMinimal.h"
 #include "Character/GothicCharacterBase.h"
 #include "Perception/AIPerceptionTypes.h"
+#include "Engine/NetSerialization.h"   // FVector_NetQuantize
 #include "GothicEnemyBase.generated.h"
+
 
 class UAIPerceptionComponent;
 class UWidgetComponent;
@@ -65,6 +67,13 @@ public:
     /** Broadcast when this enemy dies. AGothicEncounterVolume subscribes to track encounter completion. */
     UPROPERTY(BlueprintAssignable, Category = "Gothic|Enemy")
     FOnEnemyDied OnEnemyDied;
+    /** Cosmetic hit reaction, server → everyone. Impact point is net-quantized; this is VFX placement, not hit validation. */
+    UFUNCTION(NetMulticast, Unreliable)
+    void MulticastOnHit(FVector_NetQuantize ImpactLocation, bool bWasVital);
+
+    /** Blueprint hook for impact VFX/SFX. Runs everywhere. bWasVital drives the binary audio tell. */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Feedback")
+    void OnHitFeedback(FVector ImpactLocation, bool bWasVital);
 
     /**
      * Set by AGothicEncounterVolume at BeginPlay if this enemy belongs to a staged
@@ -82,6 +91,19 @@ public:
     /** The GameplayEffect that awards Selah. Assign GE_SelahGain in BP_Enemy_Draugr. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
     TSubclassOf<UGameplayEffect> SelahGainEffect;
+    
+    /**
+     * Cosmetic death reaction, fired by the server onto every machine including
+     * itself. Exists because OnDeath_Implementation only ever runs on the server
+     * (called from UGothicAttributeSet::PostGameplayEffectExecute), so anything
+     * a client needs to *see* has to come through here, not through OnDeath.
+     */
+    UFUNCTION(NetMulticast, Unreliable)
+    void MulticastOnDeath(AActor* Killer);
+
+    /** Blueprint hook for death VFX/SFX. Runs everywhere. */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Feedback")
+    void OnDeathFeedback(AActor* Killer);
 protected:
     // -------------------------------------------------------------------------
     // Components
@@ -138,7 +160,11 @@ private:
 
     UFUNCTION()
     void OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors);
+    /** Guards against the multicast and a local call both running cosmetics. */
+    bool bDeathCosmeticsPlayed = false;
 
+    /** The half of death that is purely visual — runs on server and clients alike. */
+    void PlayDeathCosmetics();
     /** Delayed destruction after death animation plays out. */
     void DestroyCorpse();
 };

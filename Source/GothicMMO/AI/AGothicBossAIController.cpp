@@ -10,8 +10,15 @@ void AGothicBossAIController::OnPossess(APawn* InPawn)
 
 	if (Blackboard && PhaseBlackboardKey != NAME_None)
 	{
-		Blackboard->SetValueAsInt(PhaseBlackboardKey, CurrentPhase); // CurrentPhase starts at 1
+		Blackboard->SetValueAsInt(PhaseBlackboardKey, CurrentPhase);
 	}
+
+	UE_LOG(LogTemp, Log, TEXT("BossAI [%s]: BB valid=%d, Key=%s, KeyID=%d, Phase=%d"),
+		InPawn ? *InPawn->GetName() : TEXT("NoPawn"),
+		Blackboard != nullptr,
+		*PhaseBlackboardKey.ToString(),
+		Blackboard ? (int32)Blackboard->GetKeyID(PhaseBlackboardKey) : -1,
+		CurrentPhase);
 }
 AGothicBossAIController::AGothicBossAIController()
 {

@@ -414,6 +414,16 @@ void AGothicPlayerCharacter::OnFire()
                     FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
                     FinalDamage);
                 AbilitySystemComponent->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
+                // Feedback is a server decision so every client sees the same impact.
+                // See the authority note below — on a remote client this no-ops today,
+                // exactly as the damage above already does.
+                if (HasAuthority())
+                {
+                    if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(Hit.GetActor()))
+                    {
+                        HitEnemy->MulticastOnHit(Hit.ImpactPoint, bIsVitalHit);
+                    }
+                }
                 UE_LOG(LogTemp, Log, TEXT("OnFire: Damage applied to %s"), *Hit.GetActor()->GetName());
             }
         }
