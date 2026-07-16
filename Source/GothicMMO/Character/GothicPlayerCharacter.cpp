@@ -187,60 +187,51 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         }
     }
 
-    // Health attribute delegate
-    if (IsLocallyControlled() && AbilitySystemComponent)
+if (IsLocallyControlled() && AbilitySystemComponent && !bAttributeDelegatesBound)
     {
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-            UGothicAttributeSet::GetHealthAttribute()).AddLambda(
+            UGothicAttributeSet::GetHealthAttribute()).AddWeakLambda(this,
             [this](const FOnAttributeChangeData& Data)
             {
-                if (!IsLocallyControlled()) return;
-
-                APlayerController* PC = GetWorld()->GetFirstPlayerController();
-                if (!PC) return;
-
-                AHUD* RawHUD = PC->GetHUD();
-
-                UE_LOG(LogTemp, Log, TEXT("Health changed: %.1f | HUD: %s"),
-                    Data.NewValue,
-                    RawHUD ? *RawHUD->GetClass()->GetName() : TEXT("NULL"));
-
-                AGothicHUD* GothicHUD = Cast<AGothicHUD>(RawHUD);
-                if (GothicHUD)
+                if (AGothicHUD* GothicHUD = GetLocalGothicHUD())
                 {
                     GothicHUD->UpdateHealth(Data.NewValue, AttributeSet->GetMaxHealth());
                 }
             });
 
-        // Super meter delegate
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-            UGothicAttributeSet::GetSuperMeterAttribute()).AddLambda(
+            UGothicAttributeSet::GetSuperMeterAttribute()).AddWeakLambda(this,
             [this](const FOnAttributeChangeData& Data)
             {
-                if (!IsLocallyControlled()) return;
-
-                APlayerController* PC = GetWorld()->GetFirstPlayerController();
-                if (!PC) return;
-
-                AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
-                if (GothicHUD)
+                if (AGothicHUD* GothicHUD = GetLocalGothicHUD())
                 {
                     GothicHUD->UpdateSuperMeter(Data.NewValue, AttributeSet->GetMaxSuperMeter());
                 }
             });
-        if (!bAmmoDelegateBound)
-        {
-            OnAmmoChanged.AddLambda([this](int32 Mag, int32 MagCap, int32 Reserve, int32 MaxReserve)
+
+        // Restored — this was lost in an earlier rewrite of this function, which
+        // left AGothicHUD::UpdateSelah with no callers at all.
+        AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+            UGothicAttributeSet::GetSelahAttribute()).AddWeakLambda(this,
+            [this](const FOnAttributeChangeData& Data)
+            {
+                UE_LOG(LogTemp, Log, TEXT("Selah changed: %.0f"), Data.NewValue);
+                if (AGothicHUD* GothicHUD = GetLocalGothicHUD())
+                {
+                    GothicHUD->UpdateSelah(Data.NewValue);
+                }
+            });
+
+        OnAmmoChanged.AddWeakLambda(this,
+            [this](int32 Mag, int32 MagCap, int32 Reserve, int32 MaxReserve)
             {
                 if (AGothicHUD* GothicHUD = GetLocalGothicHUD())
                 {
                     GothicHUD->UpdateAmmo(Mag, MagCap, Reserve, MaxReserve);
-                    
                 }
             });
-            bAmmoDelegateBound = true;
-        }
 
+        bAttributeDelegatesBound = true;
         UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Attribute delegates registered"));
     }
 }
@@ -272,8 +263,6 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
     }
 
     // Non-GAS combat inputs — direct bindings
-    if (FireAction)
-        EIC->BindAction(FireAction, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnFire);
     if (ADSAction)
     {
         EIC->BindAction(ADSAction, ETriggerEvent::Started,   this, &AGothicPlayerCharacter::OnADSStart);
@@ -361,95 +350,14 @@ void AGothicPlayerCharacter::OnLook(const FInputActionValue& Value)
     AddControllerPitchInput(LookVec.Y);
 }
 
-void AGothicPlayerCharacter::OnFire()
+void AGothicPlayerCharacter::ConsumeRound()
 {
-    UE_LOG(LogTemp, Log, TEXT("OnFire: Called"));
-
-    if (!FirstPersonCamera)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("OnFire: FirstPersonCamera is null"));
-        return;
-    }
-    
     if (CurrentMagazineAmmo <= 0)
     {
-        UE_LOG(LogTemp, Log, TEXT("OnFire: Out of ammo"));
         return;
     }
     CurrentMagazineAmmo--;
     BroadcastAmmoChanged();
-
-    const FVector Start = FirstPersonCamera->GetComponentLocation();
-    const FVector End   = Start + (FirstPersonCamera->GetForwardVector() * 5000.f);
-
-    FHitResult Hit;
-    FCollisionQueryParams Params;
-    Params.AddIgnoredActor(this);
-
-    bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Pawn, Params);
-
-    if (bHit && Hit.GetActor())
-    {
-        UE_LOG(LogTemp, Log, TEXT("OnFire: Hit %s"), *Hit.GetActor()->GetName());
-
-        UAbilitySystemComponent* TargetASC =
-            UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Hit.GetActor());
-
-        if (TargetASC && DamageEffectClass)
-        {
-            float FinalDamage = PistolDamage;
-
-            UGothicVitalPointComponent* VitalPoint =
-                Hit.GetActor()->FindComponentByClass<UGothicVitalPointComponent>();
-
-            bool bIsVitalHit = false;
-            if (VitalPoint)
-            {
-                bIsVitalHit = IsReckoningActive() || VitalPoint->IsVitalPointHit(Hit.ImpactPoint);
-            }
-
-            if (bIsVitalHit)
-            {
-                FinalDamage *= 2.f;
-                UE_LOG(LogTemp, Log, TEXT("OnFire: VITAL HIT on %s — damage %.1f"),
-                    *Hit.GetActor()->GetName(), FinalDamage);
-                GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, TEXT("VITAL HIT"));
-            }
-
-            FGameplayEffectContextHandle Context =
-                AbilitySystemComponent->MakeEffectContext();
-            FGameplayEffectSpecHandle Spec =
-                AbilitySystemComponent->MakeOutgoingSpec(DamageEffectClass, 1.f, Context);
-
-            if (Spec.IsValid())
-            {
-                Spec.Data->SetSetByCallerMagnitude(
-                    FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
-                    FinalDamage);
-                AbilitySystemComponent->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
-                // Feedback is a server decision so every client sees the same impact.
-                // See the authority note below — on a remote client this no-ops today,
-                // exactly as the damage above already does.
-                if (HasAuthority())
-                {
-                    if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(Hit.GetActor()))
-                    {
-                        HitEnemy->MulticastOnHit(Hit.ImpactPoint, bIsVitalHit);
-                    }
-                }
-                UE_LOG(LogTemp, Log, TEXT("OnFire: Damage applied to %s"), *Hit.GetActor()->GetName());
-            }
-        }
-        else
-        {
-            UE_LOG(LogTemp, Log, TEXT("OnFire: Hit %s but no ASC or no DamageEffectClass"),
-                *Hit.GetActor()->GetName());
-        }
-    }
-    else
-    {
-        UE_LOG(LogTemp, Log, TEXT("OnFire: No hit"));
-    }
 }
 
 AGothicHUD* AGothicPlayerCharacter::GetLocalGothicHUD() const

@@ -53,9 +53,14 @@ void UGothicVitalPointComponent::TickComponent(float DeltaTime, ELevelTick TickT
     FActorComponentTickFunction* ThisTickFunction)
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-    // Tick is active but currently unused at the component level.
-    // The shimmer visual update happens in Blueprint via GetCurrentVitalWorldLocation.
-    // If performance becomes a concern, disable tick and drive from a timer instead.
+
+#if WITH_EDITOR
+    if (bDebugDrawVital && VitalPointLocations.Num() > 0 && GetWorld())
+    {
+        DrawDebugSphere(GetWorld(), GetCurrentVitalWorldLocation(),
+            HitDetectionRadius, 12, FColor::Yellow, false, -1.f, 0, 0.5f);
+    }
+#endif
 }
 
 void UGothicVitalPointComponent::GetLifetimeReplicatedProps(
@@ -156,6 +161,16 @@ bool UGothicVitalPointComponent::IsVitalPointHit(const FVector& HitWorldLocation
 {
     const FVector CurrentLocation = GetCurrentVitalWorldLocation();
     const float Distance = FVector::Dist(HitWorldLocation, CurrentLocation);
+
+    const int32 BoneIdx = (CachedMesh && VitalPointLocations.IsValidIndex(ActiveVitalIndex))
+        ? CachedMesh->GetBoneIndex(VitalPointLocations[ActiveVitalIndex].BoneName) : -2;
+
+    UE_LOG(LogTemp, Warning, TEXT("VitalCheck: Idx=%d Bone=%s BoneIdx=%d | Dist=%.1f Radius=%.1f | Hit=%d"),
+        ActiveVitalIndex,
+        VitalPointLocations.IsValidIndex(ActiveVitalIndex)
+            ? *VitalPointLocations[ActiveVitalIndex].BoneName.ToString() : TEXT("BADIDX"),
+        BoneIdx, Distance, HitDetectionRadius, Distance <= HitDetectionRadius ? 1 : 0);
+
     return Distance <= HitDetectionRadius;
 }
 

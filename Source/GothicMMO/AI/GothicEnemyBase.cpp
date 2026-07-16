@@ -195,6 +195,7 @@ void AGothicEnemyBase::PlayDeathCosmetics()
         GetMesh()->SetCollisionProfileName(FName("Ragdoll"));
         GetMesh()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
         GetMesh()->SetSimulatePhysics(true);
+        GetMesh()->SetCollisionResponseToChannel(ECC_Weapon, ECR_Block);
     }
 
     GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);

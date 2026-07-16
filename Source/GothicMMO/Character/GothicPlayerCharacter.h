@@ -17,7 +17,9 @@
 
 #include "CoreMinimal.h"
 #include "Character/GothicCharacterBase.h"
+#include "GothicMMO.h"
 #include "GothicPlayerCharacter.generated.h"
+
 
 
 
@@ -42,9 +44,7 @@ public:
     virtual void OnRep_PlayerState() override;
     virtual void Tick(float DeltaTime) override;
 
-    // BlueprintCallable so Blueprint Event Graph can invoke these directly
-    UFUNCTION(BlueprintCallable, Category = "Combat")
-    void OnFire();
+
 
     UFUNCTION(BlueprintCallable, Category = "Combat")
     void OnMelee();
@@ -58,6 +58,13 @@ public:
     
     // GothicPlayerCharacter.h — add to public section
     virtual void OnDeath_Implementation(AActor* Killer) override;
+    
+    /** True if the magazine has at least one round. Gates GA_Fire activation. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Ammo")
+    bool HasRoundChambered() const { return CurrentMagazineAmmo > 0; }
+
+    /** Decrements the magazine and notifies the HUD. Called by GA_Fire on commit. */
+    void ConsumeRound();
 
 protected:
     virtual void BeginPlay() override;
@@ -232,8 +239,7 @@ protected:
 
 private:
     bool bHUDReady = false;
-    bool bAbilitiesGranted = false;
     float CurrentRecoilPitch = 0.f;
     bool IsReckoningActive() const;
-    bool bAmmoDelegateBound = false;
+    bool bAttributeDelegatesBound = false;
 };

@@ -10,6 +10,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "DrawDebugHelpers.h"
 #include "GothicVitalPointComponent.generated.h"
 
 // ── Structs ──────────────────────────────────────────────────────────────────
@@ -148,6 +149,10 @@ public:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|VitalPoint")
     float HitDetectionRadius = 30.f;
+    
+    /** Editor only — draws the actual hit volume so it can be compared against the shimmer. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gothic|VitalPoint")
+    bool bDebugDrawVital = false;
 
     /**
      * If true, the vital point also shifts on an independent timer

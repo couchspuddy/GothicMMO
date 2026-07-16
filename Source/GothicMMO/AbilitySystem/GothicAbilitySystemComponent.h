@@ -28,6 +28,7 @@ enum class EGothicAbilitySlot : uint8
     Ability2      UMETA(DisplayName = "Ability 2"),
     Ability3      UMETA(DisplayName = "Ability 3"),
     SuperAbility  UMETA(DisplayName = "Super / Covenant Power"),
+    PrimaryFire   UMETA(DisplayName = "Primary Fire"),
 };
 
 UCLASS()
