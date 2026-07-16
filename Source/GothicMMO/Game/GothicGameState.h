@@ -18,9 +18,7 @@ class GOTHICMMO_API AGothicGameState : public AGameStateBase
 	GENERATED_BODY()
 
 public:
-	/** The corpse currently showing an active, uncollected shared Selah prompt. Null = no active prompt. */
-	UPROPERTY(ReplicatedUsing = OnRep_ActivePromptCorpse, BlueprintReadOnly, Category = "Gothic|Selah")
-	TObjectPtr<AGothicEnemyBase> ActivePromptCorpse;
+
 
 	/** World location of the most recently completed encounter — the current checkpoint. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gothic|Checkpoint")
@@ -35,8 +33,29 @@ public:
 	void OnEncounterPromptCollected();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	
+	/**
+ * Server-side setter for the shared prompt. ALWAYS use this — never assign
+ * ActivePromptCorpse directly.
+ *
+ * OnRep fires only on clients receiving replicated data. It never fires on the
+ * authority that authored the change, and never at all in standalone PIE where
+ * no replication occurs. Direct assignment therefore fires the prompt events on
+ * remote clients only — and on nobody in standalone. This calls OnRep by hand so
+ * the authority sees its own change like everyone else.
+ */
+	UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+	void SetActivePromptCorpse(AGothicEnemyBase* NewPromptCorpse);
+
+	/** Read-only access — assignment must go through SetActivePromptCorpse. */
+	UFUNCTION(BlueprintPure, Category = "Gothic|Selah")
+	AGothicEnemyBase* GetActivePromptCorpse() const { return ActivePromptCorpse; }
 
 protected:
+	/** The corpse currently showing an active, uncollected shared Selah prompt. Null = no active prompt. */
+	UPROPERTY(ReplicatedUsing = OnRep_ActivePromptCorpse, BlueprintReadOnly, Category = "Gothic|Selah")
+	TObjectPtr<AGothicEnemyBase> ActivePromptCorpse;
+	
 	UFUNCTION()
 	void OnRep_ActivePromptCorpse();
 };

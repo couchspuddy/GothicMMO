@@ -135,8 +135,7 @@ void AGothicEncounterVolume::HandleEnemyDied(AGothicEnemyBase* DeadEnemy)
         AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr;
         if (GS)
         {
-            GS->ActivePromptCorpse = LastEnemyToDie;
-            GS->ForceNetUpdate();
+            GS->SetActivePromptCorpse(LastEnemyToDie);
             UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: Complete — prompt on %s, cached %.1f Selah"),
                 *GetName(), LastEnemyToDie ? *LastEnemyToDie->GetName() : TEXT("Unknown"), CachedTotalSelah);
         }
@@ -152,7 +151,7 @@ void AGothicEncounterVolume::CompleteCollection()
     }
 
     AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr;
-    if (!GS || GS->ActivePromptCorpse != LastEnemyToDie)
+    if (!GS || GS->GetActivePromptCorpse() != LastEnemyToDie)
     {
         return;
     }
@@ -212,8 +211,7 @@ void AGothicEncounterVolume::CompleteCollection()
     }
 
     GS->CheckpointLocation = GetActorLocation();
-    GS->ActivePromptCorpse = nullptr;
-    GS->ForceNetUpdate();
+    GS->SetActivePromptCorpse(nullptr);
 
     // Reward is secured — safe to clean up every corpse in this encounter now.
     for (AGothicEnemyBase* Enemy : EncounterEnemies)
@@ -249,10 +247,9 @@ void AGothicEncounterVolume::AddWaveToEncounter(const TArray<AGothicEnemyBase*>&
         *GetName(), AddedCount, RemainingEnemyCount);
 
     AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr;
-    if (GS && LastEnemyToDie && GS->ActivePromptCorpse == LastEnemyToDie)
+    if (GS && LastEnemyToDie && GS->GetActivePromptCorpse() == LastEnemyToDie)
     {
-        GS->ActivePromptCorpse = nullptr;
-        GS->ForceNetUpdate();
+        GS->SetActivePromptCorpse(nullptr);
         UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: Prompt retracted — new wave arrived"),
             *GetName());
     }

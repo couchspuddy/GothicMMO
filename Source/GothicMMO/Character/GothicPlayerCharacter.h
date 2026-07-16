@@ -19,7 +19,7 @@
 #include "Character/GothicCharacterBase.h"
 #include "GothicPlayerCharacter.generated.h"
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCollectionInterrupted);
+
 
 class UCameraComponent;
 class UInputMappingContext;
@@ -168,14 +168,24 @@ protected:
     UPROPERTY(BlueprintReadWrite, Category = "Gothic|Combat")
     bool bPistolBound = false;
     
-    UPROPERTY(BlueprintReadWrite, Category = "Gothic|Selah")
-    bool bCollecting = false;
-    
-    UPROPERTY(BlueprintAssignable, Category = "Gothic|Selah")
-    FOnCollectionInterrupted OnCollectionInterrupted;
 
-    UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
-    void CancelCollectionRite();
+
+    
+    /**
+ * Fired whenever magazine or reserve ammo changes, for any reason.
+ * The HUD binds to this rather than reading the properties directly, so that
+ * moving ammo behind a Server RPC / OnRep later does not touch the UI layer.
+ *
+ * AUTHORITY NOTE: today this broadcasts from client-local fire/reload code
+ * (OnFire, TapReload and HoldReload are input-bound with no Server RPC — this
+ * chain is standalone/listen-host only). Ammo is deliberately NOT replicated
+ * for that reason: a replicated property would be clobbered by the server's
+ * stale value on the next update. When fire moves server-side, add
+ * ReplicatedUsing = OnRep_Ammo and broadcast from there instead. Nothing
+ * downstream of this delegate needs to change.
+ */
+    DECLARE_MULTICAST_DELEGATE_FourParams(FOnAmmoChanged, int32 /*Magazine*/, int32 /*MagCapacity*/, int32 /*Reserve*/, int32 /*MaxReserve*/);
+    FOnAmmoChanged OnAmmoChanged;
     // Per-weapon ammo state — belongs in GothicPlayerCharacter.h
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Ammo")
     int32 MagazineCapacity = 6;
@@ -200,7 +210,11 @@ protected:
     void OnReloadReleased();
     void TapReload();
     void HoldReload();
-    
+    /** Pushes current ammo to the local HUD. Single funnel — call after ANY ammo mutation. */
+    void BroadcastAmmoChanged();
+
+    /** Returns the HUD belonging to THIS pawn's controller, not the first PC in the world. */
+    class AGothicHUD* GetLocalGothicHUD() const;
     
 
     // -------------------------------------------------------------------------
@@ -221,4 +235,5 @@ private:
     bool bAbilitiesGranted = false;
     float CurrentRecoilPitch = 0.f;
     bool IsReckoningActive() const;
+    bool bAmmoDelegateBound = false;
 };

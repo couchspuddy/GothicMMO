@@ -58,12 +58,6 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Gothic|Enemy")
     AActor* GetCombatTarget() const { return CombatTarget; }
-    UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
-    void AwardSelahToNearbyEmbers();
-    UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
-    static void CollectAllNearbyCorpses(AActor* Collector, float Radius, UObject* WorldContext);
-    UPROPERTY(BlueprintReadWrite, Category = "Gothic|Selah")
-    bool bCollected = false;
     /** Broadcast when this enemy dies. AGothicEncounterVolume subscribes to track encounter completion. */
     UPROPERTY(BlueprintAssignable, Category = "Gothic|Enemy")
     FOnEnemyDied OnEnemyDied;

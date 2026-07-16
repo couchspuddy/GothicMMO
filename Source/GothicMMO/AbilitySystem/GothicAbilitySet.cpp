@@ -3,6 +3,7 @@
 #include "AbilitySystem/GothicAbilitySet.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
+#include "GameplayEffect.h"
 
 void UGothicAbilitySet::GiveToAbilitySystem(
     UGothicAbilitySystemComponent* ASC,
@@ -96,19 +97,56 @@ void UGothicAbilitySet::GiveToAbilitySystem(
     {
         if (!EffectClass) continue;
 
+        const UGameplayEffect* EffectCDO = EffectClass->GetDefaultObject<UGameplayEffect>();
+        if (!EffectCDO)
+        {
+            continue;
+        }
+
+        // ---- idempotency guard ----
+        // The player's ASC lives on the PlayerState and survives death, but the
+        // pawn does not — so a respawned pawn runs this grant path again against
+        // an ASC that is already carrying everything from last life. Without this,
+        // every death stacks another copy of every effect in the set.
+        //
+        // Ask the ASC what it is actually carrying rather than asking a pawn what
+        // it remembers doing. A pawn-side bool cannot answer this correctly,
+        // because the pawn is the thing being replaced.
+        //
+        // LIMITATION: this only works for Duration/Infinite effects. Instant
+        // effects execute and are never added to ActiveGameplayEffects, so there
+        // is nothing to query — see the warning below.
+        if (EffectCDO->DurationPolicy == EGameplayEffectDurationType::Instant)
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("GothicAbilitySet: %s in %s's GrantedEffects is Instant — CANNOT be guarded against ")
+                TEXT("double-apply and WILL re-apply on every respawn. GrantedEffects is for persistent ")
+                TEXT("passives (Infinite); an Instant effect belongs in an ability's activation path instead."),
+                *EffectClass->GetName(), *GetName());
+        }
+        else
+        {
+            FGameplayEffectQuery Query;
+            Query.EffectDefinition = EffectClass;
+
+            if (ASC->GetActiveEffects(Query).Num() > 0)
+            {
+                UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: %s already active — skipping duplicate apply"),
+                    *EffectClass->GetName());
+                continue;
+            }
+        }
+        // ---- END guard ----
+
         FGameplayEffectContextHandle Context = ASC->MakeEffectContext();
         Context.AddSourceObject(SourceObject);
 
-        FGameplayEffectSpecHandle SpecHandle = ASC->MakeOutgoingSpec(
-            EffectClass, 1.f, Context);
+        FGameplayEffectSpecHandle SpecHandle = ASC->MakeOutgoingSpec(EffectClass, 1.f, Context);
 
         if (SpecHandle.IsValid())
         {
             ASC->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
-            UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: Applied effect %s"),
-                *EffectClass->GetName());
+            UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: Applied effect %s"), *EffectClass->GetName());
         }
     }
-
-    UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: Grant complete"));
 }

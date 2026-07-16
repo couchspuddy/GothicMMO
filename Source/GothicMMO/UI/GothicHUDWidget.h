@@ -79,6 +79,25 @@ public:
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
     void OnOwningPawnChanged(APawn* NewPawn);
     
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
+    void OnAmmoChanged(int32 Magazine, int32 MagazineCapacity, int32 Reserve, int32 MaxReserve);
+
+    /** Binary signal — magazine hit zero. Drives the empty-state tell. */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
+    void OnMagazineEmpty();
+
+    UPROPERTY(BlueprintReadOnly, Category = "Gothic|HUD|Ammo")
+    int32 CachedMagazineAmmo = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Gothic|HUD|Ammo")
+    int32 CachedMagazineCapacity = 6;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Gothic|HUD|Ammo")
+    int32 CachedReserveAmmo = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Gothic|HUD|Ammo")
+    int32 CachedMaxReserveAmmo = 18;
+    
 protected:
     virtual void NativeConstruct() override;
 

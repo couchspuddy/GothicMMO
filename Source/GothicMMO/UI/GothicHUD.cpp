@@ -1,6 +1,8 @@
 // GothicHUD.cpp
 
 #include "UI/GothicHUD.h"
+
+#include "Engine/Engine.h"
 #include "UI/GothicHUDWidget.h"
 #include "UI/GothicCrosshairWidget.h"
 #include "GameFramework/Character.h"
@@ -253,4 +255,28 @@ void AGothicHUD::NotifyOwningPawnChanged(APawn* NewPawn)
 
     UE_LOG(LogTemp, Log, TEXT("AGothicHUD: Notified widgets of owning pawn change — %s"),
         NewPawn ? *NewPawn->GetName() : TEXT("NULL"));
+}
+
+void AGothicHUD::UpdateAmmo(int32 Magazine, int32 MagCapacity, int32 Reserve, int32 MaxReserve)
+{
+    if (!ActiveHUDWidget)
+    {
+        return;
+    }
+    
+    UE_LOG(LogTemp, Log, TEXT("UpdateAmmo: Mag=%d/%d Reserve=%d/%d | Widget=%s"),
+    Magazine, MagCapacity, Reserve, MaxReserve,
+    ActiveHUDWidget ? *ActiveHUDWidget->GetClass()->GetName() : TEXT("NULL"));
+
+    ActiveHUDWidget->CachedMagazineAmmo     = Magazine;
+    ActiveHUDWidget->CachedMagazineCapacity = MagCapacity;
+    ActiveHUDWidget->CachedReserveAmmo      = Reserve;
+    ActiveHUDWidget->CachedMaxReserveAmmo   = MaxReserve;
+
+    ActiveHUDWidget->OnAmmoChanged(Magazine, MagCapacity, Reserve, MaxReserve);
+
+    if (Magazine == 0)
+    {
+        ActiveHUDWidget->OnMagazineEmpty();
+    }
 }

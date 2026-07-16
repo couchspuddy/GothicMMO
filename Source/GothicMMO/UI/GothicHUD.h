@@ -72,6 +72,9 @@ public:
     // AGothicHUD.h — add to public section, alongside the other Update* passthroughs
     UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
     void NotifyOwningPawnChanged(APawn* NewPawn);
+    
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
+    void UpdateAmmo(int32 Magazine, int32 MagazineCapacity, int32 Reserve, int32 MaxReserve);
 protected:
     // -------------------------------------------------------------------------
     // Widget classes — assign in BP_GothicHUD

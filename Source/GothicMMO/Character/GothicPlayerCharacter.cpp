@@ -23,15 +23,13 @@
 #include "AI/GothicVitalPointComponent.h"
 #include "Engine/Engine.h"
 #include "Components/CapsuleComponent.h"
-#include "AI/GothicVitalPointComponent.h"
-#include "Engine/Engine.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "Game/GothicGameMode.h"
 #include "Kismet/GameplayStatics.h"
 #include "AI/GothicEnemyBase.h"
 #include "AI/GothicEnemyAIController.h"
 #include "AI/GothicEncounterVolume.h"
-#include "AI/GothicCombatStateComponent.h"
+
 
 
 AGothicPlayerCharacter::AGothicPlayerCharacter()
@@ -91,6 +89,7 @@ void AGothicPlayerCharacter::BeginPlay()
     {
         APlayerController* PC = GetWorld()->GetFirstPlayerController();
         AGothicHUD* GothicHUD = PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
+        
 
         UE_LOG(LogTemp, Log, TEXT("HUD Timer fired | PC: %s | GothicHUD: %s | Widget: %s"),
             PC ? TEXT("Valid") : TEXT("NULL"),
@@ -103,6 +102,7 @@ void AGothicPlayerCharacter::BeginPlay()
         }
 
         bHUDReady = true;
+        BroadcastAmmoChanged(); // initial push — widget now exists
     }, 0.1f, false);
 }
 
@@ -228,6 +228,18 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
                     GothicHUD->UpdateSuperMeter(Data.NewValue, AttributeSet->GetMaxSuperMeter());
                 }
             });
+        if (!bAmmoDelegateBound)
+        {
+            OnAmmoChanged.AddLambda([this](int32 Mag, int32 MagCap, int32 Reserve, int32 MaxReserve)
+            {
+                if (AGothicHUD* GothicHUD = GetLocalGothicHUD())
+                {
+                    GothicHUD->UpdateAmmo(Mag, MagCap, Reserve, MaxReserve);
+                    
+                }
+            });
+            bAmmoDelegateBound = true;
+        }
 
         UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Attribute delegates registered"));
     }
@@ -365,6 +377,7 @@ void AGothicPlayerCharacter::OnFire()
         return;
     }
     CurrentMagazineAmmo--;
+    BroadcastAmmoChanged();
 
     const FVector Start = FirstPersonCamera->GetComponentLocation();
     const FVector End   = Start + (FirstPersonCamera->GetForwardVector() * 5000.f);
@@ -437,6 +450,22 @@ void AGothicPlayerCharacter::OnFire()
     {
         UE_LOG(LogTemp, Log, TEXT("OnFire: No hit"));
     }
+}
+
+AGothicHUD* AGothicPlayerCharacter::GetLocalGothicHUD() const
+{
+    if (!IsLocallyControlled())
+    {
+        return nullptr;
+    }
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    return PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
+}
+
+void AGothicPlayerCharacter::BroadcastAmmoChanged()
+{
+    OnAmmoChanged.Broadcast(CurrentMagazineAmmo, MagazineCapacity,
+                            CurrentReserveAmmo, MaxReserveAmmo);
 }
 
 void AGothicPlayerCharacter::OnMelee()
@@ -516,10 +545,7 @@ void AGothicPlayerCharacter::OnADSEnd()
     GetCharacterMovement()->MaxWalkSpeed = 500.f;
 }
 
-void AGothicPlayerCharacter::CancelCollectionRite()
-{
-    UE_LOG(LogTemp, Log, TEXT("CancelCollectionRite: Called"));
-}
+
 
 // cpp implementations
 void AGothicPlayerCharacter::OnReloadPressed()
@@ -548,6 +574,7 @@ void AGothicPlayerCharacter::TapReload()
 
     CurrentMagazineAmmo += AmmoToTransfer;
     CurrentReserveAmmo -= AmmoToTransfer;
+    BroadcastAmmoChanged();
 
     UE_LOG(LogTemp, Log, TEXT("TapReload: Magazine %d/%d, Reserve %d"),
         CurrentMagazineAmmo, MagazineCapacity, CurrentReserveAmmo);
@@ -596,6 +623,7 @@ void AGothicPlayerCharacter::HoldReload()
     if (ActualAmmoGranted > 0.f)
     {
         CurrentReserveAmmo = FMath::Min(CurrentReserveAmmo + FMath::RoundToInt(ActualAmmoGranted), MaxReserveAmmo);
+        BroadcastAmmoChanged();
         UE_LOG(LogTemp, Log, TEXT("HoldReload: Tier conversion — cost %.1f, granted %d ammo, Reserve now %d"),
             SteadfastCost, FMath::RoundToInt(ActualAmmoGranted), CurrentReserveAmmo);
     }
