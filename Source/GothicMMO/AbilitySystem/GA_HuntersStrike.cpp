@@ -1,6 +1,7 @@
 // GA_HuntersStrike.cpp
 
 #include "AbilitySystem/GA_HuntersStrike.h"
+#include "AI/GothicEnemyBase.h"
 #include "Abilities/Tasks/AbilityTask_PlayMontageAndWait.h"
 #include "Abilities/Tasks/AbilityTask_WaitGameplayEvent.h"
 #include "AbilitySystemBlueprintLibrary.h"
@@ -152,18 +153,20 @@ void UGA_HuntersStrike::PerformMeleeTrace()
             }
         }
 
-        GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Orange,
-            FString::Printf(TEXT("Hit: %s"), *HitActor->GetName()));
-
         ApplyDamageToTarget(HitActor, DamageEffectClass, DamageMultiplier);
         AlreadyHit.Add(HitActor);
-        
-        // After ApplyDamageToTarget
-        if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
+
+        // Fan the hit out to every client, the same way GA_Fire does. This was the
+        // last silent damage site in the melee path.
+        //
+        // Replaces the camera shake that used to live here: it called
+        // GetWorld()->GetFirstPlayerController(), which on a server is player 0 and
+        // not the attacker, so in a Kindle it shook the wrong person's camera. It
+        // also fired once per target inside this loop, unclamped. Feedback belongs
+        // on the owning client, which is what MulticastOnHit -> OnHitFeedback is for.
+        if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(HitActor))
         {
-            GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, 
-                TEXT("Camera shake triggered"));
-            PC->ClientStartCameraShake(CameraShakeClass);
+            HitEnemy->MulticastOnHit(HitActor->GetActorLocation(), false);
         }
 
         // Only gain super meter if we actually hit something

@@ -129,7 +129,7 @@ protected:
      * Gives time for death animations and loot interaction.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
-    float CorpseLifetime = 10.f;
+    float CorpseLifetime = 120.f;
 
     /**
      * Optional loot table DataAsset.

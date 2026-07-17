@@ -287,13 +287,39 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
     }
 }
 
+void AGothicPlayerCharacter::ApplyRecoilKick()
+{
+    // Tick interpolates CurrentRecoilPitch back toward zero and feeds each frame's
+    // delta into AddControllerPitchInput, so the deltas sum to exactly -Kick and the
+    // player's aim returns to where it started. All this needs to do is add the kick
+    // and apply it once.
+    //
+    // If the gun kicks the wrong way in engine, negate RecoilKickPitch in the
+    // Blueprint rather than flipping the sign here — the recovery reads the same
+    // property and the two must agree.
+    // Request only. Tick owns the rotation — applying it here is what made the
+    // gun teleport on frame 1.
+    //
+    // Rapid fire stacks correctly by construction: shots add to the target faster
+    // than recovery bleeds it, so the sixth round climbs from a higher base than
+    // the first. That climb is what makes a 6-round magazine a constraint rather
+    // than a number on the HUD.
+    TargetRecoilPitch += RecoilKickPitch;
+}
+
 void AGothicPlayerCharacter::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
-    float PreviousRecoilPitch = CurrentRecoilPitch;
-    CurrentRecoilPitch = FMath::FInterpTo(CurrentRecoilPitch, 0.f, DeltaTime, RecoilRecoverySpeed);
-    float RecoilDelta = CurrentRecoilPitch - PreviousRecoilPitch;
-    if (Controller)
+    // Two curves, one applied delta. The camera chases the target quickly; the
+    // target decays slowly. Both start and end at zero, so the deltas sum to zero
+    // and the player's aim returns exactly where it began.
+    const float PreviousRecoilPitch = CurrentRecoilPitch;
+
+    CurrentRecoilPitch = FMath::FInterpTo(CurrentRecoilPitch, TargetRecoilPitch, DeltaTime, RecoilRiseSpeed);
+    TargetRecoilPitch  = FMath::FInterpTo(TargetRecoilPitch,  0.f,               DeltaTime, RecoilRecoverySpeed);
+
+    const float RecoilDelta = CurrentRecoilPitch - PreviousRecoilPitch;
+    if (Controller && !FMath::IsNearlyZero(RecoilDelta))
     {
         AddControllerPitchInput(RecoilDelta);
     }

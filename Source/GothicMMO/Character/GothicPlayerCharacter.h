@@ -66,6 +66,19 @@ public:
     /** Decrements the magazine and notifies the HUD. Called by GA_Fire on commit. */
     void ConsumeRound();
 
+    /**
+     * Kicks the camera up by RecoilKickPitch and hands the recovery to Tick.
+     *
+     * The recovery loop in Tick has always been correct and has never had a caller —
+     * RecoilKickPitch sat in this header with no reader, so the gun had a recoil
+     * recovery system and no recoil. This is the missing half.
+     *
+     * Local-only cosmetic. Call from GA_Fire's IsLocallyControlled block, never
+     * from the server path.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Combat")
+    void ApplyRecoilKick();
+
 protected:
     virtual void BeginPlay() override;
 
@@ -75,9 +88,28 @@ protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
     TObjectPtr<UCameraComponent> FirstPersonCamera;
     
+    /**
+     * Degrees added to the recoil target per shot. This is a request, not an
+     * applied rotation — Tick chases it at RecoilRiseSpeed. Because the target
+     * decays while the camera is still climbing toward it, the visible peak lands
+     * around 70% of this value. Tune by feel, not arithmetic.
+     */
     UPROPERTY(EditDefaultsOnly, Category = "Combat|Recoil")
-    float RecoilKickPitch = 2.0f;
+    float RecoilKickPitch = 5.0f;
 
+    /**
+     * How fast the camera climbs toward the target. This is the node that was
+     * missing: AddControllerPitchInput applies a one-frame rotation delta, so a
+     * direct kick teleports the camera on frame 1 and reads as a twitch rather
+     * than a gun going off. ~30 gives roughly a 4-frame rise at 60fps.
+     *
+     * Must stay meaningfully above RecoilRecoverySpeed or the camera never
+     * catches the target and the kick flattens to nothing.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Combat|Recoil")
+    float RecoilRiseSpeed = 30.0f;
+
+    /** How fast the target bleeds back to zero. Aim always returns to origin. */
     UPROPERTY(EditDefaultsOnly, Category = "Combat|Recoil")
     float RecoilRecoverySpeed = 8.0f;
     
@@ -107,8 +139,6 @@ protected:
     void OnADSStart();
     void OnADSEnd();
 
-    float CurrentRecoilOffset = 0.f;
-    float TargetRecoilOffset = 0.f;
 
     // -------------------------------------------------------------------------
     // Input Mapping Context
@@ -240,6 +270,9 @@ protected:
 private:
     bool bHUDReady = false;
     float CurrentRecoilPitch = 0.f;
+
+    /** Where the camera is climbing to. Shots add, Tick bleeds it away. */
+    float TargetRecoilPitch = 0.f;
     bool IsReckoningActive() const;
     bool bAttributeDelegatesBound = false;
 };

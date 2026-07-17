@@ -1,6 +1,7 @@
 // GothicEnemyBase.cpp
 
 #include "AI/GothicEnemyBase.h"
+#include "GothicMMO.h"                          // ECC_Weapon
 #include "AI/GothicCombatStateComponent.h"
 #include "TimerManager.h"
 #include "AI/GothicEnemyAIController.h"
@@ -66,6 +67,24 @@ AGothicEnemyBase::AGothicEnemyBase()
 void AGothicEnemyBase::BeginPlay()
 {
     Super::BeginPlay();
+
+    // ECC_Weapon defaults to ECR_Ignore (DefaultEngine.ini) — every enemy mesh is
+    // transparent to hitscan unless something blocks it. Until now the only place
+    // that did was PlayDeathCosmetics, so a living enemy could not be shot at all;
+    // BP_Enemy_Draugr only worked because its Blueprint set the response by hand,
+    // which made an architectural gap look like a per-Blueprint override.
+    //
+    // Set at runtime, not in the constructor, deliberately: a Blueprint's serialized
+    // collision override beats constructor defaults, so a stale override on any enemy
+    // BP would silently reopen this. A BeginPlay write wins over both.
+    if (GetMesh())
+    {
+        GetMesh()->SetCollisionResponseToChannel(ECC_Weapon, ECR_Block);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("%s: No Mesh on BeginPlay — this enemy cannot be shot."), *GetName());
+    }
 
     InitializeGAS();
 

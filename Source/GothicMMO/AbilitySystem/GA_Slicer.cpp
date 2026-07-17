@@ -1,6 +1,7 @@
 ﻿// GA_Slicer.cpp
 
 #include "AbilitySystem/GA_Slicer.h"
+#include "AI/GothicEnemyBase.h"
 #include "AbilitySystem/AGothicSlicerProjectile.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
@@ -122,6 +123,16 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
                         SlicerDamage);
 
                     SourceASC->ApplyGameplayEffectSpecToTarget(*DamageSpec.Data.Get(), TargetASC);
+
+                    // Fan the hit out to every client. GA_Fire has always done this;
+                    // Slicer applied damage and told nobody, so on remote machines the
+                    // impact was a silent number decrement. bWasVital is false — the
+                    // Slicer doesn't resolve vitals today.
+                    if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(HitActor))
+                    {
+                        HitEnemy->MulticastOnHit(HitActor->GetActorLocation(), false);
+                    }
+
                     UE_LOG(LogTemp, Log, TEXT("GA_Slicer: %.1f damage applied to %s"),
                         SlicerDamage, *HitActor->GetName());
                 }

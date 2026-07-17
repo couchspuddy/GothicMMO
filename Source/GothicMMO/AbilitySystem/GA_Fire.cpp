@@ -87,6 +87,7 @@ void UGA_Fire::ActivateAbility(
     // Cosmetic half — instant, local, never waits on the server.
     if (ActorInfo->IsLocallyControlled())
     {
+        Char->ApplyRecoilKick();
         OnFireCosmetic();
     }
 
@@ -187,4 +188,3 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     UE_LOG(LogTemp, Log, TEXT("GA_Fire: Hit=%s | Bone=%s | Vital=%d | Dmg=%.1f"),
         *Hit.GetActor()->GetName(), *Hit.BoneName.ToString(), bIsVitalHit ? 1 : 0, FinalDamage);
 }
-
