@@ -1,6 +1,6 @@
 # The Economy
 **Vigil — Resource & Loot Design Document**
-*Status: Locked — Core Structure*
+*Status: Locked — Core Structure. **Amended July 16, 2026** — see ITEMIZATION_AND_LOOT.md, which supersedes this document on four points: Pilgrimage item variance, the scope of the "Selah cannot buy best-in-slot" rule, Pure/Unique drop sourcing, and rarity naming. Amended passages below are marked inline. Everything else here stands.*
 
 ---
 
@@ -42,6 +42,8 @@ Because each axis is independently tunable, none of them can be rebalanced into 
 
 **Design rule:** A player's gear ceiling is capped by their *best drop*, not their Selah stockpile. Grinding currency alone cannot buy best-in-slot — only fully realize what has already been earned.
 
+**Scope clarified July 16, 2026 — the rule stands, its boundary is now explicit.** Selah does two things at the Binder: raise stars, and **re-roll secondary lines**. Re-rolling is technically grinding currency toward a better piece, so the rule needs a sharper edge: **Selah buys attempts, not outcomes.** Re-rolls are random and never directed — a player cannot select a stat. The drop still sets the ceiling, luck still sets the roll, and a player with a mountain of Selah and a bad piece still has a bad piece.
+
 **Rolled stats:** Standard gear drops have variable stats around a class-biased primary stat (e.g. a Warden piece leans Defense but can roll higher Defense or roll secondary stats). This creates a chase loop independent of the ceiling system — players seek not just high-ceiling pieces, but well-rolled ones.
 
 **Why variance exists here:** Variance justifies repeated engagement with the same activity. This is the intended endgame grind loop.
@@ -81,11 +83,19 @@ Because each axis is independently tunable, none of them can be rebalanced into 
 - Lore-forward — may include environmental storytelling, discernible lore pieces, or minimal combat depending on the specific Pilgrimage
 - Exact content mix to be finalized during full build-out; the destination and narrative payload are locked, the path there is flexible
 
-**The reward:** A unique item, one of several possible per source (e.g. the Bestial Lucid may yield one of three different unique pieces). Each unique item is accompanied by a fragment of that Accursed's life before the Bleed — a piece of who they were before the inversion.
+**The reward:** A **Pure** item — one of three possible per source (e.g. the Bestial Lucid yields one of three different Pure pieces). Each is accompanied by a fragment of that Accursed's life before the Bleed.
 
-**Stats:** Pure Selah / Pilgrimage items have **static stats**. No variance, no rolling. This is a deliberate contrast to standard gear.
+**Locked July 16, 2026 — the three fragments are three pieces of the same life.** Recovering all three of a source's Pure items is how a player comes to understand who that Accursed was before the inversion. This makes the item chase and the lore chase the identical action.
 
-**Why static, not rolled:** Variance exists to encourage repetition of an activity. Pilgrimage items are one-time narrative payloads — the fragment of a life is the reward, not a stat roll. Introducing variance here would implicitly ask players to repeat a deeply personal narrative mission for a marginally better number, which corrodes the thing that makes the item meaningful. Variance belongs wherever repetition is desired; it must be absent wherever repetition would undermine meaning.
+**Locked July 16, 2026 — the Pilgrimage is the only path to Pure gear.** Pure items do not drop from any loot pool. Lucid enemies top out at Resonant and instead carry the highest Pure Selah drop rate, which the tier-scaling rule above already justifies. This closes the long-open question of Pure Selah's role relative to the top gear tier: they are not parallel systems competing for the same design space — Pure Selah is the *access mechanism* for Pure gear, and nothing else grants it.
+
+**Stats:** ~~Pure Selah / Pilgrimage items have **static stats**. No variance, no rolling.~~ — **AMENDED July 16, 2026.** Pure items roll secondary lines and re-roll at Sean. See ITEMIZATION_AND_LOOT.md.
+
+**Why this changed:** the static rule was derived from the premise *"Pilgrimage items are one-time narrative payloads."* That premise no longer holds — the Pilgrimage is now repeatable content with three destinations per Accursed source, and is the **only** path to Pure gear. This document's own principle, *"variance belongs wherever repetition is desired,"* therefore now argues **for** variance here rather than against it.
+
+**The original concern is still correct and is still honored** — just structurally instead of by prohibition. The fear was that variance *"would implicitly ask players to repeat a deeply personal narrative mission for a marginally better number."* It cannot: the Pilgrimage is architecturally incapable of improving a roll on an item you already hold. New rolls come from Sean, who costs Selah and nobody's memory. The Pilgrimage grants only new items and new fragments. Each activity does one job and cannot be made to do the other's.
+
+**The fragment is never farmable.** Each source yields one of three Pure items, each carrying a fragment of that Accursed's life; the three fragments are three pieces of the same person's story, and collecting all three is how you come to understand who they were. Once all three are recovered, that source's Pilgrimage has nothing left to give. The item chase and the lore chase are the same action — you re-run her Pilgrimage to finish knowing her, not to shave a number.
 
 **Trading:** Pilgrimage items are **never tradeable**, under any circumstance. Each one is tied to a specific player's Prior Flame being guided to a specific fragment of a specific life — trading it would be narratively incoherent independent of any economic argument.
 
@@ -131,11 +141,13 @@ This economy structure was built to satisfy several existing Vigil design tenets
 
 ## Open Items For Future Development
 
-- Exact loot pool quality bands per activity tier (standard / mini-boss / raid)
-- Full Pilgrimage mission content design (semi-random structure, specific lore-piece implementation)
+- ~~Exact loot pool quality bands per activity tier~~ — **CLOSED July 16, 2026.** Drop eligibility is now gated by *enemy tier* rather than activity tier: Thrall → Salvage/Kept, Retained → Kept/Remembered, Lucid → Remembered/Resonant. See ITEMIZATION_AND_LOOT.md.
+- Full Pilgrimage mission content design (semi-random structure, specific lore-piece implementation). **Now higher priority than when filed** — the Pilgrimage is the sole source of top-tier gear, not a side narrative, so this is endgame activity design.
 - Resonant Level progression curve and its relationship to Resonance Strain thresholds
 - Final decision on lottery odds visibility
 - Whether Selah gifting (non-marketplace, direct player-to-player) should be reconsidered — currently locked as fully non-tradeable
+- **Hollow reward currency** — the Hollow are pre-human and drop no gear. What they *do* drop is undesigned.
+- **Re-roll cost model** — flat-per-tier recommended in ITEMIZATION_AND_LOOT.md; not locked.
 
 ---
 

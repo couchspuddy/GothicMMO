@@ -1,6 +1,8 @@
 # Production Status Tracker
 **Vigil — Living Project State Document**
-*Last updated: July 15, 2026 (night) — HUD and Selah session. Ammo renders on the HUD for the first time; the Selah prompt renders for the first time, closing gate item 6. `OnFire` converted to `GA_Fire`, a real GAS ability. **The single most consequential fix: weapon traces ran on `ECC_Pawn` and therefore stopped at the capsule — `Hit.ImpactPoint` had never touched the mesh.** That is the root cause of both the "random" vital point detection and the July 14 boss-takes-no-hitscan-damage defect, which was papered over by resizing her capsule. New `ECC_Weapon` channel; the mesh blocks it, capsules ignore it. Three dead systems deleted, six silent-failure defects closed, two new standing gotchas filed. The July 25 mini-boss half is still untouched.*
+*Last updated: July 16, 2026 — design-only session, no engine work. **The finding: two full design sessions from July 14 were never committed.** `STATS_AND_ITEMIZATION.md` and the non-Selah loot doc existed only in chat logs, which is why the 🔴 rows below said "fully designed" while pointing at nothing. Both are now consolidated into `ITEMIZATION_AND_LOOT.md` (single doc — the rarity ladder was the shared spine and would have drifted across two files). Four design changes folded in: the Pilgrimage is now the **only** source of top-tier (Pure) gear, closing the long-open Pure Selah/Unique overlap; Pure items roll and re-roll, reversing the "static stats" rule; roll variance no longer shrinks to zero at Tier 5; the rarity ladder is renamed to Salvage/Kept/Remembered/Resonant/Pure. `ECONOMY_SYSTEM.md` amended on four points with inline markers. **No gate items moved. The July 25 mini-boss half is still untouched and still the only thing with a date on it.***
+
+*Prior entry: July 15, 2026 (night) — HUD and Selah session. Ammo renders on the HUD for the first time; the Selah prompt renders for the first time, closing gate item 6. `OnFire` converted to `GA_Fire`, a real GAS ability. **The single most consequential fix: weapon traces ran on `ECC_Pawn` and therefore stopped at the capsule — `Hit.ImpactPoint` had never touched the mesh.** That is the root cause of both the "random" vital point detection and the July 14 boss-takes-no-hitscan-damage defect, which was papered over by resizing her capsule. New `ECC_Weapon` channel; the mesh blocks it, capsules ignore it. Three dead systems deleted, six silent-failure defects closed, two new standing gotchas filed. The July 25 mini-boss half is still untouched.*
 
 *Prior entry: July 15, 2026 (evening) — the Bestial Lucid is fightable end-to-end for the first time. Four of the six defects filed this morning are closed, one is fixed-by-redesign, one remains. Phase 2 now triggers on health rather than vital index; the vital resolves to the heart on freeze. Encounter volumes became actual volumes and now own aggro. Vital points populated on the trash enemy blueprint. The July 25 milestone — boss and mini-boss fightable end-to-end — is met on the boss side, ten days early; the mini-boss half has still never been playtested.*
 
@@ -55,8 +57,6 @@ Every other document in `/docs` answers "what is this system and why." This docu
 | Death & failure states (Contract-scale) | 🔴 | Fully designed, zero implementation |
 | Death & failure states (open world) | 🔴 | Fully designed, zero implementation |
 | Death & failure states (raid-scale) | ⚪ | Explicitly deferred pending raid design |
-| Enemy animation integration (Khaimera/Feral placeholder — locomotion, attack montages, hit reactions, death) | 🔴 | Fully specified in `ENEMY_ANIMATION_AND_THRALL_PACK_AI.md`. Zero engine implementation. Currently why enemies T-pose |
-| Thrall pack AI (hit-and-retreat, synchronized regroup-on-kill, vital-guard pose) | 🔴 | Fully specified in `ENEMY_ANIMATION_AND_THRALL_PACK_AI.md`. Several tuning values (arc offset, retreat duration, min separation) explicitly left open pending playtesting. Does not apply to `BT_FeralRetained` — separate scope. Depends on the perception disengagement defect being resolved or excluded, see that doc's Dependencies section |
 
 ---
 
@@ -93,11 +93,15 @@ Every other document in `/docs` answers "what is this system and why." This docu
 |---|---|---|
 | Resonant Level (earning mechanism, milestone model) | 🔴 | Fully designed, zero implementation |
 | Primary stats (Resolve / Clarity / Conviction) | 🔴 | Fully designed, zero implementation |
-| Secondary/itemized stats | 🔴 | Fully designed, zero implementation |
+| Secondary/itemized stats | 🔴 | **Doc now exists** — ITEMIZATION_AND_LOOT.md. ~16 rollable stats across 6 groups, per-tier budgets (Salvage 6 → T5 100), 40/40/20 primary split, Gear Power outside the rollable pool. Was listed "fully designed" since July 14 while the doc sat uncommitted in a chat log. Zero implementation |
+| Gear slots (10 armor + 3 weapon) | 🔴 | Head, Neck, L/R Arm, Wrist, Chest, Back, L/R Leg, Feet + Primary/Secondary/Heavy. Weapons excluded from the stat budget. Slots class-agnostic without exception — this is what the pre-imbue trading rule depends on. Zero implementation |
+| Rarity ladder (Salvage → Kept → Remembered → Resonant → Pure) | 🔴 | Renamed July 16 to sit in-fiction. Hard boundary at Resonant: the bottom three never touch Selah and cost zero Strain, and *are* the mundane gear system by construction. Zero implementation |
+| Roll variance / re-roll at Sean | 🔴 | Variance persists at T5 (±20%, never zero) — July 14's variance→0 rule reversed. Re-rolls are **random, never directed**; Selah buys attempts, not outcomes. Zero implementation |
 | Resonance Fork build customization (standalone system) | 🔴 | Fully designed, zero implementation |
-| Selah (currency) | 🟢 | Functional in engine (collection working) |
-| Pure Selah / Pilgrimage system | 🔴 | Fully designed, zero implementation |
-| Gear ceiling / imbuing / loot pools | 🔴 | Fully designed, zero implementation |
+| Selah (currency) | 🟢 | Functional in engine (collection working). **Now has a second job on paper** — re-rolls at Sean, alongside stars. Neither built |
+| Pure Selah / Pilgrimage system | 🔴 | **Scope changed July 16 — this is now endgame activity design, not a side narrative.** The Pilgrimage is the sole path to Pure (top-tier) gear; Lucid no longer drops it. Three Pure items per Accursed source, each carrying a fragment of the same life — collecting all three is how you come to know who they were. Zero implementation |
+| Gear ceiling / imbuing / loot pools | 🔴 | **Doc now exists** — ITEMIZATION_AND_LOOT.md. Drop eligibility gated by *enemy* tier (Thrall → Salvage/Kept, Retained → Kept/Remembered, Lucid → Remembered/Resonant, Hollow → not gear). Zero implementation |
+| Inventory / equipment system | ⚪ | Discussed July 16, no doc written. Architecture direction established verbally: definition/instance split, lives on the PlayerState (standing gotcha #4), `FFastArraySerializer` not a replicated `TArray`, strain cost computed not stored, pure hypothetical loadout evaluation for the Resonance bar's hover preview. **Note: FastArraySerializer's `PostReplicatedAdd`/`PostReplicatedChange` never fire on the authority — same shape as standing gotcha #3, and will present as "inventory completely broken in standalone PIE"** |
 | Resonance Lottery (loot distribution) | 🔴 | Fully designed, zero implementation |
 | Resonance Strain / gear sunset-reintroduction lifecycle | 🔴 | Fully designed, zero implementation |
 | Live balance / telemetry philosophy | 🔴 | Fully designed as philosophy; no actual telemetry infrastructure exists |
