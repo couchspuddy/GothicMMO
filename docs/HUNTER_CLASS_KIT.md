@@ -143,13 +143,16 @@ The Lunge is neutral — it does not deal damage, it does not lock on. It is the
 The Hunter's Flame manifests as prediction. Activates a perception state that reveals where the next vital point location will be before the current vital shifts.
 
 **Mechanical expression:**
-- All players can see the current vital point — the subtle shimmer on the enemy
-- The Read reveals the *next* location before the shift occurs
+- All players can see the current vital point — the subtle shimmer on the enemy, flickering to signal it isn't locked
+- Activating the Read turns the current vital solid for the Hunter and reveals the *next* location before the shift occurs — both visible only to the activating Hunter
+- The reveal is personal by design, not broadcast to the Kindle — it is the Hunter's read, not a raid-wide buff. It can be *communicated* — a callout, a coordinated push — but that is the Hunter choosing to share it, not the ability doing so automatically. This is a deliberate door left open, not a hard limit; nothing today builds the communication layer itself.
 - The Hunter is always one step ahead — repositioning for where the vital is going, not where it is
 - Maximum uptime on the vital without trivializing the system for other classes
 
 **Design intent:**
-Not slowed time. Not precognition as a supernatural burst. The Flame illuminating what is already there for anyone paying close enough attention — the Hunter has just been paying closer attention than anyone else. The Read is who they are expressed as a button. Observant made mechanical.
+Not slowed time. Not precognition as a supernatural burst. The Flame illuminating what is already there for anyone paying close enough attention — the Hunter has just been paying closer attention than anyone else. The Read is who they are expressed as a button. Observant made mechanical. Keeping the reveal personal protects that framing — if everyone could see what the Hunter sees, the Hunter stops being the one who's watching closer.
+
+**Resolved — Version B locked (July 16):** the base-level A/B question below is settled. The Read is active, not passive: it does nothing until triggered, and what it grants (current-vital solid, next-vital visible) is scoped to the Hunter alone. Ambient current-vital flicker, visible to all players regardless of class, is a separate baseline signal the ability builds on top of rather than something Read introduces.
 
 **Vital point system context:**
 - Thrall — vital shifts after significant damage, slow reaction
@@ -210,7 +213,7 @@ The Hunter's eyes pulse with a subtle blue. Consistent with the blue of The List
 - Not At All stun duration and radius (requires playtesting)
 - The Reckoning base duration and extension cap per stunned elimination
 - The List gauge visual — whether it appears on all weapon types or adapts per weapon category
-- A/B test: Version A (Read as passive, always-on at base level) vs Version B (Read as active, predicts next vital) — vertical slice will determine which version serves the class identity better
+- ~~A/B test: Version A (Read as passive, always-on at base level) vs Version B (Read as active, predicts next vital)~~ — **RESOLVED July 16.** Version B locked: active, personal-visibility reveal. See The Read's Design Intent section above.
 
 ---
 

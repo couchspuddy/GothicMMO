@@ -93,6 +93,17 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI")
     float LeashRange = 3000.f;
 
+    /**
+     * Editor/debug only — dumps full AI state on the existing 2s leash timer.
+     * Answers "why did she stop" definitively in one PIE pass by sampling every
+     * variable that could gate the Behavior Tree, from every source that writes one.
+     *
+     * Turn this on for the boss and the Feral Retained; leave it off elsewhere.
+     * Strip or leave behind the flag once the disengagement defect is closed.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gothic|AI|Debug")
+    bool bDebugAIState = false;
+
 private:
     /** Cached patrol spawn point — enemy returns here when leash breaks. */
     FVector PatrolOrigin;
@@ -100,4 +111,19 @@ private:
     /** Periodic check to see if the target escaped the leash range. */
     FTimerHandle LeashCheckTimer;
     void CheckLeash();
+
+    /** Single-line multi-value state dump. Called from CheckLeash when bDebugAIState. */
+    void LogAIState(APawn* OwnerPawn);
+
+    /**
+     * Verifies every key in GothicBBKeys exists on the running Blackboard asset
+     * with the expected type. Called on possess, before any writes.
+     *
+     * Exists because UBlackboardComponent::SetValueAs* fails silently on a missing
+     * or mistyped key — no warning, no error, no effect. BB_BestialLucid shipped
+     * without bIsInCombat/bCanSeeTarget and cost a night: the boss held a target,
+     * saw the player at 1m, ran her tree, and never fought, because two writes
+     * evaporated. This makes that a startup error instead of a mystery.
+     */
+    void ValidateBlackboardKeys();
 };

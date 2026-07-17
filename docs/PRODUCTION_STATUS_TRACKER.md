@@ -55,6 +55,8 @@ Every other document in `/docs` answers "what is this system and why." This docu
 | Death & failure states (Contract-scale) | 🔴 | Fully designed, zero implementation |
 | Death & failure states (open world) | 🔴 | Fully designed, zero implementation |
 | Death & failure states (raid-scale) | ⚪ | Explicitly deferred pending raid design |
+| Enemy animation integration (Khaimera/Feral placeholder — locomotion, attack montages, hit reactions, death) | 🔴 | Fully specified in `ENEMY_ANIMATION_AND_THRALL_PACK_AI.md`. Zero engine implementation. Currently why enemies T-pose |
+| Thrall pack AI (hit-and-retreat, synchronized regroup-on-kill, vital-guard pose) | 🔴 | Fully specified in `ENEMY_ANIMATION_AND_THRALL_PACK_AI.md`. Several tuning values (arc offset, retreat duration, min separation) explicitly left open pending playtesting. Does not apply to `BT_FeralRetained` — separate scope. Depends on the perception disengagement defect being resolved or excluded, see that doc's Dependencies section |
 
 ---
 

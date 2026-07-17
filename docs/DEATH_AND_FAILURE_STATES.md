@@ -1,6 +1,6 @@
 # Death & Failure States
 **Vigil — Core Systems Design Document**
-*Status: Locked — Contract & Open World. Raid deferred.*
+*Status: Locked — Contract & Open World. Raid deferred. Downed-state mechanical specification added July 16 — see that section for solo/multiplayer distinction and full-party wipe reset contents.*
 
 ---
 
@@ -32,6 +32,31 @@ Since Absolution was shelved (see prior session), there is currently no self-res
 
 **Sequence on full-party failure:**
 - If **all players in the instance** are simultaneously downed, the encounter reverts to the **last completed checkpoint.**
+
+---
+
+## Downed State — Mechanical Specification (Added July 16)
+
+The sections above establish the sequence (downed → revival window → teammate revives or window expires). This section locks *how* that sequence behaves at the state-machine level, resolved in a design session covering the solo case and the exact contents of a full-party reset.
+
+**Solo Contract play is not a scaled-down version of the multiplayer sequence.** With no self-revive mechanic, a solo player has no one to fill the revival window, so solo death skips the downed state entirely and goes straight to the checkpoint-revert consequence below. This is the deliberate control condition for a future A/B test against a self-revive option — solo is meant to be harsher than any group wipe, since a group gets one down per member before failing and solo gets one, period. Not a bug to soften; the intended baseline to test against.
+
+**Multiplayer, individual player downed:**
+- Triggers at 1 HP rather than 0 — the floor exists specifically so the transition into downed can reuse the existing zero-health check path without an early intercept, and so a downed player's state stays clearly distinguishable from dead.
+- The 1 HP floor alone does not make a downed player safe — the damage pipeline must separately refuse to apply further damage while downed, or a second hit resolves through to 0 and blows past the state entirely. This should be enforced at damage resolution (`PostGameplayEffectExecute` or equivalent), not per-ability, so every current and future damage source is covered by one check rather than requiring each new ability to remember it.
+- Downed players are safe from further damage until the window expires — not vulnerable and racing a teammate against an enemy, purely racing the clock.
+- Weapons and abilities are locked out while downed; player state (position, gear, resources) is otherwise retained, not reset.
+- The revival window is a `FTimerHandle`-based countdown, not a GameplayEffect duration — durations cannot pause, and this window must pause during an active revive attempt and resume, not reset, if that attempt is interrupted. Same pattern as the existing AI leash-check timer.
+- Reviving is a channeled ability on the reviving player: starting the channel pauses the downed player's window; completing it clears the downed state; an interrupted channel simply leaves the window paused-then-resumed with no penalty to either player.
+- If the window expires before revival, that player is eliminated for the remainder of the current attempt (per the existing rule above).
+
+**Full-party wipe — reset contents:** when every player in the instance is simultaneously eliminated, the instance reverts to the last completed Selah checkpoint (per the existing rule above) with the following specific state restored, not a blanket reset:
+- **SuperMeter is left exactly where it was at the moment of the wipe.** This is a deliberate extension of the existing standing design doctrine that SuperMeter survives individual death — a wipe does not override that rule, it inherits it.
+- **All ability cooldowns are cleared** — full charge on every ability, as if freshly granted.
+- **Steadfast resets to full**, matching its state immediately following a Selah collection.
+- **Ammo (magazine and reserve) reverts to whatever each player had at the checkpoint**, not to a fresh/full loadout. This requires the checkpoint itself to snapshot per-player ammo state at the moment it's created, since ammo is deliberately not a GAS attribute and nothing today records it. This is new responsibility for the encounter/checkpoint system, not existing behavior being reused.
+
+**Open implementation question, not yet resolved:** whether the decision to treat a death as "downed" (Contract, teammates present) versus "immediate elimination" (solo, or open world) belongs on the GameMode — which already has content-type context — or requires a new flag on the AttributeSet itself. Current lean is GameMode, to keep the AttributeSet unaware of content type, but this hasn't been locked.
 
 ---
 
