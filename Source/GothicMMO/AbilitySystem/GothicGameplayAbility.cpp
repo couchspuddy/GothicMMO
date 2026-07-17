@@ -3,7 +3,9 @@
 #include "AbilitySystem/GothicGameplayAbility.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "AbilitySystemBlueprintLibrary.h"
+#include "AI/GothicEnemyBase.h"
 
 UGothicGameplayAbility::UGothicGameplayAbility()
 {
@@ -38,7 +40,9 @@ UGothicAbilitySystemComponent* UGothicGameplayAbility::GetGothicASC() const
 void UGothicGameplayAbility::ApplyDamageToTarget(
     AActor* Target,
     TSubclassOf<UGameplayEffect> DamageEffect,
-    float DamageMultiplier)
+    float DamageValue,
+    FVector ImpactPoint,
+    bool bWasVital)
 {
     if (!Target || !DamageEffect)
     {
@@ -47,36 +51,40 @@ void UGothicGameplayAbility::ApplyDamageToTarget(
 
     UAbilitySystemComponent* TargetASC =
         UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Target);
+    UAbilitySystemComponent* SourceASC = GetAbilitySystemComponentFromActorInfo();
 
-    if (!TargetASC)
+    if (!TargetASC || !SourceASC)
     {
         return;
     }
 
-    // Build an effect context so the target knows who hit them.
-    FGameplayEffectContextHandle Context = GetAbilitySystemComponentFromActorInfo()->MakeEffectContext();
-    Context.AddSourceObject(GetAvatarActorFromActorInfo());
+    AActor* Avatar = GetAvatarActorFromActorInfo();
 
-    // Create a spec from the damage effect class at this ability's level.
+    // Context carries both source object and instigator so the damage
+    // pipeline (and its Killer attribution) always knows who hit them.
+    FGameplayEffectContextHandle Context = SourceASC->MakeEffectContext();
+    Context.AddSourceObject(Avatar);
+    Context.AddInstigator(GetOwningActorFromActorInfo(), Avatar);
+
     FGameplayEffectSpecHandle SpecHandle =
-        GetAbilitySystemComponentFromActorInfo()->MakeOutgoingSpec(
-            DamageEffect,
-            GetAbilityLevel(),
-            Context);
+        SourceASC->MakeOutgoingSpec(DamageEffect, GetAbilityLevel(), Context);
 
-    if (SpecHandle.IsValid())
+    if (!SpecHandle.IsValid())
     {
-        // Pass the multiplier as a "Set By Caller" magnitude.
-        // In your GE_MeleeDamage, set the "IncomingDamage" modifier to use
-        // SetByCaller with tag "Data.Damage". This lets us reuse one GE class
-        // for light and heavy attacks just by changing the multiplier.
-        UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(
-            SpecHandle,
-            FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
-            DamageMultiplier);
+        return;
+    }
 
-        GetAbilitySystemComponentFromActorInfo()->ApplyGameplayEffectSpecToTarget(
-            *SpecHandle.Data.Get(),
-            TargetASC);
+    SpecHandle.Data->SetSetByCallerMagnitude(GothicTags::Data_Damage, DamageValue);
+
+    SourceASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC);
+
+    // Hit feedback for every client — centralized so a new damage site can't
+    // be silent by omission. No-op location fallback keeps callers that don't
+    // have a precise impact point (melee sweeps) honest enough for VFX.
+    if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(Target))
+    {
+        const FVector FeedbackPoint =
+            ImpactPoint.IsNearlyZero() ? Target->GetActorLocation() : ImpactPoint;
+        HitEnemy->MulticastOnHit(FeedbackPoint, bWasVital);
     }
 }

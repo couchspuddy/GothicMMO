@@ -1,0 +1,218 @@
+﻿// GothicBTService_CombatSync.cpp
+
+#include "AI/GothicBTService_CombatSync.h"
+#include "AI/GothicEnemyAIController.h"
+#include "AIController.h"
+#include "AbilitySystemComponent.h"
+#include "AbilitySystemBlueprintLibrary.h"
+#include "Abilities/GameplayAbility.h"
+#include "BehaviorTree/BehaviorTreeComponent.h"
+#include "BehaviorTree/BlackboardComponent.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Float.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
+#include "GameFramework/Pawn.h"
+
+UGothicBTService_CombatSync::UGothicBTService_CombatSync()
+{
+    NodeName = TEXT("Gothic Combat Sync");
+
+    // 5Hz. Fast enough that Observer Aborts feels reactive, cheap enough that
+    // it costs nothing at the enemy counts this project runs. RandomDeviation
+    // staggers multiple enemies off the same frame.
+    Interval        = 0.2f;
+    RandomDeviation = 0.05f;
+
+    bNotifyBecomeRelevant = true;
+
+    // Editor dropdown filters. Array entries can't be filtered from a
+    // constructor (they don't exist yet) — those selectors show all key
+    // types; pick Bool keys.
+    TargetActorKey.AddObjectFilter(this,
+        GET_MEMBER_NAME_CHECKED(UGothicBTService_CombatSync, TargetActorKey),
+        AActor::StaticClass());
+    DistanceToTargetKey.AddFloatFilter(this,
+        GET_MEMBER_NAME_CHECKED(UGothicBTService_CombatSync, DistanceToTargetKey));
+    InAttackRangeKey.AddBoolFilter(this,
+        GET_MEMBER_NAME_CHECKED(UGothicBTService_CombatSync, InAttackRangeKey));
+    TargetLocationKey.AddVectorFilter(this,
+        GET_MEMBER_NAME_CHECKED(UGothicBTService_CombatSync, TargetLocationKey));
+
+    // The optional keys are optional — "None" means "don't write it."
+    DistanceToTargetKey.AllowNoneAsValue(true);
+    InAttackRangeKey.AllowNoneAsValue(true);
+    TargetLocationKey.AllowNoneAsValue(true);
+}
+
+void UGothicBTService_CombatSync::InitializeFromAsset(UBehaviorTree& Asset)
+{
+    Super::InitializeFromAsset(Asset);
+
+    if (UBlackboardData* BBAsset = GetBlackboardAsset())
+    {
+        TargetActorKey.ResolveSelectedKey(*BBAsset);
+        DistanceToTargetKey.ResolveSelectedKey(*BBAsset);
+        InAttackRangeKey.ResolveSelectedKey(*BBAsset);
+        TargetLocationKey.ResolveSelectedKey(*BBAsset);
+
+        for (FGothicAbilityReadinessSync& Entry : AbilitiesToSync)
+        {
+            Entry.ReadyKey.ResolveSelectedKey(*BBAsset);
+        }
+    }
+}
+
+void UGothicBTService_CombatSync::OnBecomeRelevant(UBehaviorTreeComponent& OwnerComp,
+    uint8* NodeMemory)
+{
+    Super::OnBecomeRelevant(OwnerComp, NodeMemory);
+
+    // One-shot config validation, same philosophy as ValidateBlackboardKeys:
+    // turn silent misconfiguration into a startup error. A tag that matches
+    // no granted ability writes a permanently-false ReadyKey — which is
+    // indistinguishable from "always on cooldown" without this line.
+    UAbilitySystemComponent* ASC = ResolveASC(OwnerComp);
+    if (!ASC)
+    {
+        UE_LOG(LogTemp, Error,
+            TEXT("CombatSync[%s]: pawn has no AbilitySystemComponent — every ReadyKey will stay false"),
+            *GetNameSafe(OwnerComp.GetAIOwner() ? OwnerComp.GetAIOwner()->GetPawn() : nullptr));
+        return;
+    }
+
+    for (const FGothicAbilityReadinessSync& Entry : AbilitiesToSync)
+    {
+        if (!Entry.AbilityTag.IsValid())
+        {
+            continue;
+        }
+
+        bool bFound = false;
+        for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
+        {
+            if (Spec.Ability && Spec.Ability->GetAssetTags().HasTag(Entry.AbilityTag))
+            {
+                bFound = true;
+                break;
+            }
+        }
+
+        if (!bFound)
+        {
+            UE_LOG(LogTemp, Error,
+                TEXT("CombatSync[%s]: no granted ability carries AssetTag '%s'. "
+                     "If the ability exists, the tag is probably in AbilityInputTag instead of AssetTags — same defect as July 17."),
+                *GetNameSafe(OwnerComp.GetAIOwner() ? OwnerComp.GetAIOwner()->GetPawn() : nullptr),
+                *Entry.AbilityTag.ToString());
+        }
+    }
+}
+
+void UGothicBTService_CombatSync::TickNode(UBehaviorTreeComponent& OwnerComp,
+    uint8* NodeMemory, float DeltaSeconds)
+{
+    Super::TickNode(OwnerComp, NodeMemory, DeltaSeconds);
+
+    UBlackboardComponent* BB = OwnerComp.GetBlackboardComponent();
+    AAIController* AIC       = OwnerComp.GetAIOwner();
+    APawn* Pawn              = AIC ? AIC->GetPawn() : nullptr;
+
+    if (!BB || !Pawn)
+    {
+        return;
+    }
+
+    // ── Ability readiness ────────────────────────────────────────────────────
+    if (UAbilitySystemComponent* ASC = ResolveASC(OwnerComp))
+    {
+        for (const FGothicAbilityReadinessSync& Entry : AbilitiesToSync)
+        {
+            if (!Entry.AbilityTag.IsValid() || Entry.ReadyKey.IsNone())
+            {
+                continue;
+            }
+
+            bool bReady = false;
+            for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
+            {
+                if (!Spec.Ability || !Spec.Ability->GetAssetTags().HasTag(Entry.AbilityTag))
+                {
+                    continue;
+                }
+
+                // Ready means: not already running, and CanActivateAbility says
+                // yes — which folds in cooldown GEs, costs, and blocked tags.
+                bReady = !Spec.IsActive()
+                    && Spec.Ability->CanActivateAbility(Spec.Handle, ASC->AbilityActorInfo.Get());
+                break;
+            }
+
+            BB->SetValue<UBlackboardKeyType_Bool>(Entry.ReadyKey.GetSelectedKeyID(), bReady);
+        }
+    }
+
+    // ── Target-relative state ────────────────────────────────────────────────
+    AActor* Target = nullptr;
+    if (!TargetActorKey.IsNone())
+    {
+        Target = Cast<AActor>(
+            BB->GetValue<UBlackboardKeyType_Object>(TargetActorKey.GetSelectedKeyID()));
+    }
+
+    if (Target)
+    {
+        if (!DistanceToTargetKey.IsNone())
+        {
+            const float Dist = FVector::Dist(Pawn->GetActorLocation(), Target->GetActorLocation());
+            BB->SetValue<UBlackboardKeyType_Float>(DistanceToTargetKey.GetSelectedKeyID(), Dist);
+        }
+
+        if (!TargetLocationKey.IsNone())
+        {
+            BB->SetValue<UBlackboardKeyType_Vector>(
+                TargetLocationKey.GetSelectedKeyID(), Target->GetActorLocation());
+        }
+
+        if (!InAttackRangeKey.IsNone())
+        {
+            bool bInRange = false;
+            if (const AGothicEnemyAIController* GothicAIC = Cast<AGothicEnemyAIController>(AIC))
+            {
+                bInRange = GothicAIC->IsTargetInAttackRange();
+            }
+            BB->SetValue<UBlackboardKeyType_Bool>(InAttackRangeKey.GetSelectedKeyID(), bInRange);
+        }
+    }
+    else
+    {
+        // No target: range is definitively false. Distance/location are left
+        // alone — stale numbers gated behind a false bIsInCombat are harmless,
+        // and clearing them would fire observers for no decision-relevant reason.
+        if (!InAttackRangeKey.IsNone())
+        {
+            BB->SetValue<UBlackboardKeyType_Bool>(InAttackRangeKey.GetSelectedKeyID(), false);
+        }
+    }
+}
+
+UAbilitySystemComponent* UGothicBTService_CombatSync::ResolveASC(
+    UBehaviorTreeComponent& OwnerComp) const
+{
+    const AAIController* AIC = OwnerComp.GetAIOwner();
+    APawn* Pawn = AIC ? AIC->GetPawn() : nullptr;
+    return Pawn ? UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Pawn) : nullptr;
+}
+
+FString UGothicBTService_CombatSync::GetStaticDescription() const
+{
+    TArray<FString> Parts;
+    for (const FGothicAbilityReadinessSync& Entry : AbilitiesToSync)
+    {
+        Parts.Add(FString::Printf(TEXT("%s → %s"),
+            *Entry.AbilityTag.ToString(), *Entry.ReadyKey.SelectedKeyName.ToString()));
+    }
+    return FString::Printf(TEXT("%s\nSyncs: %s"),
+        *Super::GetStaticDescription(),
+        Parts.Num() > 0 ? *FString::Join(Parts, TEXT(", ")) : TEXT("(no abilities configured)"));
+}

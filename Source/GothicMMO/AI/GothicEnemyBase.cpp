@@ -22,6 +22,7 @@
 #include "Engine/World.h"
 #include "AI/GothicVitalPointComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "UI/GothicEnemyHealthBarWidget.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 AGothicEnemyBase::AGothicEnemyBase()
@@ -54,7 +55,7 @@ AGothicEnemyBase::AGothicEnemyBase()
     HealthBarWidget = CreateDefaultSubobject<UWidgetComponent>(TEXT("HealthBarWidget"));
     HealthBarWidget->SetupAttachment(RootComponent);
     HealthBarWidget->SetRelativeLocation(FVector(0.f, 0.f, 120.f));
-    HealthBarWidget->SetWidgetSpace(EWidgetSpace::World);
+    HealthBarWidget->SetWidgetSpace(EWidgetSpace::Screen);  
     HealthBarWidget->SetDrawSize(FVector2D(200.f, 20.f));
     HealthBarWidget->SetVisibility(false);
     
@@ -108,11 +109,35 @@ void AGothicEnemyBase::BeginPlay()
         }
     });
     }
+    if (HealthBarWidget)
+    {
+        HealthBarWidget->InitWidget();
+        if (UGothicEnemyHealthBarWidget* HealthBarUserWidget =
+                Cast<UGothicEnemyHealthBarWidget>(HealthBarWidget->GetUserWidgetObject()))
+        {
+            HealthBarUserWidget->SetOwningEnemy(this);
+        }
+        else
+        {
+            // Loud on purpose: this fires if HealthBarWidget's assigned Widget
+            // Class isn't a WBP_EnemyHealthBar-style child of
+            // UGothicEnemyHealthBarWidget — the bar will exist but read 0% forever,
+            // which otherwise looks identical to "enemy at full health" until
+            // someone notices it never moves.
+            UE_LOG(LogTemp, Warning,
+                TEXT("%s: HealthBarWidget's Widget Class is not a UGothicEnemyHealthBarWidget child — health bar will not update"),
+                *GetName());
+        }
+    }
     
 }
 
 void AGothicEnemyBase::MulticastOnHit_Implementation(FVector_NetQuantize ImpactLocation, bool bWasVital)
 {
+    if (HealthBarWidget)
+    {
+        HealthBarWidget->SetVisibility(true);
+    }
     OnHitFeedback(ImpactLocation, bWasVital);
 }
 void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
@@ -136,10 +161,6 @@ void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
 
             if (bSensed)
             {
-                if (HealthBarWidget)
-                {
-                    HealthBarWidget->SetVisibility(true);
-                }
                 SetCombatTarget(Actor);
                 break;
             }

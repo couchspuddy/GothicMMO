@@ -52,6 +52,17 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Enemy")
     float GetExperienceReward() const { return ExperienceReward; }
 
+    /**
+     * The Accursed's name — surfaced on the health bar and WBP_SelahPrompt.
+     * Every enemy is someone the world failed, not an unnamed hitpoint bag;
+     * this is the one-property cost of making that visible to the player.
+     * Public alongside its sibling getters: GothicEnemyHealthBarWidget calls
+     * this from an unrelated class, so it has to be reachable from outside
+     * the AGothicEnemyBase hierarchy, same as GetEnemyTier()/GetExperienceReward().
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Enemy")
+    FText GetAccursedName() const { return AccursedName; }
+
     /** Called by the AI Controller when combat is entered/exited. */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Enemy")
     void SetCombatTarget(AActor* NewTarget);
@@ -120,6 +131,14 @@ protected:
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
     EEnemyTier EnemyTier = EEnemyTier::Minion;
+
+    /**
+     * The Accursed's name. Raw storage stays protected, matching EnemyTier/
+     * ExperienceReward's convention — external reads go through the public
+     * GetAccursedName() getter above, not through this field directly.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
+    FText AccursedName;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
     float ExperienceReward = 50.f;

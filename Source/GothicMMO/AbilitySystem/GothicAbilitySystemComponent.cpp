@@ -9,6 +9,39 @@ UGothicAbilitySystemComponent::UGothicAbilitySystemComponent()
     ReplicationMode = EGameplayEffectReplicationMode::Full;
 }
 
+FActiveGameplayEffectHandle UGothicAbilitySystemComponent::ApplyEffectToASC(
+    UAbilitySystemComponent* ASC,
+    TSubclassOf<UGameplayEffect> EffectClass,
+    UObject* SourceObject,
+    FGameplayTag SetByCallerTag,
+    float SetByCallerValue,
+    float Level)
+{
+    if (!ASC || !EffectClass)
+    {
+        return FActiveGameplayEffectHandle();
+    }
+
+    FGameplayEffectContextHandle Context = ASC->MakeEffectContext();
+    if (SourceObject)
+    {
+        Context.AddSourceObject(SourceObject);
+    }
+
+    FGameplayEffectSpecHandle Spec = ASC->MakeOutgoingSpec(EffectClass, Level, Context);
+    if (!Spec.IsValid())
+    {
+        return FActiveGameplayEffectHandle();
+    }
+
+    if (SetByCallerTag.IsValid())
+    {
+        Spec.Data->SetSetByCallerMagnitude(SetByCallerTag, SetByCallerValue);
+    }
+
+    return ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+}
+
 void UGothicAbilitySystemComponent::GrantStartupAbilities(
     const TArray<TSubclassOf<UGothicGameplayAbility>>& AbilitiesToGrant,
     int32 Level)
@@ -96,7 +129,8 @@ float UGothicAbilitySystemComponent::GetCooldownRemainingForSlot(EGothicAbilityS
 
 void UGothicAbilitySystemComponent::AbilityInputTagPressed(const FGameplayTag& InputTag)
 {
-    UE_LOG(LogTemp, Warning, TEXT(">>> AbilityInputTagPressed: %s"), *InputTag.ToString());
+    // ">>> AbilityInputTagPressed" debug log stripped July 17 — it was on the
+    // housekeeping strip list and fired on every ability keypress.
     ABILITYLIST_SCOPE_LOCK();
     for (FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
     {

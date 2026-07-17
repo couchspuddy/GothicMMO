@@ -4,6 +4,8 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Character.h"
 #include "Net/UnrealNetwork.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraComponent.h"
 #include "TimerManager.h"
 
 UGothicVitalPointComponent::UGothicVitalPointComponent()
@@ -36,6 +38,21 @@ void UGothicVitalPointComponent::BeginPlay()
         return;
     }
 
+    // Server pre-commits the first shift destination so The Read has a real
+    // answer from frame one. Clients receive it via replication.
+    if (GetOwner()->HasAuthority())
+    {
+        RollNextVitalIndex();
+    }
+
+    // The shimmer is cosmetic — every machine with a screen spawns its own,
+    // a dedicated server never does. Standalone and listen hosts count as
+    // "machines with a screen."
+    if (GetOwner()->GetNetMode() != NM_DedicatedServer)
+    {
+        SpawnShimmer();
+    }
+
     // Start the independent timer if configured
     // Only runs on server — shift logic is authoritative
     if (bShiftOnTimer && GetOwner()->HasAuthority())
@@ -47,6 +64,20 @@ void UGothicVitalPointComponent::BeginPlay()
             ShiftTimerInterval,
             true); // looping
     }
+}
+
+void UGothicVitalPointComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    // Defensive teardown — HandleOwnerDeath is the intended path, but if the
+    // actor is destroyed without dying (level transition, encounter cleanup)
+    // the shimmer must not outlive its parent.
+    if (ShimmerComponent)
+    {
+        ShimmerComponent->DestroyComponent();
+        ShimmerComponent = nullptr;
+    }
+
+    Super::EndPlay(EndPlayReason);
 }
 
 void UGothicVitalPointComponent::TickComponent(float DeltaTime, ELevelTick TickType,
@@ -68,6 +99,7 @@ void UGothicVitalPointComponent::GetLifetimeReplicatedProps(
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
     DOREPLIFETIME(UGothicVitalPointComponent, ActiveVitalIndex);
+    DOREPLIFETIME(UGothicVitalPointComponent, NextVitalIndex);
 }
 
 void UGothicVitalPointComponent::NotifyDamageTaken(float DamageAmount)
@@ -105,19 +137,46 @@ void UGothicVitalPointComponent::ShiftVitalPoint()
         return;
     }
 
-    // Advance to next index, wrapping around
-    ActiveVitalIndex = (ActiveVitalIndex + 1) % VitalPointLocations.Num();
+    // Move to the pre-committed destination, then roll the NEXT one BEFORE
+    // broadcasting — GA_Read's shift handler immediately re-queries
+    // GetNextVitalWorldLocation, so the new prediction has to exist by then.
+    ActiveVitalIndex  = NextVitalIndex;
     AccumulatedDamage = 0.f;
+    RollNextVitalIndex();
 
     const FVector NewLocation = ComputeWorldLocation(ActiveVitalIndex);
 
-    UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s shifted to index %d — location %s"),
-        *GetOwner()->GetName(), ActiveVitalIndex, *NewLocation.ToString());
+    UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s shifted to index %d (next: %d) — location %s"),
+        *GetOwner()->GetName(), ActiveVitalIndex, NextVitalIndex, *NewLocation.ToString());
 
     // Broadcast so The Read ability and any other listeners know
     OnVitalPointShifted.Broadcast(ActiveVitalIndex, NewLocation);
 
+    // The server's own shimmer (standalone / listen host) follows here;
+    // remote clients follow via OnRep_ActiveVitalIndex.
+    UpdateShimmerAttachment();
+
     // OnRep will fire automatically on clients via replication
+}
+
+void UGothicVitalPointComponent::RollNextVitalIndex()
+{
+    const int32 Num = VitalPointLocations.Num();
+
+    if (bIsFrozen || Num <= 1)
+    {
+        NextVitalIndex = ActiveVitalIndex;
+        return;
+    }
+
+    // Uniform over [0, Num) excluding ActiveVitalIndex: roll into a range one
+    // smaller, then step over the active index. No reroll loop, no bias.
+    int32 Roll = FMath::RandRange(0, Num - 2);
+    if (Roll >= ActiveVitalIndex)
+    {
+        ++Roll;
+    }
+    NextVitalIndex = Roll;
 }
 
 FVector UGothicVitalPointComponent::ComputeWorldLocation(int32 Index) const
@@ -153,8 +212,7 @@ FVector UGothicVitalPointComponent::GetNextVitalWorldLocation() const
         return FVector::ZeroVector;
     }
 
-    const int32 NextIndex = (ActiveVitalIndex + 1) % VitalPointLocations.Num();
-    return ComputeWorldLocation(NextIndex);
+    return ComputeWorldLocation(NextVitalIndex);
 }
 
 bool UGothicVitalPointComponent::IsVitalPointHit(const FVector& HitWorldLocation) const
@@ -196,6 +254,9 @@ void UGothicVitalPointComponent::OnRep_ActiveVitalIndex()
     const FVector NewLocation = ComputeWorldLocation(ActiveVitalIndex);
     OnVitalPointShifted.Broadcast(ActiveVitalIndex, NewLocation);
 
+    // The client-side shimmer follows the replicated index.
+    UpdateShimmerAttachment();
+
     UE_LOG(LogTemp, Log, TEXT("VitalPoint: Client received shift — index %d"),
         ActiveVitalIndex);
 }
@@ -222,9 +283,15 @@ void UGothicVitalPointComponent::FreezeVitalPoint(int32 LockIndex)
         // covers clients, but the server has to broadcast for itself or The Read
         // and the shimmer won't follow the jump.
         OnVitalPointShifted.Broadcast(ActiveVitalIndex, NewLocation);
+        UpdateShimmerAttachment();
     }
 
     bIsFrozen = true;
+
+    // A frozen vital has no future. The Read now truthfully reports the
+    // current location as "next" instead of pointing at a shift that will
+    // never come. NextVitalIndex replicates, so client Reads agree.
+    NextVitalIndex = ActiveVitalIndex;
 
     // Kill the timer outright rather than relying solely on the guard below —
     // no reason to let it keep firing into a no-op every ShiftTimerInterval.
@@ -235,4 +302,93 @@ void UGothicVitalPointComponent::FreezeVitalPoint(int32 LockIndex)
 
     UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s frozen at index %d"),
         *GetOwner()->GetName(), ActiveVitalIndex);
+}
+
+// ── Shimmer ───────────────────────────────────────────────────────────────────
+
+void UGothicVitalPointComponent::SpawnShimmer()
+{
+    if (!VitalShimmerSystem)
+    {
+        // Loud on purpose — an unassigned shimmer reproduces the exact
+        // "hidden damage multiplier" defect this exists to close.
+        UE_LOG(LogTemp, Warning,
+            TEXT("VitalPoint: %s has vital points but no VitalShimmerSystem assigned — the vital is invisible to players"),
+            *GetOwner()->GetName());
+        return;
+    }
+
+    if (!CachedMesh || ShimmerComponent)
+    {
+        return;
+    }
+
+    // Spawn parented to the mesh; UpdateShimmerAttachment does the actual
+    // bone targeting so spawn and shift share one code path.
+    ShimmerComponent = UNiagaraFunctionLibrary::SpawnSystemAttached(
+        VitalShimmerSystem,
+        CachedMesh,
+        NAME_None,
+        FVector::ZeroVector,
+        FRotator::ZeroRotator,
+        EAttachLocation::SnapToTarget,
+        /*bAutoDestroy=*/ false);
+
+    if (!ShimmerComponent)
+    {
+        return;
+    }
+
+    if (ShimmerColorParameter != NAME_None)
+    {
+        ShimmerComponent->SetVariableLinearColor(ShimmerColorParameter, ShimmerColor);
+    }
+    ShimmerComponent->SetWorldScale3D(FVector(ShimmerScale));
+
+    UpdateShimmerAttachment();
+}
+
+void UGothicVitalPointComponent::UpdateShimmerAttachment()
+{
+    if (!ShimmerComponent || !VitalPointLocations.IsValidIndex(ActiveVitalIndex))
+    {
+        return;
+    }
+
+    const FVitalPointLocation& VPL = VitalPointLocations[ActiveVitalIndex];
+
+    if (CachedMesh && VPL.BoneName != NAME_None)
+    {
+        // Bones are valid attachment sockets. From here the animation moves the
+        // shimmer — zero per-frame code. SetRelativeLocation is in bone space,
+        // which matches ComputeWorldLocation's TransformVector(LocalOffset), so
+        // the visual and the hit check agree by construction.
+        ShimmerComponent->AttachToComponent(CachedMesh,
+            FAttachmentTransformRules::SnapToTargetNotIncludingScale, VPL.BoneName);
+        ShimmerComponent->SetRelativeLocation(VPL.LocalOffset);
+        ShimmerComponent->SetRelativeRotation(FRotator::ZeroRotator);
+    }
+    else if (GetOwner() && GetOwner()->GetRootComponent())
+    {
+        // NAME_None fallback mirrors ComputeWorldLocation: actor-relative offset.
+        ShimmerComponent->AttachToComponent(GetOwner()->GetRootComponent(),
+            FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+        ShimmerComponent->SetRelativeLocation(VPL.LocalOffset);
+        ShimmerComponent->SetRelativeRotation(FRotator::ZeroRotator);
+    }
+}
+
+void UGothicVitalPointComponent::HandleOwnerDeath()
+{
+    if (ShimmerComponent)
+    {
+        ShimmerComponent->Deactivate();
+        ShimmerComponent->DestroyComponent();
+        ShimmerComponent = nullptr;
+    }
+
+    if (GetWorld() && ShiftTimerHandle.IsValid())
+    {
+        GetWorld()->GetTimerManager().ClearTimer(ShiftTimerHandle);
+    }
 }

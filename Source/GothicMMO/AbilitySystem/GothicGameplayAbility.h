@@ -56,15 +56,36 @@ protected:
     UGothicAbilitySystemComponent* GetGothicASC() const;
 
     /**
-     * Applies the ability's primary damage effect to a target.
-     * Reads AttackPower from the source's attribute set.
+     * THE way an ability damages a target. Every damage site routes through
+     * here — GA_Fire, GA_Slicer, GA_HuntersStrike, and every future kit.
+     *
+     * Owns the whole damage contract in one place:
+     *   - Context carries SourceObject AND Instigator — the July 15 fix that
+     *     closed "Killer: Unknown" in GA_Fire and silently never reached the
+     *     other seven hand-rolled copies. Now it can't miss.
+     *   - Magnitude goes out on GothicTags::Data_Damage as a SetByCaller.
+     *     Semantics belong to the GE: whatever its Data.Damage modifier does
+     *     with the number. Pass flat damage (GA_Fire's FinalDamage) or a
+     *     multiplier (Hunter's Strike) per the GE's design.
+     *   - Hit feedback fans out to every client via the enemy's existing
+     *     MulticastOnHit → OnHitFeedback path. Four of five damage sites told
+     *     no client anything until July 17; with the fanout living here, a
+     *     silent damage site is no longer a bug a new ability can have.
+     *     (The multicast only propagates when this runs with authority, which
+     *     is where every damage trace already runs.)
+     *
      * @param Target        The actor to damage.
      * @param DamageEffect  The GameplayEffect class that defines the damage.
-     * @param DamageMultiplier  Scales the raw damage (1.0 = standard hit).
+     * @param DamageValue   SetByCaller magnitude on Data.Damage.
+     * @param ImpactPoint   Where the hit VFX should appear. ZeroVector =
+     *                      fall back to the target's actor location.
+     * @param bWasVital     Drives the binary vital-hit tell in OnHitFeedback.
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Ability")
     void ApplyDamageToTarget(
         AActor* Target,
         TSubclassOf<UGameplayEffect> DamageEffect,
-        float DamageMultiplier = 1.0f);
+        float DamageValue = 1.0f,
+        FVector ImpactPoint = FVector::ZeroVector,
+        bool bWasVital = false);
 };

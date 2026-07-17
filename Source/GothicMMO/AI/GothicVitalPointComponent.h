@@ -5,6 +5,15 @@
 // Deliberately GAS-agnostic — the enemy base handles the GAS bridge.
 // Blueprint children of each enemy type define their own vital point
 // locations using bone names and local offsets, making this rig-agnostic.
+//
+// July 17 additions:
+//   - Shimmer visual: a Niagara component attached directly to the active
+//     vital's bone. The scene graph moves it with the animation for free —
+//     no tick, which matters because AGothicCharacterBase disables actor tick
+//     and enemy Blueprints therefore have no working Event Tick.
+//   - Randomized shift destination: the next vital is rolled at random
+//     (excluding the current index) and PRE-COMMITTED, so The Read predicts
+//     a genuinely unknowable-but-honest future instead of index+1.
 
 #pragma once
 
@@ -12,6 +21,9 @@
 #include "Components/ActorComponent.h"
 #include "DrawDebugHelpers.h"
 #include "GothicVitalPointComponent.generated.h"
+
+class UNiagaraSystem;
+class UNiagaraComponent;
 
 // ── Structs ──────────────────────────────────────────────────────────────────
 
@@ -63,6 +75,7 @@ public:
     UGothicVitalPointComponent();
 
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     virtual void TickComponent(float DeltaTime, ELevelTick TickType,
         FActorComponentTickFunction* ThisTickFunction) override;
 
@@ -75,6 +88,16 @@ public:
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|VitalPoint")
     void NotifyDamageTaken(float DamageAmount);
+
+    /**
+     * Cosmetic teardown on death. Destroys the shimmer and kills the shift
+     * timer. Call from PlayDeathCosmetics — that path runs on EVERY machine
+     * (server via OnDeath, clients via MulticastOnDeath), which is exactly
+     * the set of machines that own a shimmer instance. Without this, corpses
+     * glow for the full CorpseLifetime.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|VitalPoint")
+    void HandleOwnerDeath();
 
     // ── Accessors ────────────────────────────────────────────────────────────
 
@@ -90,10 +113,16 @@ public:
      * Returns the world position of the NEXT vital point before it shifts.
      * This is what The Read ability exposes to the Hunter.
      * Returns zero vector if only one vital point is defined.
+     *
+     * The next index is rolled at random (excluding the current one) at the
+     * moment the current vital becomes active, and replicated — so The Read's
+     * prediction is pre-committed truth, not a computable pattern. When the
+     * vital is frozen, "next" is the current index: The Read honestly reports
+     * that it isn't going anywhere.
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|VitalPoint")
     FVector GetNextVitalWorldLocation() const;
-    
+
     /**
      * Permanently stops the vital point from shifting, from either the
      * damage threshold or the independent timer. Used by boss phase
@@ -131,6 +160,8 @@ public:
      * All possible vital point locations for this enemy.
      * Define these in the Blueprint child using bone names from your rig.
      * Minimum 2 recommended — with only 1 the point never shifts.
+     * 4+ is where the randomized shift starts earning its keep — with 2 the
+     * "random" destination is always the other one.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|VitalPoint")
     TArray<FVitalPointLocation> VitalPointLocations;
@@ -149,7 +180,7 @@ public:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|VitalPoint")
     float HitDetectionRadius = 30.f;
-    
+
     /** Editor only — draws the actual hit volume so it can be compared against the shimmer. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gothic|VitalPoint")
     bool bDebugDrawVital = false;
@@ -170,6 +201,36 @@ public:
         meta = (EditCondition = "bShiftOnTimer"))
     float ShiftTimerInterval = 5.f;
 
+    // ── Shimmer — the vital's player-visible tell ─────────────────────────────
+
+    /**
+     * Niagara system rendered at the active vital point on every machine with
+     * a screen (never spawned on a dedicated server). Assign the same asset
+     * BP_GA_Read uses for ReadIndicatorSystem, distinguished by color/scale
+     * below — the Read indicator and the shimmer should read as the same
+     * visual language, because The Read is literally showing a future shimmer.
+     *
+     * Keep it small and faint (~HitDetectionRadius so the feedback is honest).
+     * It's a wound, not a waypoint.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|VitalPoint|Shimmer")
+    TObjectPtr<UNiagaraSystem> VitalShimmerSystem;
+
+    /**
+     * Niagara user parameter to tint. Leave None to skip tinting.
+     * Most VFX pack systems expose "Color" — check the asset's User Parameters.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|VitalPoint|Shimmer")
+    FName ShimmerColorParameter = FName("Color");
+
+    /** Shimmer tint. Dimmer than the Read indicator — current vital = quiet. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|VitalPoint|Shimmer")
+    FLinearColor ShimmerColor = FLinearColor(0.85f, 0.75f, 0.4f, 0.6f);
+
+    /** Uniform scale applied to the spawned shimmer component. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|VitalPoint|Shimmer")
+    float ShimmerScale = 1.f;
+
 protected:
     /** Skeletal mesh reference cached on BeginPlay for bone queries. */
     UPROPERTY()
@@ -179,27 +240,63 @@ protected:
     UPROPERTY(ReplicatedUsing = OnRep_ActiveVitalIndex)
     int32 ActiveVitalIndex = 0;
 
+    /**
+     * The pre-committed destination of the NEXT shift. Rolled on the server
+     * whenever a vital becomes active; replicated so The Read's client-side
+     * query returns the same answer the server will act on.
+     *
+     * Replicates in the same actor bunch as ActiveVitalIndex, so in practice
+     * they arrive together — but if a frame ever shows a one-tick-stale Next
+     * on a remote client, this is where to look.
+     */
+    UPROPERTY(Replicated)
+    int32 NextVitalIndex = 0;
+
     /** Damage accumulated since the last shift. Reset on shift. */
     float AccumulatedDamage = 0.f;
 
     /** Timer handle for the independent shift timer (Lucid/Boss tier). */
     FTimerHandle ShiftTimerHandle;
-    
-    // GothicVitalPointComponent.h — add to the protected section, alongside ShiftTimerHandle
+
     /** Once true, ShiftVitalPoint() becomes a no-op regardless of cause. */
     bool bIsFrozen = false;
 
+    /** The live shimmer instance. Null on dedicated servers by design. */
+    UPROPERTY()
+    TObjectPtr<UNiagaraComponent> ShimmerComponent;
+
     // ── Internal ─────────────────────────────────────────────────────────────
 
-    /** Selects the next vital point index. Currently sequential, 
-     *  can be made random by swapping the implementation. */
+    /** Moves the active vital to the pre-committed NextVitalIndex and rolls a new one. */
     void ShiftVitalPoint();
+
+    /**
+     * Rolls a new NextVitalIndex, uniform over all indices except the active
+     * one. Server only. With the vital frozen (or a single-entry array) the
+     * next index is the active index — there is no future to predict.
+     */
+    void RollNextVitalIndex();
 
     /** Computes world position for a given vital point index. */
     FVector ComputeWorldLocation(int32 Index) const;
 
     /** Timer callback for independent shift. */
     void OnShiftTimerFired();
+
+    /**
+     * Spawns the shimmer once (BeginPlay, non-dedicated machines only) and
+     * parents it to the active vital's bone.
+     */
+    void SpawnShimmer();
+
+    /**
+     * Re-parents the existing shimmer to the active vital's bone + offset.
+     * Called from every path that changes ActiveVitalIndex:
+     *   ShiftVitalPoint (server/standalone), OnRep_ActiveVitalIndex (clients),
+     *   and FreezeVitalPoint's snap branch. Standing gotcha #3 applies —
+     *   the OnRep alone would leave standalone PIE with a frozen shimmer.
+     */
+    void UpdateShimmerAttachment();
 
     /** Replication callback — clients update visuals when index changes. */
     UFUNCTION()
