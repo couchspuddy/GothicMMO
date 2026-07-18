@@ -23,12 +23,15 @@ class UBlackboardComponent;
 // ============================================================================
 namespace GothicBBKeys
 {
-    static const FName TargetActor    = TEXT("TargetActor");      // AActor*
-    static const FName TargetLocation = TEXT("TargetLocation");   // FVector
-    static const FName bCanSeeTarget  = TEXT("bCanSeeTarget");    // bool
-    static const FName bIsInCombat    = TEXT("bIsInCombat");      // bool
-    static const FName PatrolOrigin   = TEXT("PatrolOrigin");     // FVector
-    static const FName AttackRange    = TEXT("AttackRange");      // float
+    static const FName TargetActor     = TEXT("TargetActor");     // AActor*
+    static const FName TargetLocation  = TEXT("TargetLocation");  // FVector
+    static const FName bCanSeeTarget   = TEXT("bCanSeeTarget");   // bool
+    static const FName bIsInCombat     = TEXT("bIsInCombat");     // bool
+    static const FName PatrolOrigin    = TEXT("PatrolOrigin");    // FVector
+    static const FName AttackRange     = TEXT("AttackRange");     // float
+    static const FName ChosenAction    = TEXT("ChosenAction");    // FName   — WeightedActionSelect output
+    static const FName RepositionPoint = TEXT("RepositionPoint"); // FVector — ComputeRepositionPoint output
+    static const FName bPackRegroup    = TEXT("bPackRegroup");    // bool    — PackSubsystem sync pause
 }
 
 UCLASS()
@@ -73,6 +76,8 @@ public:
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|AI")
     bool IsTargetInAttackRange() const;
+    
+    void EnterRegroupPause(float Duration);
 
 protected:
     /** Assign in BP_GothicEnemyAIController. */
@@ -111,6 +116,11 @@ private:
     /** Periodic check to see if the target escaped the leash range. */
     FTimerHandle LeashCheckTimer;
     void CheckLeash();
+    
+    /** Clears bPackRegroup after the pause duration. One handle per
+     *  controller — a retrigger (shouldn't happen inside the subsystem's
+     *  lockout window, but defensively) resets rather than stacks. */
+    FTimerHandle RegroupPauseTimer;
 
     /** Single-line multi-value state dump. Called from CheckLeash when bDebugAIState. */
     void LogAIState(APawn* OwnerPawn);

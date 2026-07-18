@@ -63,21 +63,41 @@ void UGothicBTService_CombatSync::InitializeFromAsset(UBehaviorTree& Asset)
     }
 }
 
+uint16 UGothicBTService_CombatSync::GetInstanceMemorySize() const
+{
+    return sizeof(FGothicCombatSyncMemory);
+}
+
 void UGothicBTService_CombatSync::OnBecomeRelevant(UBehaviorTreeComponent& OwnerComp,
     uint8* NodeMemory)
 {
     Super::OnBecomeRelevant(OwnerComp, NodeMemory);
 
-    // One-shot config validation, same philosophy as ValidateBlackboardKeys:
-    // turn silent misconfiguration into a startup error. A tag that matches
-    // no granted ability writes a permanently-false ReadyKey — which is
-    // indistinguishable from "always on cooldown" without this line.
+    // Arm the deferred check rather than running it here. At this moment the
+    // pawn has not reached its own BeginPlay yet, so its StartupAbilities are
+    // not granted and validating now reports every tag as missing.
+    if (FGothicCombatSyncMemory* Memory = CastInstanceNodeMemory<FGothicCombatSyncMemory>(NodeMemory))
+    {
+        Memory->TimeSinceRelevant = 0.f;
+        Memory->bValidated        = false;
+    }
+}
+
+void UGothicBTService_CombatSync::ValidateConfiguration(UBehaviorTreeComponent& OwnerComp) const
+{
+    APawn* Pawn = OwnerComp.GetAIOwner() ? OwnerComp.GetAIOwner()->GetPawn() : nullptr;
+
+    // Config validation, same philosophy as ValidateBlackboardKeys: turn silent
+    // misconfiguration into a loud error. A tag that matches no granted ability
+    // writes a permanently-false ReadyKey — which is indistinguishable from
+    // "always on cooldown" without this line. Runs once, after the grace
+    // period, so what it reports is the settled state rather than a race.
     UAbilitySystemComponent* ASC = ResolveASC(OwnerComp);
     if (!ASC)
     {
         UE_LOG(LogTemp, Error,
             TEXT("CombatSync[%s]: pawn has no AbilitySystemComponent — every ReadyKey will stay false"),
-            *GetNameSafe(OwnerComp.GetAIOwner() ? OwnerComp.GetAIOwner()->GetPawn() : nullptr));
+            *GetNameSafe(Pawn));
         return;
     }
 
@@ -100,11 +120,14 @@ void UGothicBTService_CombatSync::OnBecomeRelevant(UBehaviorTreeComponent& Owner
 
         if (!bFound)
         {
+            // Two distinct causes, and the order matters — the second one is
+            // what actually bit the Bestial Lucid's Wall Pound, and the first
+            // is what everyone assumes it is.
             UE_LOG(LogTemp, Error,
-                TEXT("CombatSync[%s]: no granted ability carries AssetTag '%s'. "
-                     "If the ability exists, the tag is probably in AbilityInputTag instead of AssetTags — same defect as July 17."),
-                *GetNameSafe(OwnerComp.GetAIOwner() ? OwnerComp.GetAIOwner()->GetPawn() : nullptr),
-                *Entry.AbilityTag.ToString());
+                TEXT("CombatSync[%s]: after %.1fs, no granted ability carries AssetTag '%s'. "
+                     "Either no Blueprint of that ability is in the pawn's StartupAbilities at all, "
+                     "or one exists and its tag is in AbilityInputTag instead of AssetTags."),
+                *GetNameSafe(Pawn), ValidationGraceSeconds, *Entry.AbilityTag.ToString());
         }
     }
 }
@@ -121,6 +144,20 @@ void UGothicBTService_CombatSync::TickNode(UBehaviorTreeComponent& OwnerComp,
     if (!BB || !Pawn)
     {
         return;
+    }
+
+    // ── Deferred config validation ───────────────────────────────────────────
+    if (FGothicCombatSyncMemory* Memory = CastInstanceNodeMemory<FGothicCombatSyncMemory>(NodeMemory))
+    {
+        if (!Memory->bValidated)
+        {
+            Memory->TimeSinceRelevant += DeltaSeconds;
+            if (Memory->TimeSinceRelevant >= ValidationGraceSeconds)
+            {
+                Memory->bValidated = true;
+                ValidateConfiguration(OwnerComp);
+            }
+        }
     }
 
     // ── Ability readiness ────────────────────────────────────────────────────

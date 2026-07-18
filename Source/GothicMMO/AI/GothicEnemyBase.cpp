@@ -5,6 +5,7 @@
 #include "AI/GothicCombatStateComponent.h"
 #include "TimerManager.h"
 #include "AI/GothicEnemyAIController.h"
+#include "AI/GothicPackSubsystem.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "Components/CapsuleComponent.h"
@@ -89,6 +90,14 @@ void AGothicEnemyBase::BeginPlay()
     }
 
     InitializeGAS();
+    
+    // Pack registration — server only; AI and the pack subsystem are
+    // server-authoritative. Serialized (hand-placed) PackIDs land here;
+    // wave-spawned enemies come through SetPackID from the spawn stamp.
+    if (HasAuthority() && !PackID.IsNone())
+    {
+        SetPackID(PackID);
+    }
 
     if (PerceptionComponent)
     {
@@ -179,6 +188,53 @@ void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget)
         AIC->SetBlackboardTarget(NewTarget);
     }
 }
+
+void AGothicEnemyBase::SetPackID(FName NewPackID)
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    UGothicPackSubsystem* PackSys =
+        GetWorld() ? GetWorld()->GetSubsystem<UGothicPackSubsystem>() : nullptr;
+    if (!PackSys)
+    {
+        return;
+    }
+
+    // Moving between packs: leave the old one first. Registering under the
+    // same ID twice is a no-op inside the subsystem, so BeginPlay calling
+    // this with the value it already holds is harmless.
+    if (!PackID.IsNone() && PackID != NewPackID)
+    {
+        PackSys->UnregisterMember(PackID, this);
+    }
+
+    PackID = NewPackID;
+
+    if (!PackID.IsNone())
+    {
+        PackSys->RegisterMember(PackID, this);
+    }
+}
+
+void AGothicEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    // Corpse destruction, encounter collection, level teardown — every exit
+    // path deregisters. The subsystem holds weak ptrs so a missed exit
+    // wouldn't crash, but a clean unregister keeps pack counts honest.
+    if (HasAuthority() && !PackID.IsNone())
+    {
+        if (UGothicPackSubsystem* PackSys =
+            GetWorld() ? GetWorld()->GetSubsystem<UGothicPackSubsystem>() : nullptr)
+        {
+            PackSys->UnregisterMember(PackID, this);
+        }
+    }
+
+    Super::EndPlay(EndPlayReason);
+}
 void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
 {
     // Stop AI before Super — controller is still valid here
@@ -196,6 +252,18 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
 
     // Cosmetics fan out to every machine, this one included.
     MulticastOnDeath(Killer);
+    
+    // Pack sync — every living packmate enters the regroup pause in the
+    // same frame. OnDeath only runs on the server (see MulticastOnDeath's
+    // comment), so no authority check needed beyond the one already implied.
+    if (!PackID.IsNone())
+    {
+        if (UGothicPackSubsystem* PackSys =
+            GetWorld() ? GetWorld()->GetSubsystem<UGothicPackSubsystem>() : nullptr)
+        {
+            PackSys->NotifyMemberDeath(PackID, this);
+        }
+    }
 
     if (!OwningEncounter)
     {

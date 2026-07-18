@@ -16,6 +16,7 @@
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Float.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Name.h"
 
 AGothicEnemyAIController::AGothicEnemyAIController()
 {
@@ -66,6 +67,7 @@ void AGothicEnemyAIController::OnUnPossess()
 {
     Super::OnUnPossess();
     GetWorldTimerManager().ClearTimer(LeashCheckTimer);
+    GetWorldTimerManager().ClearTimer(RegroupPauseTimer);
 }
 
 void AGothicEnemyAIController::SetBlackboardTarget(AActor* NewTarget)
@@ -99,6 +101,26 @@ void AGothicEnemyAIController::ClearCombatTarget()
     Blackboard->ClearValue(GothicBBKeys::TargetActor);
     Blackboard->SetValueAsBool(GothicBBKeys::bIsInCombat,   false);
     Blackboard->SetValueAsBool(GothicBBKeys::bCanSeeTarget, false);
+}
+
+void AGothicEnemyAIController::EnterRegroupPause(float Duration)
+{
+    if (!Blackboard)
+    {
+        return;
+    }
+
+    Blackboard->SetValueAsBool(GothicBBKeys::bPackRegroup, true);
+
+    // SetTimer on an in-use handle resets it — a defensive property here,
+    // not a bug: overlapping pauses extend rather than stack.
+    GetWorldTimerManager().SetTimer(RegroupPauseTimer, [this]()
+    {
+        if (Blackboard)
+        {
+            Blackboard->SetValueAsBool(GothicBBKeys::bPackRegroup, false);
+        }
+    }, Duration, false);
 }
 
 AActor* AGothicEnemyAIController::GetTargetActor() const
@@ -285,9 +307,13 @@ void AGothicEnemyAIController::ValidateBlackboardKeys()
         { GothicBBKeys::TargetLocation, UBlackboardKeyType_Vector::StaticClass(), TEXT("Vector") },
         { GothicBBKeys::bCanSeeTarget,  UBlackboardKeyType_Bool::StaticClass(),   TEXT("Bool")   },
         { GothicBBKeys::bIsInCombat,    UBlackboardKeyType_Bool::StaticClass(),   TEXT("Bool")   },
-        { GothicBBKeys::PatrolOrigin,   UBlackboardKeyType_Vector::StaticClass(), TEXT("Vector") },
-        { GothicBBKeys::AttackRange,    UBlackboardKeyType_Float::StaticClass(),  TEXT("Float")  },
-    };
+        { GothicBBKeys::PatrolOrigin,    UBlackboardKeyType_Vector::StaticClass(), TEXT("Vector") },
+        { GothicBBKeys::AttackRange,     UBlackboardKeyType_Float::StaticClass(),  TEXT("Float")  },
+        { GothicBBKeys::ChosenAction,    UBlackboardKeyType_Name::StaticClass(),   TEXT("Name")   },
+        { GothicBBKeys::RepositionPoint, UBlackboardKeyType_Vector::StaticClass(), TEXT("Vector") },
+        { GothicBBKeys::bPackRegroup,    UBlackboardKeyType_Bool::StaticClass(),   TEXT("Bool")   },
+};
+    
 
     const UBlackboardData* Asset = Blackboard->GetBlackboardAsset();
     const FString AssetName = GetNameSafe(Asset);

@@ -69,6 +69,26 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Gothic|Enemy")
     AActor* GetCombatTarget() const { return CombatTarget; }
+    /**
+     * Assigns this enemy to a pack, registering with UGothicPackSubsystem.
+     * Handles re-registration: moving between packs unregisters from the old
+     * one first. Exists as a setter (rather than BeginPlay reading the
+     * property directly and nothing else) because wave-spawned enemies get
+     * their PackID stamped AFTER SpawnActor completes — BeginPlay has
+     * already run by then and saw NAME_None. Both paths converge here:
+     * BeginPlay calls it with the serialized value; spawn code calls it
+     * with the spawn point's stamp.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Pack")
+    void SetPackID(FName NewPackID);
+
+    UFUNCTION(BlueprintPure, Category = "Gothic|Pack")
+    FName GetPackID() const { return PackID; }
+
+    UFUNCTION(BlueprintPure, Category = "Gothic|Pack")
+    float GetPackRegroupDuration() const { return PackRegroupDuration; }
+
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     /** Broadcast when this enemy dies. AGothicEncounterVolume subscribes to track encounter completion. */
     UPROPERTY(BlueprintAssignable, Category = "Gothic|Enemy")
     FOnEnemyDied OnEnemyDied;
@@ -88,6 +108,23 @@ public:
      */
     UPROPERTY(BlueprintReadOnly, Category = "Gothic|Encounter")
     TObjectPtr<AGothicEncounterVolume> OwningEncounter;
+    
+    /**
+     * Pack membership. NAME_None (default) = packless — the boss and the
+     * Retained opt out by doing nothing. EditAnywhere so hand-placed
+     * instances can be grouped in the level directly, same
+     * grouping-is-a-level-design-decision philosophy as
+     * bAggroEnemiesOnOverlap. Wave-spawned enemies get this stamped by
+     * their spawn point via SetPackID — see AGothicEnemySpawnPoint.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|Pack")
+    FName PackID = NAME_None;
+
+    /** How long this enemy holds the guard pose when a packmate falls.
+     *  Per-enemy rather than per-pack so a future heavier variant can
+     *  recover slower than the Thralls around it. */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|Pack")
+    float PackRegroupDuration = 2.5f;
     
     /** Amount of Selah awarded to each nearby player on death. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")

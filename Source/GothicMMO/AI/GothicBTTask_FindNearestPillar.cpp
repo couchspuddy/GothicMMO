@@ -2,11 +2,15 @@
 
 #include "AI/GothicBTTask_FindNearestPillar.h"
 #include "AIController.h"
+#include "NavigationSystem.h"
+#include "AI/NavigationSystemBase.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
 #include "GameFramework/Pawn.h"
+
+class UNavigationSystemV1;
 
 UGothicBTTask_FindNearestPillar::UGothicBTTask_FindNearestPillar()
 {
@@ -85,10 +89,28 @@ EBTNodeResult::Type UGothicBTTask_FindNearestPillar::ExecuteTask(
         return EBTNodeResult::Failed;
     }
 
-    BB->SetValue<UBlackboardKeyType_Vector>(OutputLocationKey.GetSelectedKeyID(), Nearest->GetActorLocation());
+    // Offset back toward the pawn rather than using the pillar's bare origin --
+    // see ApproachOffsetDistance's comment in the header. A raw origin sits
+    // inside the pillar's own collision, off the navmesh, and Move To fails
+    // there silently.
+    // Offset back toward the pawn so Move To targets a reachable point,
+    // not the pillar's own (likely inside-geometry) origin — then project
+    // to navmesh so "reachable" is guaranteed rather than hoped.
+    const FVector PillarLoc = Nearest->GetActorLocation();
+    const FVector ToPawn = (Pawn->GetActorLocation() - PillarLoc).GetSafeNormal2D();
+    FVector ApproachPoint = PillarLoc + ToPawn * ApproachOffsetDistance;
 
-    UE_LOG(LogTemp, Log, TEXT("FindNearestPillar[%s]: targeting %s"),
-        *GetNameSafe(Pawn), *Nearest->GetName());
+    if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(Pawn->GetWorld()))
+    {
+        FNavLocation Projected;
+        if (NavSys->ProjectPointToNavigation(ApproachPoint, Projected, FVector(200.f, 200.f, 500.f)))
+        {
+            ApproachPoint = Projected.Location;
+        }
+    }
+
+    BB->SetValue<UBlackboardKeyType_Vector>(OutputLocationKey.GetSelectedKeyID(), ApproachPoint);
+    
 
     return EBTNodeResult::Succeeded;
 }

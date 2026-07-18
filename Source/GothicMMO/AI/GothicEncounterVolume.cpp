@@ -173,6 +173,14 @@ void AGothicEncounterVolume::CompleteCollection()
 
             if (NewEnemy)
             {
+                // Pack stamp AFTER spawn, through the setter — BeginPlay has
+                // already run inside SpawnActor and saw NAME_None; SetPackID
+                // is the convergence point for both assignment paths.
+                if (!Point->PackID.IsNone())
+                {
+                    NewEnemy->SetPackID(Point->PackID);
+                }
+
                 SpawnedWave.Add(NewEnemy);
             }
         }

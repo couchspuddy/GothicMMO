@@ -27,7 +27,9 @@
 // Gotcha #2 note: every key on this node is an FBlackboardKeySelector, chosen
 // from a dropdown of the asset's real keys — immune to FName-typo silent
 // no-ops by construction. An unset selector is skipped, visibly "None" in the
-// editor, and reported once at OnBecomeRelevant.
+// editor, and reported once, one second after the branch becomes relevant —
+// deliberately not at OnBecomeRelevant, which fires before the pawn has
+// granted anything. See FGothicCombatSyncMemory.
 
 #pragma once
 
@@ -38,6 +40,27 @@
 #include "GothicBTService_CombatSync.generated.h"
 
 class UAbilitySystemComponent;
+
+/**
+ * Per-instance state for the deferred config check. Exists because the check
+ * used to run in OnBecomeRelevant and was WRONG THERE: the BT starts on
+ * OnPossess, but a pawn grants its StartupAbilities in its own BeginPlay,
+ * which happens after. So the ASC is legitimately empty when the tree starts,
+ * and every configured tag reported "no granted ability carries AssetTag" on
+ * every single PIE run — for abilities that were about to be granted a
+ * fraction of a second later and worked fine thereafter.
+ *
+ * That false alarm cost a full session on July 18: it was read as a
+ * reappearance of the July 17 AssetTag defect, when the tags had been correct
+ * the whole time. A diagnostic that cries wolf is worse than no diagnostic,
+ * because it makes the one true line in the block (WallPound genuinely had no
+ * Blueprint) indistinguishable from the three false ones.
+ */
+struct FGothicCombatSyncMemory
+{
+    float TimeSinceRelevant = 0.f;
+    bool  bValidated        = false;
+};
 
 /** One ability whose readiness should be mirrored into a Blackboard bool. */
 USTRUCT()
@@ -73,8 +96,18 @@ public:
         uint8* NodeMemory) override;
     virtual void InitializeFromAsset(UBehaviorTree& Asset) override;
     virtual FString GetStaticDescription() const override;
+    virtual uint16 GetInstanceMemorySize() const override;
 
 protected:
+    /**
+     * How long after this branch becomes relevant to wait before checking that
+     * every configured AbilityTag actually resolves to a granted ability.
+     * Must outlast the pawn's own BeginPlay grant — see FGothicCombatSyncMemory.
+     * One second is ~5 service ticks of slack at the default Interval.
+     */
+    UPROPERTY(EditAnywhere, Category = "Sync")
+    float ValidationGraceSeconds = 1.f;
+
     /** Abilities to mirror. One entry per ability the tree branches on. */
     UPROPERTY(EditAnywhere, Category = "Sync")
     TArray<FGothicAbilityReadinessSync> AbilitiesToSync;
@@ -105,4 +138,7 @@ protected:
 
 private:
     UAbilitySystemComponent* ResolveASC(UBehaviorTreeComponent& OwnerComp) const;
+
+    /** Runs once per branch activation, ValidationGraceSeconds after it becomes relevant. */
+    void ValidateConfiguration(UBehaviorTreeComponent& OwnerComp) const;
 };
