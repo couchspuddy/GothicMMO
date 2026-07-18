@@ -9,6 +9,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "AI/GothicEnemyBase.h"
 #include "GothicEncounterVolume.generated.h"
 
 class AGothicEnemyBase;
@@ -30,6 +31,20 @@ public:
 	/** True once every enemy in this encounter is dead. */
 	UFUNCTION(BlueprintPure, Category = "Gothic|Encounter")
 	bool IsComplete() const { return RemainingEnemyCount <= 0; }
+	
+	/** Living member count — the exact number RemainingEnemyCount already tracks,
+ *  exposed for anything that needs to read pack strength without owning its
+ *  own duplicate roster (the planned UGothicPackCoordinator, and the Bestial
+ *  Lucid's opening-aggression bias reading her own Den's losses). */
+	UFUNCTION(BlueprintPure, Category = "Gothic|Encounter")
+	int32 GetLivingCount() const { return RemainingEnemyCount; }
+
+	/** Fires whenever a member of this encounter dies — same event
+	 *  HandleEnemyDied already reacts to internally, exposed so external
+	 *  listeners (pack coordination, boss aggression) don't need to bind to
+	 *  every individual enemy's own OnEnemyDied themselves. */
+	UPROPERTY(BlueprintAssignable, Category = "Gothic|Encounter")
+	FOnEnemyDied OnEncounterMemberDied;
 	
 	UFUNCTION(BlueprintCallable, Category = "Gothic|Encounter")
 	void AddWaveToEncounter(const TArray<AGothicEnemyBase*>& NewWaveEnemies);

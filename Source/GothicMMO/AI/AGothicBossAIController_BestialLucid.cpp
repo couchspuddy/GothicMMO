@@ -2,13 +2,12 @@
 
 #include "AI/AGothicBossAIController_BestialLucid.h"
 #include "AI/GothicVitalPointComponent.h"
+#include "AI/GothicEnemyAIController.h"
 #include "GameFramework/Pawn.h"
-#include "Kismet/GameplayStatics.h"
-#include "TimerManager.h"
-#include "Engine/World.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystem/GothicAttributeSet.h"
+#include "BehaviorTree/BlackboardComponent.h"
 
 void AGothicBossAIController_BestialLucid::OnPossess(APawn* InPawn)
 {
@@ -35,7 +34,6 @@ void AGothicBossAIController_BestialLucid::OnPossess(APawn* InPawn)
             *InPawn->GetName());
     }
 
-    // Phase 2 now triggers off health, not the vital index.
     CachedASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(InPawn);
     if (CachedASC)
     {
@@ -43,19 +41,14 @@ void AGothicBossAIController_BestialLucid::OnPossess(APawn* InPawn)
             UGothicAttributeSet::GetHealthAttribute())
             .AddUObject(this, &AGothicBossAIController_BestialLucid::HandleHealthChanged);
 
-        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Bound to health changes on %s — Phase 2 at %.0f%%"),
+        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Bound to health changes on %s -- transition at %.0f%%"),
             *InPawn->GetName(), Phase2HealthThreshold * 100.f);
     }
     else
     {
-        UE_LOG(LogTemp, Warning, TEXT("BestialLucid AI: No ASC on %s — Phase 2 can never fire"),
+        UE_LOG(LogTemp, Warning, TEXT("BestialLucid AI: No ASC on %s -- Phase 2 can never fire"),
             *InPawn->GetName());
     }
-
-    UGameplayStatics::GetAllActorsWithTag(GetWorld(), DestructibleZoneTag, DestructibleZones);
-
-    UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Found %d destructible zones tagged '%s'"),
-        DestructibleZones.Num(), *DestructibleZoneTag.ToString());
 }
 
 void AGothicBossAIController_BestialLucid::OnUnPossess()
@@ -75,53 +68,24 @@ void AGothicBossAIController_BestialLucid::OnUnPossess()
     }
     CachedASC = nullptr;
 
-    if (ZoneCollapseTimerHandle.IsValid())
-    {
-        GetWorldTimerManager().ClearTimer(ZoneCollapseTimerHandle);
-    }
-
     Super::OnUnPossess();
 }
 
 void AGothicBossAIController_BestialLucid::HandleVitalPointShifted(int32 NewIndex, FVector NewWorldLocation)
 {
-    // No longer drives the phase — that's HandleHealthChanged's job. Kept bound
+    // No longer drives the phase -- that's HandleHealthChanged's job. Kept bound
     // because a Phase 1 reaction to her own vital shifting is a plausible beat.
-}
-
-// AGothicBossAIController_BestialLucid.cpp — replace the stub OnPhaseAdvance() body
-void AGothicBossAIController_BestialLucid::OnPhaseAdvance()
-{
-    Super::OnPhaseAdvance(); // generic bookkeeping, Blackboard write, broadcast
-
-    // Vital Point Freeze — per design doc, Phase 2's deliberate inversion:
-    // the vital becomes a fixed, known target the moment the fight gets harder.
-    if (CachedVitalPointComponent)
-    {
-        CachedVitalPointComponent->FreezeVitalPoint(Phase2LockedVitalIndex);
-    }
-
-    // Timed Ceiling Collapse — starts only if we actually found tagged zones.
-    if (DestructibleZones.Num() > 0)
-    {
-        GetWorldTimerManager().SetTimer(
-            ZoneCollapseTimerHandle,
-            this,
-            &AGothicBossAIController_BestialLucid::HandleZoneCollapseTimer,
-            ZoneCollapseInterval,
-            true); // looping
-    }
-    else
-    {
-        UE_LOG(LogTemp, Warning, TEXT("BestialLucid AI: Phase 2 entered but no destructible zones found — tag debris actors '%s' in the level"),
-            *DestructibleZoneTag.ToString());
-    }
 }
 
 void AGothicBossAIController_BestialLucid::HandleHealthChanged(const FOnAttributeChangeData& Data)
 {
-    // The phase guard is what stops this re-firing on every damage tick below 50%.
-    if (GetCurrentPhase() != 1 || !CachedASC)
+    // Guards on bTransitionTriggered, NOT GetCurrentPhase() -- CurrentPhase
+    // deliberately doesn't flip until the scripted beat (Cry, forced move to
+    // a pillar, forced Wall Pound) finishes, but health keeps changing during
+    // that beat as more hits land. Without this separate flag, every one of
+    // those hits would re-enter this branch and try to start the transition
+    // again mid-sequence.
+    if (bTransitionTriggered || !CachedASC)
     {
         return;
     }
@@ -135,28 +99,51 @@ void AGothicBossAIController_BestialLucid::HandleHealthChanged(const FOnAttribut
     const float Fraction = Data.NewValue / MaxHealth;
     if (Fraction <= Phase2HealthThreshold)
     {
-        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Health %.1f/%.1f (%.0f%%) crossed %.0f%% — advancing phase"),
+        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Health %.1f/%.1f (%.0f%%) crossed %.0f%% -- starting transition"),
             Data.NewValue, MaxHealth, Fraction * 100.f, Phase2HealthThreshold * 100.f);
 
-        OnPhaseAdvance();
+        bTransitionTriggered = true;
+
+        if (Blackboard && TransitionPendingBlackboardKey != NAME_None)
+        {
+            Blackboard->SetValueAsBool(TransitionPendingBlackboardKey, true);
+        }
+        else
+        {
+            UE_LOG(LogTemp, Error,
+                TEXT("BestialLucid AI: TransitionPendingBlackboardKey not set or Blackboard invalid -- ")
+                TEXT("the scripted transition can never start. Add '%s' as a Bool key on BB_BestialLucid."),
+                *TransitionPendingBlackboardKey.ToString());
+        }
     }
 }
 
-// AGothicBossAIController_BestialLucid.cpp — new function
-void AGothicBossAIController_BestialLucid::HandleZoneCollapseTimer()
+void AGothicBossAIController_BestialLucid::CompletePhase2Transition()
 {
-    if (DestructibleZones.Num() == 0)
+    if (Blackboard && TransitionPendingBlackboardKey != NAME_None)
     {
-        return; // shouldn't happen — timer only starts if zones exist — but cheap to guard
+        Blackboard->SetValueAsBool(TransitionPendingBlackboardKey, false);
     }
 
-    const int32 ZoneIndex = NextZoneCollapseIndex;
-    NextZoneCollapseIndex = (NextZoneCollapseIndex + 1) % DestructibleZones.Num();
+    OnPhaseAdvance(); // generic bookkeeping (Blackboard write, broadcast) + vital freeze below
+}
 
-    AActor* ZoneActor = DestructibleZones[ZoneIndex];
+void AGothicBossAIController_BestialLucid::OnPhaseAdvance()
+{
+    Super::OnPhaseAdvance(); // generic bookkeeping, Blackboard write, broadcast
 
-    UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Triggering zone collapse — index %d (%s)"),
-        ZoneIndex, ZoneActor ? *ZoneActor->GetName() : TEXT("NULL"));
+    // Vital Point Freeze -- per design doc, Phase 2's deliberate inversion:
+    // the vital becomes a fixed, known target the moment the fight gets harder.
+    // Now fires here, at the END of the scripted transition beat, rather than
+    // the instant health crossed the threshold -- matches the vital lock
+    // actually landing right when the player sees Phase 2 begin, not several
+    // seconds earlier while Cry/the pillar walk/Wall Pound are still playing out.
+    if (CachedVitalPointComponent)
+    {
+        CachedVitalPointComponent->FreezeVitalPoint(Phase2LockedVitalIndex);
+    }
 
-    TriggerZoneCollapse(ZoneIndex, ZoneActor);
+    // Zone Collapse timer retired this pass -- superseded by Wall Pound, which
+    // does the same job but is player-influenceable rather than firing on an
+    // unconditional clock regardless of positioning.
 }

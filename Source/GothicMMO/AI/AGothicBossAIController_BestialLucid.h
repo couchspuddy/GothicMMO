@@ -1,8 +1,22 @@
 ﻿// GothicBossAIController_BestialLucid.h
 // Bestial Lucid boss AI controller.
-// Advances Phase 1 -> Phase 2 (the Stillness beat, per design doc) when her
-// health first drops below a threshold. Phase 2 freezes the vital point at
-// the heart and starts the timed ceiling collapse.
+//
+// Phase 1 -> 2 fires when health first drops below Phase2HealthThreshold.
+// That crossing does NOT advance the phase directly anymore — it starts a
+// scripted transition sequence (Cry, forced move to the nearest pillar,
+// forced Wall Pound, then the actual phase advance) owned by the Behavior
+// Tree, not this controller. The controller's job is narrower than it used
+// to be: detect the threshold once, hand off to the BT via a Blackboard
+// flag, and expose ONE public entry point (CompletePhase2Transition) for
+// the BT's last step to call once the scripted beat is actually done.
+//
+// Zone Collapse (the old unconditional 17.5s timer cycling through tagged
+// destructible zones) is retired as of this pass — superseded by Wall Pound,
+// which does the same job but is player-influenceable (skippable through
+// good positioning) rather than firing on a fixed clock regardless of what
+// the player does. Running both would have meant the room kept shrinking on
+// its own timer no matter how well the player kited her away from walls,
+// which defeats the entire point of Wall Pound's proximity-skip condition.
 //
 // Assumes possession of a pawn with a UGothicVitalPointComponent and an ASC.
 
@@ -25,12 +39,23 @@ public:
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnUnPossess() override;
 
+	/**
+	 * Called by the Behavior Tree's transition Sequence as its final step,
+	 * once Cry, the forced move to a pillar, and the forced Wall Pound have
+	 * all actually completed. This is the ONLY public entry point for
+	 * finishing the transition — clears the pending flag and runs the real
+	 * phase advance (Blackboard write, broadcast, vital freeze), which
+	 * OnPhaseAdvance still owns exactly as before.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Gothic|Boss|BestialLucid")
+	void CompletePhase2Transition();
+
 protected:
 	/**
-		 * Phase 1 -> 2 fires when health first drops to or below this fraction of
-		 * MaxHealth. Fraction rather than a flat value so it survives health
-		 * retuning and scales when she's balanced for a full Kindle.
-		 */
+	 * Phase 1 -> 2 fires when health first drops to or below this fraction of
+	 * MaxHealth. Fraction rather than a flat value so it survives health
+	 * retuning and scales when she's balanced for a full Kindle.
+	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Gothic|Boss|BestialLucid",
 		meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float Phase2HealthThreshold = 0.5f;
@@ -45,26 +70,19 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Gothic|Boss|BestialLucid")
 	int32 Phase2LockedVitalIndex = 0;
 
+	/**
+	 * Blackboard Bool key set true the instant health crosses the threshold.
+	 * The BT's transition Sequence gates on this (Observer Abort: Lower
+	 * Priority) to take over from whatever's running. Stays true for the
+	 * entire scripted beat — CompletePhase2Transition clears it once the
+	 * sequence is genuinely done, which is also what unblocks HandleHealthChanged
+	 * from ever firing this a second time.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Gothic|Boss|BestialLucid")
+	FName TransitionPendingBlackboardKey = "bTransitionPending";
+
 	/** Override to add Bestial Lucid-specific phase-advance behavior on top of the base bookkeeping. */
 	virtual void OnPhaseAdvance() override;
-	
-	// AGothicBossAIController_BestialLucid.h — add to protected section
-	/** Tag applied to destructible debris actors in the level (per Eagle's
-	 *  Landing Blockout Scale doc's "reserved destructible zones"). Found
-	 *  automatically at possess time — no manual per-instance wiring needed. */
-	UPROPERTY(EditDefaultsOnly, Category = "Gothic|Boss|BestialLucid")
-	FName DestructibleZoneTag = "BestialLucidZone";
-
-	/** Seconds between zone collapse triggers during Phase 2. Doc range: 15-20s. */
-	UPROPERTY(EditDefaultsOnly, Category = "Gothic|Boss|BestialLucid")
-	float ZoneCollapseInterval = 17.5f;
-
-	/**
-	 * Fired when it's time for a zone to collapse. Blueprint owns the actual
-	 * telegraph/debris visual — C++ only decides when and which zone.
-	 */
-	UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Boss|BestialLucid")
-	void TriggerZoneCollapse(int32 ZoneIndex, AActor* ZoneActor);
 
 private:
 	UPROPERTY()
@@ -72,9 +90,7 @@ private:
 
 	UFUNCTION()
 	void HandleVitalPointShifted(int32 NewIndex, FVector NewWorldLocation);
-	/** Discovered via tag search in OnPossess — not manually assigned. */
-	TArray<AActor*> DestructibleZones;
-	
+
 	UPROPERTY()
 	TObjectPtr<UAbilitySystemComponent> CachedASC;
 
@@ -82,11 +98,12 @@ private:
 
 	void HandleHealthChanged(const FOnAttributeChangeData& Data);
 
-	/** Cycles through DestructibleZones sequentially, not randomly —
-	 *  matches the doc's "could be as simple as cycling" preference. */
-	int32 NextZoneCollapseIndex = 0;
-
-	FTimerHandle ZoneCollapseTimerHandle;
-
-	void HandleZoneCollapseTimer();
+	/**
+	 * One-shot guard separate from CurrentPhase — CurrentPhase deliberately
+	 * doesn't flip to 2 until CompletePhase2Transition runs, but health can
+	 * keep changing (more hits landing) during the scripted beat itself, and
+	 * HandleHealthChanged would otherwise have nothing stopping it from
+	 * re-triggering the transition mid-sequence.
+	 */
+	bool bTransitionTriggered = false;
 };

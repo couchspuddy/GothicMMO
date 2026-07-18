@@ -58,6 +58,7 @@ AGothicEnemyBase::AGothicEnemyBase()
     HealthBarWidget->SetWidgetSpace(EWidgetSpace::Screen);  
     HealthBarWidget->SetDrawSize(FVector2D(200.f, 20.f));
     HealthBarWidget->SetVisibility(false);
+    HealthBarWidget->SetCanEverAffectNavigation(false); 
     
     VitalPointComponent = CreateDefaultSubobject<UGothicVitalPointComponent>(
     TEXT("VitalPointComponent"));

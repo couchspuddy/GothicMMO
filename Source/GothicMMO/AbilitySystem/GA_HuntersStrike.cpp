@@ -156,19 +156,6 @@ void UGA_HuntersStrike::PerformMeleeTrace()
         ApplyDamageToTarget(HitActor, DamageEffectClass, DamageMultiplier);
         AlreadyHit.Add(HitActor);
 
-        // Fan the hit out to every client, the same way GA_Fire does. This was the
-        // last silent damage site in the melee path.
-        //
-        // Replaces the camera shake that used to live here: it called
-        // GetWorld()->GetFirstPlayerController(), which on a server is player 0 and
-        // not the attacker, so in a Kindle it shook the wrong person's camera. It
-        // also fired once per target inside this loop, unclamped. Feedback belongs
-        // on the owning client, which is what MulticastOnHit -> OnHitFeedback is for.
-        if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(HitActor))
-        {
-            HitEnemy->MulticastOnHit(HitActor->GetActorLocation(), false);
-        }
-
         // Only gain super meter if we actually hit something
         if (SuperGainOnHitEffect)
         {

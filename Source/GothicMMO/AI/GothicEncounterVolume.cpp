@@ -140,6 +140,7 @@ void AGothicEncounterVolume::HandleEnemyDied(AGothicEnemyBase* DeadEnemy)
                 *GetName(), LastEnemyToDie ? *LastEnemyToDie->GetName() : TEXT("Unknown"), CachedTotalSelah);
         }
     }
+    OnEncounterMemberDied.Broadcast(DeadEnemy);
 }
 
 // AGothicEncounterVolume.cpp — replace CompleteCollection entirely
