@@ -1,14 +1,14 @@
 // GA_HuntersStrike.h
 // "Hunter's Strike" — the default light melee attack.
 // This is a C++ ability that:
-//   1. Plays a montage (set in Blueprint child)
-//   2. Opens a damage window via an anim notify
+//   1. Plays a montage (set in Blueprint child via base class MontageToPlay)
+//   2. Opens a damage window via an anim notify (Event.Montage.HitWindow)
 //   3. Sphere-traces for targets in front of the player
 //   4. Applies GE_MeleeDamage to each target hit
-//   5. Ends cleanly (cancels if interrupted)
+//   5. Ends cleanly when the montage completes (cancels if interrupted)
 //
 // Blueprint child: BP_GA_HuntersStrike
-//   - Set MontageToPlay to your melee anim montage
+//   - Set MontageToPlay to your melee anim montage (inherited from base)
 //   - Set DamageEffectClass to GE_MeleeDamage
 //   - Bind to slot LightAttack
 
@@ -17,9 +17,7 @@
 #include "CoreMinimal.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
 #include "Camera/CameraShakeBase.h"
-#include "Abilities/Tasks/AbilityTask_PlayMontageAndWait.h"
 #include "GA_HuntersStrike.generated.h"
-
 
 UCLASS()
 class GOTHICMMO_API UGA_HuntersStrike : public UGothicGameplayAbility
@@ -35,69 +33,40 @@ public:
         const FGameplayAbilityActivationInfo ActivationInfo,
         const FGameplayEventData* TriggerEventData) override;
 
-    virtual void EndAbility(
-        const FGameplayAbilitySpecHandle Handle,
-        const FGameplayAbilityActorInfo* ActorInfo,
-        const FGameplayAbilityActivationInfo ActivationInfo,
-        bool bReplicateEndAbility,
-        bool bWasCancelled) override;
-
 protected:
-    /** Montage to play. Assign in Blueprint child (BP_GA_HuntersStrike). */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
-    UAnimMontage* MontageToPlay;
+    // MontageToPlay is inherited from UGothicGameplayAbility — set in Blueprint.
 
     /** The GameplayEffect that deals the damage. Assign in Blueprint. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     TSubclassOf<UGameplayEffect> DamageEffectClass;
 
-    /**
-     * Radius of the melee hit sphere trace (cm).
-     * Keep small (~80) for a dagger feel, larger (~120) for a two-hander.
-     */
+    /** Radius of the melee hit sphere trace (cm). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     float HitSphereRadius = 80.f;
 
-    /**
-     * How far forward the sphere trace reaches (cm).
-     * Represents the effective melee range.
-     */
+    /** How far forward the sphere trace reaches (cm). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     float HitRange = 200.f;
 
-    /** Damage multiplier. 1.0 = base AttackPower. Increase for heavy variants. */
+    /** Damage multiplier. 1.0 = base AttackPower. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     float DamageMultiplier = 1.0f;
 
-    /**
-     * Tags that, if present on a potential target, prevent them from being hit.
-     * Use this to prevent friendly fire: add "Team.Player" here if this is a
-     * PvE-only ability, or leave empty for PvP.
-     */
+    /** Tags on targets that prevent them from being hit. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     FGameplayTagContainer ImmunityTags;
-    
+
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     TSubclassOf<UGameplayEffect> SuperGainOnHitEffect;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     TSubclassOf<UGameplayEffect> SuperGainOnKillEffect;
-    
+
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     TSubclassOf<UCameraShakeBase> CameraShakeClass;
-    
-    UFUNCTION()
-    void OnMontageCompleted();
 
-    UFUNCTION()
-    void OnMontageInterrupted();
-
-    // -------------------------------------------------------------------------
-    // Called by the WaitGameplayEvent task when the anim notify fires.
-    // The notify should send event tag "Event.Montage.HitWindow.Open".
-    // -------------------------------------------------------------------------
-    UFUNCTION()
-    void OnHitWindowOpened(FGameplayEventData Payload);
+    // Base class montage callbacks — override hit window for our damage logic
+    virtual void OnMontageHitWindow(FGameplayEventData Payload) override;
 
     /** Performs the actual sphere trace and applies damage. Server only. */
     void PerformMeleeTrace();

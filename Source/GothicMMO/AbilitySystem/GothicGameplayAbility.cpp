@@ -6,6 +6,9 @@
 #include "AbilitySystem/GothicGameplayTags.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AI/GothicEnemyBase.h"
+#include "Abilities/Tasks/AbilityTask_PlayMontageAndWait.h"
+#include "Abilities/Tasks/AbilityTask_WaitGameplayEvent.h"
+#include "Animation/AnimMontage.h"
 
 UGothicGameplayAbility::UGothicGameplayAbility()
 {
@@ -35,6 +38,59 @@ void UGothicGameplayAbility::ActivateAbility(
 UGothicAbilitySystemComponent* UGothicGameplayAbility::GetGothicASC() const
 {
     return Cast<UGothicAbilitySystemComponent>(GetAbilitySystemComponentFromActorInfo());
+}
+
+// ── Montage lifecycle ───────────────────────────────────────────────────────
+
+bool UGothicGameplayAbility::PlayOptionalMontage()
+{
+    if (!MontageToPlay)
+    {
+        return false;
+    }
+
+    UAbilityTask_PlayMontageAndWait* MontageTask =
+        UAbilityTask_PlayMontageAndWait::CreatePlayMontageAndWaitProxy(
+            this, NAME_None, MontageToPlay, MontagePlayRate);
+
+    MontageTask->OnCompleted.AddDynamic(this, &UGothicGameplayAbility::OnMontageEnd);
+    MontageTask->OnBlendOut.AddDynamic(this, &UGothicGameplayAbility::OnMontageEnd);
+    MontageTask->OnInterrupted.AddDynamic(this, &UGothicGameplayAbility::OnMontageCancel);
+    MontageTask->OnCancelled.AddDynamic(this, &UGothicGameplayAbility::OnMontageCancel);
+
+    MontageTask->ReadyForActivation();
+
+    // Listen for the hit window anim notify.
+    // The montage needs an AnimNotify_SendGameplayEvent at the swing
+    // contact frame, sending tag Event.Montage.HitWindow.
+    UAbilityTask_WaitGameplayEvent* EventTask =
+        UAbilityTask_WaitGameplayEvent::WaitGameplayEvent(
+            this,
+            FGameplayTag::RequestGameplayTag(FName("Event.Montage.HitWindow")));
+
+    EventTask->EventReceived.AddDynamic(this, &UGothicGameplayAbility::OnMontageHitWindow);
+    EventTask->ReadyForActivation();
+
+    UE_LOG(LogTemp, Log, TEXT("%s: Montage started — %s"),
+        *GetName(), *MontageToPlay->GetName());
+
+    return true;
+}
+
+void UGothicGameplayAbility::OnMontageHitWindow(FGameplayEventData Payload)
+{
+    // Default does nothing. Derived classes override to do damage,
+    // AOE stun, etc. at the moment the animation connects.
+}
+
+void UGothicGameplayAbility::OnMontageEnd()
+{
+    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+}
+
+void UGothicGameplayAbility::OnMontageCancel()
+{
+    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 }
 
 void UGothicGameplayAbility::ApplyDamageToTarget(

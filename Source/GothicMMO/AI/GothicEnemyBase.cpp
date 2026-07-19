@@ -83,6 +83,7 @@ void AGothicEnemyBase::BeginPlay()
     if (GetMesh())
     {
         GetMesh()->SetCollisionResponseToChannel(ECC_Weapon, ECR_Block);
+        GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Weapon, ECR_Block);
     }
     else
     {
@@ -94,6 +95,8 @@ void AGothicEnemyBase::BeginPlay()
     // Pack registration — server only; AI and the pack subsystem are
     // server-authoritative. Serialized (hand-placed) PackIDs land here;
     // wave-spawned enemies come through SetPackID from the spawn stamp.
+    UE_LOG(LogTemp, Warning, TEXT("%s: PackID BeginPlay check — PackID='%s' HasAuthority=%d"),
+    *GetName(), *PackID.ToString(), HasAuthority());
     if (HasAuthority() && !PackID.IsNone())
     {
         SetPackID(PackID);

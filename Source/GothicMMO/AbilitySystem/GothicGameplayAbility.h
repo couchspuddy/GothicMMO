@@ -11,6 +11,8 @@
 #include "AbilitySystem/GothicAbilitySystemComponent.h"  // for EGothicAbilitySlot
 #include "GothicGameplayAbility.generated.h"
 
+class UAnimMontage;
+
 UCLASS(Abstract, Blueprintable)
 class GOTHICMMO_API UGothicGameplayAbility : public UGameplayAbility
 {
@@ -54,6 +56,66 @@ protected:
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|Ability")
     UGothicAbilitySystemComponent* GetGothicASC() const;
+
+    // -------------------------------------------------------------------------
+    // Optional montage lifecycle — any ability can play an attack montage
+    // by assigning MontageToPlay in its Blueprint child. If unset, the
+    // ability fires instantly as before.
+    //
+    // Flow: ActivateAbility → CommitAbility → PlayOptionalMontage()
+    //   Montage set:    task starts → hit window notify → OnMontageHitWindow()
+    //                   montage ends → OnMontageEnd() → EndAbility
+    //   Montage unset:  PlayOptionalMontage() returns false → do damage
+    //                   immediately → EndAbility
+    //
+    // The hit window fires via a WaitGameplayEvent task listening for
+    // Event.Montage.HitWindow — add an AnimNotify_SendGameplayEvent at
+    // the point in the montage where the swing connects.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Optional attack montage. If set, PlayOptionalMontage() plays it
+     * and the ability stays alive for the montage's duration. If null,
+     * the ability fires instantly.
+     * Assign in the Blueprint child (BP_GA_X).
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Ability|Montage")
+    TObjectPtr<UAnimMontage> MontageToPlay;
+
+    /** Playback rate for the attack montage. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Ability|Montage")
+    float MontagePlayRate = 1.0f;
+
+    /**
+     * Starts PlayMontageAndWait if MontageToPlay is assigned.
+     * Returns true if a montage was started (ability should NOT EndAbility
+     * immediately — the montage callbacks will handle it).
+     * Returns false if no montage is set (caller should do its work and
+     * EndAbility itself).
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Ability|Montage")
+    bool PlayOptionalMontage();
+
+    /**
+     * Called when the montage's hit window notify fires.
+     * Override in derived classes to perform damage, AOE, stun, etc.
+     * Default implementation does nothing — override is not required
+     * (some montages are purely cosmetic with no hit window).
+     */
+    UFUNCTION()
+    virtual void OnMontageHitWindow(FGameplayEventData Payload);
+
+    /** Called when the montage finishes normally. Default: EndAbility. */
+    UFUNCTION()
+    virtual void OnMontageEnd();
+
+    /** Called when the montage is interrupted or cancelled. Default: EndAbility(cancelled). */
+    UFUNCTION()
+    virtual void OnMontageCancel();
+
+    // -------------------------------------------------------------------------
+    // Centralized damage application
+    // -------------------------------------------------------------------------
 
     /**
      * THE way an ability damages a target. Every damage site routes through

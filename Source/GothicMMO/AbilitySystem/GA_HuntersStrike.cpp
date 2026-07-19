@@ -2,8 +2,6 @@
 
 #include "AbilitySystem/GA_HuntersStrike.h"
 #include "AI/GothicEnemyBase.h"
-#include "Abilities/Tasks/AbilityTask_PlayMontageAndWait.h"
-#include "Abilities/Tasks/AbilityTask_WaitGameplayEvent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/Engine.h"
@@ -11,19 +9,11 @@
 
 UGA_HuntersStrike::UGA_HuntersStrike()
 {
-    UE_LOG(LogTemp, Log, TEXT("GA_HuntersStrike: Constructor called"));
-
-    // Slot still set here as a default — can be overridden by the ability set
     AbilitySlot = EGothicAbilitySlot::Ability1;
-
-    // Input tag NOT set here — comes from DA_HunterAbilitySet at grant time
-    // This keeps the ability class tag-agnostic and data-driven
 
     ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Dead")));
     ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Stunned")));
     ActivationOwnedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Attacking")));
-
-    UE_LOG(LogTemp, Log, TEXT("GA_HuntersStrike: Constructor complete"));
 }
 
 void UGA_HuntersStrike::ActivateAbility(
@@ -34,67 +24,30 @@ void UGA_HuntersStrike::ActivateAbility(
 {
     Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
 
-    bool bCommitted = CommitAbility(Handle, ActorInfo, ActivationInfo);
-    
-    if (!bCommitted)
+    if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
     {
         CancelAbility(Handle, ActorInfo, ActivationInfo, true);
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("CommitAbility result: %s"),
-        bCommitted ? TEXT("SUCCESS") : TEXT("FAILED"));
-
-    if (!bCommitted)
+    if (PlayOptionalMontage())
     {
-        EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+        // Montage started — damage fires in OnMontageHitWindow when the
+        // anim notify reaches the swing contact frame. Base class handles
+        // EndAbility when the montage completes or is interrupted.
         return;
     }
 
-    if (MontageToPlay)
-    {
-        UE_LOG(LogTemp, Log, TEXT("GA_HuntersStrike: MontageToPlay is valid, creating task"))
-        UAbilityTask_PlayMontageAndWait* MontageTask =
-            UAbilityTask_PlayMontageAndWait::CreatePlayMontageAndWaitProxy(
-                this, NAME_None, MontageToPlay, 1.0f);
-
-        MontageTask->OnCompleted.AddDynamic(this, &UGA_HuntersStrike::OnMontageCompleted);
-        MontageTask->OnInterrupted.AddDynamic(this, &UGA_HuntersStrike::OnMontageInterrupted);
-        MontageTask->OnCancelled.AddDynamic(this, &UGA_HuntersStrike::OnMontageInterrupted);
-     
-        MontageTask->ReadyForActivation();
-    }
-    else
-    {
-        UE_LOG(LogTemp, Warning, TEXT("GA_HuntersStrike: MontageToPlay is NULL"));
-    }
-
+    // No montage assigned — instant fallback (same as before montage support)
     if (GetOwningActorFromActorInfo()->HasAuthority())
     {
         PerformMeleeTrace();
-
-        GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Green,
-            TEXT("Hunter's Strike fired!"));
     }
 
-    // Don't end ability immediately if montage is playing — wait for it
-    if (!MontageToPlay)
-    {
-        EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
-    }
+    EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 }
 
-void UGA_HuntersStrike::OnMontageCompleted()
-{
-    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
-}
-
-void UGA_HuntersStrike::OnMontageInterrupted()
-{
-    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
-}
-
-void UGA_HuntersStrike::OnHitWindowOpened(FGameplayEventData Payload)
+void UGA_HuntersStrike::OnMontageHitWindow(FGameplayEventData Payload)
 {
     if (GetOwningActorFromActorInfo()->HasAuthority())
     {
@@ -156,12 +109,12 @@ void UGA_HuntersStrike::PerformMeleeTrace()
         ApplyDamageToTarget(HitActor, DamageEffectClass, DamageMultiplier);
         AlreadyHit.Add(HitActor);
 
-        // Only gain super meter if we actually hit something
+        // Super meter gain on hit
         if (SuperGainOnHitEffect)
         {
-            FGameplayEffectContextHandle Context = 
+            FGameplayEffectContextHandle Context =
                 GetAbilitySystemComponentFromActorInfo()->MakeEffectContext();
-            FGameplayEffectSpecHandle Spec = 
+            FGameplayEffectSpecHandle Spec =
                 GetAbilitySystemComponentFromActorInfo()->MakeOutgoingSpec(
                     SuperGainOnHitEffect, 1.f, Context);
             if (Spec.IsValid())
@@ -171,21 +124,9 @@ void UGA_HuntersStrike::PerformMeleeTrace()
                     FGameplayTag::RequestGameplayTag(FName("Data.SuperMeter")),
                     15.f);
 
-                UE_LOG(LogTemp, Log, TEXT("GA_HuntersStrike: Applying SuperMeter gain 15.0"));
-
                 GetAbilitySystemComponentFromActorInfo()->ApplyGameplayEffectSpecToSelf(
                     *Spec.Data.Get());
             }
         }
     }
-}
-
-void UGA_HuntersStrike::EndAbility(
-    const FGameplayAbilitySpecHandle Handle,
-    const FGameplayAbilityActorInfo* ActorInfo,
-    const FGameplayAbilityActivationInfo ActivationInfo,
-    bool bReplicateEndAbility,
-    bool bWasCancelled)
-{
-    Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
