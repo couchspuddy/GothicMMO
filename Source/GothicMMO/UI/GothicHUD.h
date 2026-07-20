@@ -16,6 +16,7 @@
 
 class UGothicHUDWidget;
 class UGothicCrosshairWidget;
+class AGothicEnemyBase;
 
 /** Internal tracking for a single floating damage number on screen. */
 struct FGothicDamageNumber
@@ -25,6 +26,13 @@ struct FGothicDamageNumber
     bool bWasVital = false;
     float SpawnTime = 0.f;
     float RandomOffsetX = 0.f;
+};
+
+/** Tracks an enemy whose health bar should render on the HUD. */
+struct FEnemyHealthBarEntry
+{
+    TWeakObjectPtr<AGothicEnemyBase> Enemy;
+    float LastHitTime = 0.f;
 };
 
 UCLASS()
@@ -91,6 +99,9 @@ public:
     // Called from AGothicEnemyBase::MulticastOnHit on every client.
     // -------------------------------------------------------------------------
     void ShowDamageNumber(FVector WorldLocation, float DamageAmount, bool bWasVital);
+
+    /** Register an enemy to show a HUD-drawn health bar. Called from MulticastOnHit. */
+    void RegisterEnemyHealthBar(AGothicEnemyBase* Enemy);
 
     virtual void DrawHUD() override;
 protected:
@@ -165,4 +176,40 @@ private:
     float VitalHitScale = 1.4f;
 
     TArray<FGothicDamageNumber> ActiveDamageNumbers;
+
+    // -------------------------------------------------------------------------
+    // Enemy health bars — HUD-drawn, replaces WidgetComponent approach
+    // -------------------------------------------------------------------------
+
+    /** How long the health bar stays visible after the last hit. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|HealthBars")
+    float HealthBarVisibleDuration = 5.f;
+
+    /** Bar width in screen pixels. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|HealthBars")
+    float HealthBarWidth = 120.f;
+
+    /** Bar height in screen pixels. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|HealthBars")
+    float HealthBarHeight = 10.f;
+
+    /** World-space Z offset above the enemy's location (clears the head). */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|HealthBars")
+    float HealthBarWorldZOffset = 120.f;
+
+    /** Background bar color. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|HealthBars")
+    FLinearColor HealthBarBackgroundColor = FLinearColor(0.05f, 0.05f, 0.05f, 0.7f);
+
+    /** Health fill color. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|HealthBars")
+    FLinearColor HealthBarFillColor = FLinearColor(0.8f, 0.15f, 0.1f, 0.9f);
+
+    /** Max distance from player before the bar stops rendering. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|HealthBars")
+    float HealthBarMaxDistance = 3000.f;
+
+    TArray<FEnemyHealthBarEntry> ActiveHealthBars;
+
+    void DrawEnemyHealthBars();
 };

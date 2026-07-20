@@ -88,12 +88,7 @@ void UGothicBTService_WeightedActionSelect::OnBecomeRelevant(UBehaviorTreeCompon
         bool bFound = false;
         for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
         {
-            if (Spec.Ability)
-            {
-                UE_LOG(LogTemp, Warning, TEXT("  Granted: %s | AssetTags seen at runtime: %s"),
-                    *Spec.Ability->GetClass()->GetName(),
-                    *Spec.Ability->GetAssetTags().ToStringSimple());
-            }
+
             if (Spec.Ability && Spec.Ability->GetAssetTags().HasTag(Entry.AbilityTag))
             {
                 bFound = true;

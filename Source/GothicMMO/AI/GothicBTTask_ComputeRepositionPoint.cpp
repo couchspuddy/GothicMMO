@@ -51,7 +51,7 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
 
     if (!Target)
     {
-        UE_LOG(LogTemp, Warning,
+        UE_LOG(LogTemp, Verbose,
             TEXT("ComputeRepositionPoint[%s]: TargetActorKey resolved but returned no actor — is TargetActor actually populated on the Blackboard right now?"),
             *GetNameSafe(Pawn));
         return EBTNodeResult::Failed;

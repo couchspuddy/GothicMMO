@@ -6,6 +6,9 @@
 #include "Engine/Engine.h"
 #include "UI/GothicHUDWidget.h"
 #include "UI/GothicCrosshairWidget.h"
+#include "AI/GothicEnemyBase.h"
+#include "Components/CapsuleComponent.h"
+#include "GameFramework/Character.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
@@ -352,5 +355,112 @@ void AGothicHUD::DrawHUD()
         }
 
         Canvas->DrawItem(TextItem);
+    }
+
+    DrawEnemyHealthBars();
+}
+
+void AGothicHUD::RegisterEnemyHealthBar(AGothicEnemyBase* Enemy)
+{
+    if (!Enemy) return;
+
+    // Update existing entry if already tracked
+    for (FEnemyHealthBarEntry& Entry : ActiveHealthBars)
+    {
+        if (Entry.Enemy.Get() == Enemy)
+        {
+            Entry.LastHitTime = GetWorld()->GetTimeSeconds();
+            return;
+        }
+    }
+
+    // New entry
+    FEnemyHealthBarEntry NewEntry;
+    NewEntry.Enemy = Enemy;
+    NewEntry.LastHitTime = GetWorld()->GetTimeSeconds();
+    ActiveHealthBars.Add(NewEntry);
+}
+
+void AGothicHUD::DrawEnemyHealthBars()
+{
+    const float CurrentTime = GetWorld()->GetTimeSeconds();
+    const APawn* ViewPawn = GetOwningPawn();
+    if (!ViewPawn) return;
+
+    const FVector ViewLocation = ViewPawn->GetActorLocation();
+
+    for (int32 i = ActiveHealthBars.Num() - 1; i >= 0; --i)
+    {
+        FEnemyHealthBarEntry& Entry = ActiveHealthBars[i];
+
+        // Remove dead weak pointers and expired entries
+        AGothicEnemyBase* Enemy = Entry.Enemy.Get();
+        if (!Enemy || !Enemy->IsAlive() ||
+            (CurrentTime - Entry.LastHitTime) > HealthBarVisibleDuration)
+        {
+            ActiveHealthBars.RemoveAt(i);
+            continue;
+        }
+
+        // Distance cull
+        const float Distance = FVector::Dist(ViewLocation, Enemy->GetActorLocation());
+        if (Distance > HealthBarMaxDistance)
+        {
+            continue;
+        }
+
+        // Project enemy position to screen, offset above head
+        const FVector WorldPos = Enemy->GetActorLocation() +
+            FVector(0.f, 0.f, HealthBarWorldZOffset);
+        const FVector ScreenPos = Project(WorldPos);
+
+        // Off screen check
+        if (ScreenPos.X < -HealthBarWidth || ScreenPos.X > Canvas->SizeX + HealthBarWidth ||
+            ScreenPos.Y < -HealthBarHeight || ScreenPos.Y > Canvas->SizeY + HealthBarHeight)
+        {
+            continue;
+        }
+
+        // Health percentage
+        const float MaxHP = Enemy->GetMaxHealth();
+        const float HealthPct = (MaxHP > 0.f) ? FMath::Clamp(Enemy->GetHealth() / MaxHP, 0.f, 1.f) : 0.f;
+
+        // Center the bar horizontally on the projected point
+        const float BarX = ScreenPos.X - (HealthBarWidth * 0.5f);
+        const float BarY = ScreenPos.Y;
+
+        // Background
+        FCanvasTileItem Background(
+            FVector2D(BarX, BarY),
+            FVector2D(HealthBarWidth, HealthBarHeight),
+            HealthBarBackgroundColor.ToFColor(true));
+        Background.BlendMode = SE_BLEND_Translucent;
+        Canvas->DrawItem(Background);
+
+        // Health fill
+        if (HealthPct > 0.f)
+        {
+            FCanvasTileItem Fill(
+                FVector2D(BarX, BarY),
+                FVector2D(HealthBarWidth * HealthPct, HealthBarHeight),
+                HealthBarFillColor.ToFColor(true));
+            Fill.BlendMode = SE_BLEND_Translucent;
+            Canvas->DrawItem(Fill);
+        }
+
+        // Name above the bar
+        const FText EnemyName = Enemy->GetAccursedName();
+        if (!EnemyName.IsEmpty())
+        {
+            FCanvasTextItem NameText(
+                FVector2D(ScreenPos.X, BarY - 18.f),
+                EnemyName,
+                GEngine->GetSmallFont(),
+                FColor(200, 200, 200, 200));
+            NameText.bCentreX = true;
+            NameText.bOutlined = true;
+            NameText.OutlineColor = FLinearColor(0.f, 0.f, 0.f, 0.6f);
+            Canvas->DrawItem(NameText);
+        }
     }
 }

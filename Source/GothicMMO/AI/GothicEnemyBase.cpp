@@ -148,19 +148,16 @@ void AGothicEnemyBase::BeginPlay()
 
 void AGothicEnemyBase::MulticastOnHit_Implementation(FVector_NetQuantize ImpactLocation, bool bWasVital, float DamageAmount)
 {
-    if (HealthBarWidget)
-    {
-        HealthBarWidget->SetVisibility(true);
-    }
     OnHitFeedback(ImpactLocation, bWasVital);
 
-    // Show floating damage number on the local player's HUD
+    // All HUD feedback goes through the local player's HUD — no widget components
     APlayerController* LocalPC = GetWorld()->GetFirstPlayerController();
     if (LocalPC && LocalPC->IsLocalController())
     {
         if (AGothicHUD* GothicHUD = Cast<AGothicHUD>(LocalPC->GetHUD()))
         {
             GothicHUD->ShowDamageNumber(FVector(ImpactLocation), DamageAmount, bWasVital);
+            GothicHUD->RegisterEnemyHealthBar(this);
         }
     }
 }
