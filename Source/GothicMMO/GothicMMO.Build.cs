@@ -35,7 +35,7 @@ public class GothicMMO : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			"ReplicationGraph",
+			"ReplicationGraph", "AnimGraphRuntime",
 		});
 
 		IWYUSupport = IWYUSupport.Full;

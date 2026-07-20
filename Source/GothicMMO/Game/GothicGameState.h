@@ -51,6 +51,21 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Gothic|Selah")
 	AGothicEnemyBase* GetActivePromptCorpse() const { return ActivePromptCorpse; }
 
+	/**
+	 * Names of the Accursed killed in the current encounter. Set server-side
+	 * when an encounter completes, cleared on collection. Blueprint reads this
+	 * to cycle names during the Selah moment.
+	 */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gothic|Selah")
+	TArray<FText> SelahNames;
+
+	/** Server-side setter — collects names, caps to MaxSelahNames, replicates. */
+	void SetSelahNames(const TArray<FText>& Names);
+
+	/** Maximum names displayed during a single Selah moment. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
+	int32 MaxSelahNames = 6;
+
 protected:
 	/** The corpse currently showing an active, uncollected shared Selah prompt. Null = no active prompt. */
 	UPROPERTY(ReplicatedUsing = OnRep_ActivePromptCorpse, BlueprintReadOnly, Category = "Gothic|Selah")

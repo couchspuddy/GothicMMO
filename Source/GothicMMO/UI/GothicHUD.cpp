@@ -2,6 +2,7 @@
 
 #include "UI/GothicHUD.h"
 
+#include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "UI/GothicHUDWidget.h"
 #include "UI/GothicCrosshairWidget.h"
@@ -278,5 +279,78 @@ void AGothicHUD::UpdateAmmo(int32 Magazine, int32 MagCapacity, int32 Reserve, in
     if (Magazine == 0)
     {
         ActiveHUDWidget->OnMagazineEmpty();
+    }
+}
+
+void AGothicHUD::ShowDamageNumber(FVector WorldLocation, float DamageAmount, bool bWasVital)
+{
+    FGothicDamageNumber NewNumber;
+    NewNumber.WorldLocation = WorldLocation;
+    NewNumber.DamageAmount  = DamageAmount;
+    NewNumber.bWasVital     = bWasVital;
+    NewNumber.SpawnTime     = GetWorld()->GetTimeSeconds();
+    // Random horizontal offset so rapid hits don't stack on top of each other
+    NewNumber.RandomOffsetX = FMath::RandRange(-20.f, 20.f);
+    ActiveDamageNumbers.Add(NewNumber);
+}
+
+void AGothicHUD::DrawHUD()
+{
+    Super::DrawHUD();
+
+    if (!Canvas) return;
+
+    const float CurrentTime = GetWorld()->GetTimeSeconds();
+    const UFont* DrawFont   = GEngine->GetLargeFont();
+
+    for (int32 i = ActiveDamageNumbers.Num() - 1; i >= 0; --i)
+    {
+        FGothicDamageNumber& Num = ActiveDamageNumbers[i];
+        const float Elapsed = CurrentTime - Num.SpawnTime;
+
+        if (Elapsed >= DamageNumberDuration)
+        {
+            ActiveDamageNumbers.RemoveAt(i);
+            continue;
+        }
+
+        // Fade: full opacity for first 30%, then linear fade
+        const float FadeStart = DamageNumberDuration * 0.3f;
+        const float Alpha = (Elapsed < FadeStart)
+            ? 1.f
+            : 1.f - ((Elapsed - FadeStart) / (DamageNumberDuration - FadeStart));
+
+        const float FloatOffset = Elapsed * DamageNumberFloatSpeed;
+
+        const FVector ScreenPos = Project(Num.WorldLocation);
+
+        // Skip if projected behind the camera or off screen
+        if (ScreenPos.X < 0.f || ScreenPos.X > Canvas->SizeX ||
+            ScreenPos.Y < 0.f || ScreenPos.Y > Canvas->SizeY)
+        {
+            continue;
+        }
+
+        FLinearColor Color = Num.bWasVital ? VitalHitColor : BodyHitColor;
+        Color.A = Alpha;
+
+        const FString DamageText = FString::Printf(TEXT("%.0f"), Num.DamageAmount);
+
+        FCanvasTextItem TextItem(
+            FVector2D(ScreenPos.X + Num.RandomOffsetX, ScreenPos.Y - FloatOffset),
+            FText::FromString(DamageText),
+            DrawFont,
+            Color.ToFColor(true));
+
+        TextItem.bOutlined   = true;
+        TextItem.OutlineColor = FLinearColor(0.f, 0.f, 0.f, Alpha * 0.8f);
+        TextItem.bCentreX    = true;
+
+        if (Num.bWasVital)
+        {
+            TextItem.Scale = FVector2D(VitalHitScale, VitalHitScale);
+        }
+
+        Canvas->DrawItem(TextItem);
     }
 }

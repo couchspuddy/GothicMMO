@@ -8,6 +8,22 @@ void AGothicGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AGothicGameState, ActivePromptCorpse);
 	DOREPLIFETIME(AGothicGameState, CheckpointLocation);
+	DOREPLIFETIME(AGothicGameState, SelahNames);
+}
+
+void AGothicGameState::SetSelahNames(const TArray<FText>& Names)
+{
+	if (!HasAuthority()) return;
+
+	SelahNames = Names;
+
+	// Cap to MaxSelahNames — keep the last N (most recently killed)
+	if (SelahNames.Num() > MaxSelahNames)
+	{
+		SelahNames.RemoveAt(0, SelahNames.Num() - MaxSelahNames);
+	}
+
+	ForceNetUpdate();
 }
 
 void AGothicGameState::SetActivePromptCorpse(AGothicEnemyBase* NewPromptCorpse)

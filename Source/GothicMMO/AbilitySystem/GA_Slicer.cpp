@@ -130,7 +130,7 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
                     // Slicer doesn't resolve vitals today.
                     if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(HitActor))
                     {
-                        HitEnemy->MulticastOnHit(HitActor->GetActorLocation(), false);
+                        HitEnemy->MulticastOnHit(HitActor->GetActorLocation(), false, SlicerDamage);
                     }
 
                     UE_LOG(LogTemp, Log, TEXT("GA_Slicer: %.1f damage applied to %s"),

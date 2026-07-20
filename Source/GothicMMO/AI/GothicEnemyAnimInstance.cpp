@@ -5,6 +5,7 @@
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameplayTagContainer.h"
+#include "KismetAnimationLibrary.h"
 #include "Animation/AnimMontage.h"
 
 void UGothicEnemyAnimInstance::NativeInitializeAnimation()
@@ -45,7 +46,7 @@ void UGothicEnemyAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
         // 0 = forward along the actor's facing, positive = right.
         if (GroundSpeed > 1.f)
         {
-            MovementDirection = CalculateDirection(Velocity, OwnerEnemy->GetActorRotation());
+            MovementDirection = UKismetAnimationLibrary::CalculateDirection(Velocity, OwnerEnemy->GetActorRotation());
         }
         else
         {

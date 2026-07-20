@@ -94,7 +94,7 @@ public:
     FOnEnemyDied OnEnemyDied;
     /** Cosmetic hit reaction, server → everyone. Impact point is net-quantized; this is VFX placement, not hit validation. */
     UFUNCTION(NetMulticast, Unreliable)
-    void MulticastOnHit(FVector_NetQuantize ImpactLocation, bool bWasVital);
+    void MulticastOnHit(FVector_NetQuantize ImpactLocation, bool bWasVital, float DamageAmount);
 
     /** Blueprint hook for impact VFX/SFX. Runs everywhere. bWasVital drives the binary audio tell. */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Feedback")

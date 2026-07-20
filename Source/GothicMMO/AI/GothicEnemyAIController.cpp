@@ -12,6 +12,8 @@
 #include "Perception/AIPerceptionTypes.h"
 #include "BehaviorTree/BehaviorTreeTypes.h"
 #include "BehaviorTree/BlackboardData.h"
+#include "Components/CapsuleComponent.h"
+#include "GameFramework/Character.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
@@ -135,7 +137,7 @@ AActor* AGothicEnemyAIController::GetTargetActor() const
 bool AGothicEnemyAIController::IsTargetInAttackRange() const
 {
     AActor* Target  = GetTargetActor();
-    APawn*  OwnerPawn = GetPawn();  // renamed from Owner to avoid hiding AActor::Owner
+    APawn*  OwnerPawn = GetPawn();
 
     if (!Target || !OwnerPawn)
     {
@@ -143,7 +145,20 @@ bool AGothicEnemyAIController::IsTargetInAttackRange() const
     }
 
     const float DistanceToTarget = FVector::Dist(OwnerPawn->GetActorLocation(), Target->GetActorLocation());
-    return DistanceToTarget <= MeleeAttackRange;
+
+    // Surface-to-surface: subtract both capsule radii so MeleeAttackRange
+    // means "reach past her own body," which is the thing anyone tunes.
+    float CombinedRadius = 0.f;
+    if (const ACharacter* OwnerChar = Cast<ACharacter>(OwnerPawn))
+    {
+        CombinedRadius += OwnerChar->GetCapsuleComponent()->GetScaledCapsuleRadius();
+    }
+    if (const ACharacter* TargetChar = Cast<ACharacter>(Target))
+    {
+        CombinedRadius += TargetChar->GetCapsuleComponent()->GetScaledCapsuleRadius();
+    }
+
+    return DistanceToTarget <= (MeleeAttackRange + CombinedRadius);
 }
 
 void AGothicEnemyAIController::CheckLeash()
@@ -176,6 +191,26 @@ void AGothicEnemyAIController::CheckLeash()
         if (Blackboard)
         {
             Blackboard->SetValueAsVector(GothicBBKeys::TargetLocation, Target->GetActorLocation());
+
+            // Keep bCanSeeTarget honest — query actual perception rather than
+            // relying on the write-once in SetBlackboardTarget.
+            bool bCurrentlySensed = false;
+            if (UAIPerceptionComponent* Percept = OwnerPawn->FindComponentByClass<UAIPerceptionComponent>())
+            {
+                FActorPerceptionBlueprintInfo Info;
+                if (Percept->GetActorsPerception(Target, Info))
+                {
+                    for (const FAIStimulus& Stim : Info.LastSensedStimuli)
+                    {
+                        if (Stim.WasSuccessfullySensed())
+                        {
+                            bCurrentlySensed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            Blackboard->SetValueAsBool(GothicBBKeys::bCanSeeTarget, bCurrentlySensed);
         }
     }
 }

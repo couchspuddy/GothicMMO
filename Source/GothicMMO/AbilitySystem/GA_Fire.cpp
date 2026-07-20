@@ -182,7 +182,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
     if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(Hit.GetActor()))
     {
-        HitEnemy->MulticastOnHit(Hit.ImpactPoint, bIsVitalHit);
+        HitEnemy->MulticastOnHit(Hit.ImpactPoint, bIsVitalHit, FinalDamage);
     }
 
     UE_LOG(LogTemp, Log, TEXT("GA_Fire: Hit=%s | Bone=%s | Vital=%d | Dmg=%.1f"),

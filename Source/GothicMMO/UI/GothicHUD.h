@@ -17,6 +17,16 @@
 class UGothicHUDWidget;
 class UGothicCrosshairWidget;
 
+/** Internal tracking for a single floating damage number on screen. */
+struct FGothicDamageNumber
+{
+    FVector WorldLocation;
+    float DamageAmount = 0.f;
+    bool bWasVital = false;
+    float SpawnTime = 0.f;
+    float RandomOffsetX = 0.f;
+};
+
 UCLASS()
 class GOTHICMMO_API AGothicHUD : public AHUD
 {
@@ -75,6 +85,14 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
     void UpdateAmmo(int32 Magazine, int32 MagazineCapacity, int32 Reserve, int32 MaxReserve);
+
+    // -------------------------------------------------------------------------
+    // Damage numbers — floating text on dealt damage
+    // Called from AGothicEnemyBase::MulticastOnHit on every client.
+    // -------------------------------------------------------------------------
+    void ShowDamageNumber(FVector WorldLocation, float DamageAmount, bool bWasVital);
+
+    virtual void DrawHUD() override;
 protected:
     // -------------------------------------------------------------------------
     // Widget classes — assign in BP_GothicHUD
@@ -121,4 +139,30 @@ private:
     void CreateAndShowLayout(TSubclassOf<UGothicHUDWidget> WidgetClass);
     void CreateAndShowCrosshair(TSubclassOf<UGothicCrosshairWidget> CrosshairClass);
     void RemoveActiveWidgets();
+
+    // -------------------------------------------------------------------------
+    // Damage numbers — tuning (EditDefaultsOnly via BP_GothicHUD)
+    // -------------------------------------------------------------------------
+
+    /** How long the number stays visible before fully fading. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|DamageNumbers")
+    float DamageNumberDuration = 1.2f;
+
+    /** Pixels per second the number floats upward. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|DamageNumbers")
+    float DamageNumberFloatSpeed = 60.f;
+
+    /** Body hit text color. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|DamageNumbers")
+    FLinearColor BodyHitColor = FLinearColor(1.f, 1.f, 1.f, 1.f);
+
+    /** Vital hit text color — gold by default; tunable in BP_GothicHUD. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|DamageNumbers")
+    FLinearColor VitalHitColor = FLinearColor(1.f, 0.85f, 0.1f, 1.f);
+
+    /** Scale multiplier for vital hit numbers (1.0 = same as body). */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|DamageNumbers")
+    float VitalHitScale = 1.4f;
+
+    TArray<FGothicDamageNumber> ActiveDamageNumbers;
 };

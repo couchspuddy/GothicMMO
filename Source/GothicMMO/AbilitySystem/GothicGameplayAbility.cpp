@@ -141,6 +141,6 @@ void UGothicGameplayAbility::ApplyDamageToTarget(
     {
         const FVector FeedbackPoint =
             ImpactPoint.IsNearlyZero() ? Target->GetActorLocation() : ImpactPoint;
-        HitEnemy->MulticastOnHit(FeedbackPoint, bWasVital);
+        HitEnemy->MulticastOnHit(FeedbackPoint, bWasVital, DamageValue);
     }
 }
