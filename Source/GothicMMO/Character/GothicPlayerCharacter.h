@@ -18,6 +18,8 @@
 #include "CoreMinimal.h"
 #include "Character/GothicCharacterBase.h"
 #include "GothicMMO.h"
+#include "Weapons/GothicWeaponData.h"
+#include "Items/GothicItemTypes.h"
 #include "GothicPlayerCharacter.generated.h"
 
 
@@ -59,12 +61,46 @@ public:
     // GothicPlayerCharacter.h — add to public section
     virtual void OnDeath_Implementation(AActor* Killer) override;
     
-    /** True if the magazine has at least one round. Gates GA_Fire activation. */
+    /** True if the active weapon's magazine has at least one round. Gates GA_Fire activation. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Ammo")
-    bool HasRoundChambered() const { return CurrentMagazineAmmo > 0; }
+    bool HasRoundChambered() const;
 
-    /** Decrements the magazine and notifies the HUD. Called by GA_Fire on commit. */
+    /** Decrements the active weapon's magazine and notifies the HUD. Called by GA_Fire on commit. */
     void ConsumeRound();
+
+    // -------------------------------------------------------------------------
+    // Weapon Slots
+    // -------------------------------------------------------------------------
+
+    /** Equipped weapon slots. Assign weapon data assets in BP_GothicPlayerCharacter. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons")
+    TArray<FGothicWeaponSlot> WeaponSlots;
+
+    /** Which weapon slot is currently active. */
+    UPROPERTY(BlueprintReadOnly, Category = "Gothic|Weapons")
+    int32 ActiveWeaponIndex = 0;
+
+    /** Returns the active weapon's data asset (null if no weapons equipped). */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    const UGothicWeaponData* GetActiveWeaponData() const;
+
+    /** Swap to a specific weapon slot. Updates crosshair and broadcasts ammo. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
+    void SwapWeapon(int32 NewIndex);
+
+private:
+    void OnSwapToWeapon1() { SwapWeapon(0); }
+    void OnSwapToWeapon2() { SwapWeapon(1); }
+
+    /** Called when inventory equipment changes — syncs weapon slots. */
+    UFUNCTION()
+    void OnInventoryEquipmentChanged(EGothicEquipSlot Slot, const FGothicItemInstance& Item);
+
+    /** Re-reads equipped weapons from inventory and updates weapon slots. */
+    UFUNCTION()
+    void RefreshWeaponsFromInventory();
+
+public:
 
     /**
      * Kicks the camera up by RecoilKickPitch and hands the recovery to Tick.
@@ -239,6 +275,27 @@ protected:
     // Header additions
     UPROPERTY(EditDefaultsOnly, Category = "Input")
     TObjectPtr<class UInputAction> ReloadAction;
+
+    /** Swap to weapon slot 1 (primary). */
+    UPROPERTY(EditDefaultsOnly, Category = "Input")
+    TObjectPtr<class UInputAction> SwapWeapon1Action;
+
+    /** Swap to weapon slot 2 (special). */
+    UPROPERTY(EditDefaultsOnly, Category = "Input")
+    TObjectPtr<class UInputAction> SwapWeapon2Action;
+
+    /** Toggle inventory screen. */
+    UPROPERTY(EditDefaultsOnly, Category = "Input")
+    TObjectPtr<class UInputAction> InventoryToggleAction;
+
+    /** Widget class for the inventory screen. Assign WBP_Inventory in BP_GothicPlayerCharacter. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|UI")
+    TSubclassOf<class UGothicInventoryWidget> InventoryWidgetClass;
+
+    void ToggleInventory();
+
+    UPROPERTY()
+    TObjectPtr<class UGothicInventoryWidget> ActiveInventoryWidget;
 
     float ReloadPressStartTime = 0.f;
     static constexpr float HoldThreshold = 0.4f; // seconds — tune to feel

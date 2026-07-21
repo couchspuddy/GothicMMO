@@ -15,6 +15,7 @@
 
 
 class UGothicAbilitySystemComponent;
+class UGothicInventoryComponent;
 
 
 UCLASS()
@@ -33,6 +34,10 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Gothic|PlayerState")
     UGothicAttributeSet* GetGothicAttributeSet() const { return AttributeSet; }
+
+    UFUNCTION(BlueprintPure, Category = "Gothic|PlayerState")
+    UFUNCTION(BlueprintPure, Category = "Gothic|PlayerState")
+    UGothicInventoryComponent* GetInventory() const { return InventoryComponent; }
     
     // GothicPlayerState.h — add to public section
     /**
@@ -62,6 +67,10 @@ protected:
     // The attribute set also lives here for the same reason.
     UPROPERTY()
     TObjectPtr<UGothicAttributeSet> AttributeSet;
+
+    // Inventory — survives respawns alongside ASC and AttributeSet.
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Inventory")
+    TObjectPtr<UGothicInventoryComponent> InventoryComponent;
     
     // GothicPlayerState.h — add to protected section
     float CachedSuperMeterOnDeath = -1.f;

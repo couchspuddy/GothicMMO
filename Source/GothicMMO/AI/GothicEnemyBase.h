@@ -20,6 +20,7 @@ class UWidgetComponent;
 class UGothicVitalPointComponent;
 class UGothicCombatStateComponent;
 class AGothicEncounterVolume;
+class UNiagaraSystem;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEnemyDied, AGothicEnemyBase*, DeadEnemy);
 
@@ -188,12 +189,11 @@ protected:
     float CorpseLifetime = 120.f;
 
     /**
-     * Optional loot table DataAsset.
-     * Assign in Blueprint child to define what the enemy drops.
-     * (Loot system implementation: future feature.)
+     * Loot table defining what this enemy can drop on death.
+     * Assign in Blueprint child (e.g. DA_LootTable_Thrall).
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
-    TObjectPtr<UDataAsset> LootTable;
+    TObjectPtr<class UGothicLootTable> LootTable;
     
     /** Radius within which players receive Selah on this enemy's death. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
@@ -201,6 +201,23 @@ protected:
     
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Combat")
     TObjectPtr<UGothicCombatStateComponent> CombatStateComponent;
+
+    // -------------------------------------------------------------------------
+    // Impact VFX — spawned on every client from MulticastOnHit.
+    // Assign in the enemy Blueprint. Different effects for body vs vital.
+    // -------------------------------------------------------------------------
+
+    /** Niagara system for body (non-vital) hits. Spawned at the impact point. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Feedback")
+    TObjectPtr<UNiagaraSystem> BodyHitEffect;
+
+    /** Niagara system for vital hits. Spawned at the impact point — more dramatic. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Feedback")
+    TObjectPtr<UNiagaraSystem> VitalHitEffect;
+
+    /** Niagara system spawned at the enemy's location on death. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Feedback")
+    TObjectPtr<UNiagaraSystem> DeathEffect;
 
 
 

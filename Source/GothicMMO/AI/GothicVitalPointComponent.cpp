@@ -6,6 +6,7 @@
 #include "Net/UnrealNetwork.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "TimerManager.h"
 
 UGothicVitalPointComponent::UGothicVitalPointComponent()
@@ -51,6 +52,7 @@ void UGothicVitalPointComponent::BeginPlay()
     if (GetOwner()->GetNetMode() != NM_DedicatedServer)
     {
         SpawnShimmer();
+        CreateVitalMaterials();
     }
 
     // Start the independent timer if configured
@@ -84,6 +86,23 @@ void UGothicVitalPointComponent::TickComponent(float DeltaTime, ELevelTick TickT
     FActorComponentTickFunction* ThisTickFunction)
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+    // Update the material overlay position every frame so the glow
+    // follows the bone through animation
+    if (OverlayDMI)
+    {
+        UpdateVitalMaterialPosition();
+
+        // Keep the Read highlight following the bone while active
+        if (bReadHighlightActive)
+        {
+            const FVector NextPos = GetNextVitalWorldLocation();
+            OverlayDMI->SetVectorParameterValue(ReadPosParamName,
+                FLinearColor(NextPos.X, NextPos.Y, NextPos.Z, 1.f));
+    
+            UE_LOG(LogTemp, Warning, TEXT("VitalPoint TICK: ReadHighlight active | Pos=%s"), *NextPos.ToString());
+        }
+    }
 
 #if WITH_EDITOR
     if (bDebugDrawVital && VitalPointLocations.Num() > 0 && GetWorld())
@@ -387,8 +406,64 @@ void UGothicVitalPointComponent::HandleOwnerDeath()
         ShimmerComponent = nullptr;
     }
 
+    // Clear the mesh overlay so corpses don't glow
+    if (OverlayDMI)
+    {
+        const FLinearColor OffWorld(0.f, 0.f, -99999.f, 0.f);
+        OverlayDMI->SetVectorParameterValue(VitalPosParamName, OffWorld);
+        OverlayDMI->SetVectorParameterValue(ReadPosParamName, OffWorld);
+    }
+
     if (GetWorld() && ShiftTimerHandle.IsValid())
     {
         GetWorld()->GetTimerManager().ClearTimer(ShiftTimerHandle);
     }
+}
+
+// ── Material overlay ─────────────────────────────────────────────────────────
+
+void UGothicVitalPointComponent::CreateVitalMaterials()
+{
+    if (!CachedMesh || !VitalOverlayMaterial) return;
+
+    OverlayDMI = UMaterialInstanceDynamic::Create(VitalOverlayMaterial, this);
+    if (OverlayDMI)
+    {
+        CachedMesh->SetOverlayMaterial(OverlayDMI);
+
+        UE_LOG(LogTemp, Log, TEXT("VitalPoint: Overlay material applied on %s"),
+            *GetOwner()->GetName());
+
+        // Initialize — vital is live, Read defaults to off-world
+        UpdateVitalMaterialPosition();
+        ClearReadHighlight();
+    }
+}
+
+void UGothicVitalPointComponent::UpdateVitalMaterialPosition()
+{
+    if (!OverlayDMI) return;
+
+    const FVector Pos = GetCurrentVitalWorldLocation();
+    OverlayDMI->SetVectorParameterValue(VitalPosParamName,
+        FLinearColor(Pos.X, Pos.Y, Pos.Z, 1.f));
+}
+
+void UGothicVitalPointComponent::SetReadHighlight(const FVector& WorldPos)
+{
+    if (!OverlayDMI) return;
+
+    bReadHighlightActive = true;
+    OverlayDMI->SetVectorParameterValue(ReadPosParamName,
+        FLinearColor(WorldPos.X, WorldPos.Y, WorldPos.Z, 1.f));
+}
+
+void UGothicVitalPointComponent::ClearReadHighlight()
+{
+    bReadHighlightActive = false;
+
+    if (!OverlayDMI) return;
+
+    OverlayDMI->SetVectorParameterValue(ReadPosParamName,
+        FLinearColor(0.f, 0.f, -99999.f, 0.f));
 }

@@ -8,6 +8,8 @@
 #include "AI/GothicPackSubsystem.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
+#include "Items/GothicLootTable.h"
+#include "Items/GothicWorldPickup.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Perception/AIPerceptionComponent.h"
@@ -25,6 +27,7 @@
 #include "Components/CapsuleComponent.h"
 #include "UI/GothicEnemyHealthBarWidget.h"
 #include "UI/GothicHUD.h"
+#include "NiagaraFunctionLibrary.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 AGothicEnemyBase::AGothicEnemyBase()
@@ -160,6 +163,21 @@ void AGothicEnemyBase::MulticastOnHit_Implementation(FVector_NetQuantize ImpactL
             GothicHUD->RegisterEnemyHealthBar(this);
         }
     }
+
+    // Impact VFX — body or vital, spawned on every client at the hit location
+    UNiagaraSystem* EffectToSpawn = bWasVital ? VitalHitEffect : BodyHitEffect;
+    if (EffectToSpawn)
+    {
+        UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+            GetWorld(),
+            EffectToSpawn,
+            FVector(ImpactLocation),
+            FRotator::ZeroRotator,
+            FVector(1.f),
+            true,   // bAutoDestroy
+            true,   // bAutoActivate
+            ENCPoolMethod::AutoRelease);
+    }
 }
 void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
 {
@@ -263,6 +281,22 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
 
     // Cosmetics fan out to every machine, this one included.
     MulticastOnDeath(Killer);
+
+    // Loot drop — server only. Roll the loot table and spawn a world pickup.
+    if (LootTable)
+    {
+        FGothicItemInstance DroppedItem;
+        if (LootTable->RollDrop(DroppedItem))
+        {
+            const FVector SpawnLocation = GetActorLocation() + FVector(0.f, 0.f, 50.f);
+            AGothicWorldPickup* Pickup = GetWorld()->SpawnActor<AGothicWorldPickup>(
+                AGothicWorldPickup::StaticClass(), SpawnLocation, FRotator::ZeroRotator);
+            if (Pickup)
+            {
+                Pickup->InitializePickup(DroppedItem);
+            }
+        }
+    }
     
     // Pack sync — every living packmate enters the regroup pause in the
     // same frame. OnDeath only runs on the server (see MulticastOnDeath's
@@ -327,6 +361,16 @@ void AGothicEnemyBase::PlayDeathCosmetics()
         GetCharacterMovement()->StopMovementImmediately();
         GetCharacterMovement()->DisableMovement();
         GetCharacterMovement()->SetComponentTickEnabled(false);
+    }
+
+    // Death VFX — spawned at the enemy's center mass
+    if (DeathEffect)
+    {
+        UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+            GetWorld(),
+            DeathEffect,
+            GetActorLocation() + FVector(0.f, 0.f, 50.f),
+            GetActorRotation());
     }
 }
 

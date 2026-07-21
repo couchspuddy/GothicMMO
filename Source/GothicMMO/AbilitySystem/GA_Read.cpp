@@ -38,19 +38,8 @@ void UGA_Read::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
     // Get the next vital location immediately on activation
     const FVector NextLocation = TrackedVitalPoint->GetNextVitalWorldLocation();
 
-    // Spawn the Niagara indicator at the predicted location
-    if (ReadIndicatorSystem)
-    {
-        ReadIndicator = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-            GetWorld(),
-            ReadIndicatorSystem,
-            NextLocation,
-            FRotator::ZeroRotator,
-            FVector(1.f),
-            true,  // auto destroy when done — but we manage lifetime manually
-            true,
-            ENCPoolMethod::None);
-    }
+    // Material-based highlight — shows on the mesh surface, follows animation
+    TrackedVitalPoint->SetReadHighlight(NextLocation);
 
     // Subscribe to vital point shifts — event driven, no tick
     TrackedVitalPoint->OnVitalPointShifted.RemoveDynamic(this, &UGA_Read::OnVitalPointShifted);
@@ -75,18 +64,12 @@ void UGA_Read::EndAbility(const FGameplayAbilitySpecHandle Handle,
     bool bReplicateEndAbility,
     bool bWasCancelled)
 {
-    // Unbind the delegate
-    if (TrackedVitalPoint && VitalShiftHandle.IsValid())
+    // Unbind the delegate and clear the material highlight
+    if (TrackedVitalPoint)
     {
         TrackedVitalPoint->OnVitalPointShifted.RemoveDynamic(
             this, &UGA_Read::OnVitalPointShifted);
-    }
-
-    // Destroy the indicator
-    if (ReadIndicator)
-    {
-        ReadIndicator->DeactivateImmediate();
-        ReadIndicator = nullptr;
+        TrackedVitalPoint->ClearReadHighlight();
     }
 
     // Clear the timer
@@ -129,18 +112,13 @@ UGothicVitalPointComponent* UGA_Read::TraceForVitalPoint() const
 
 void UGA_Read::OnVitalPointShifted(int32 NewIndex, FVector NewWorldLocation)
 {
-    // Vital shifted — the new NewWorldLocation IS the next predicted location
-    // We want to show where it's going NEXT, so query the component again
     if (!TrackedVitalPoint) return;
 
+    // The vital shifted — update the Read highlight to show the NEW next position
     const FVector NextLocation = TrackedVitalPoint->GetNextVitalWorldLocation();
+    TrackedVitalPoint->SetReadHighlight(NextLocation);
 
-    if (ReadIndicator)
-    {
-        ReadIndicator->SetWorldLocation(NextLocation);
-    }
-
-    UE_LOG(LogTemp, Log, TEXT("GA_Read: Vital shifted — indicator moved to %s"),
+    UE_LOG(LogTemp, Log, TEXT("GA_Read: Vital shifted — Read highlight moved to %s"),
         *NextLocation.ToString());
 }
 

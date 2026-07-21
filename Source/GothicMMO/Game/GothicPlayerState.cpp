@@ -3,6 +3,7 @@
 #include "Game/GothicPlayerState.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
+#include "Items/GothicInventoryComponent.h"
 
 AGothicPlayerState::AGothicPlayerState()
 {
@@ -15,6 +16,8 @@ AGothicPlayerState::AGothicPlayerState()
     AbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Mixed);
 
     AttributeSet = CreateDefaultSubobject<UGothicAttributeSet>(TEXT("AttributeSet"));
+
+    InventoryComponent = CreateDefaultSubobject<UGothicInventoryComponent>(TEXT("InventoryComponent"));
 }
 
 UAbilitySystemComponent* AGothicPlayerState::GetAbilitySystemComponent() const

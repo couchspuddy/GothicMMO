@@ -85,4 +85,19 @@ void AGothicGameMode::RespawnPlayer(AController* Controller)
 
     // RestartPlayer finds a player start and spawns the DefaultPawnClass there.
     RestartPlayer(Controller);
+
+    // Solo Contract: teleport to last Selah checkpoint instead of random PlayerStart.
+    APawn* NewPawn = Controller->GetPawn();
+    AGothicGameState* GS = GetGameState<AGothicGameState>();
+
+    if (NewPawn && GS && !GS->CheckpointLocation.IsZero())
+    {
+        NewPawn->SetActorLocation(GS->CheckpointLocation);
+        UE_LOG(LogTemp, Log, TEXT("GothicGameMode: Respawned at checkpoint %s"),
+            *GS->CheckpointLocation.ToString());
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log, TEXT("GothicGameMode: No checkpoint set — respawned at PlayerStart"));
+    }
 }

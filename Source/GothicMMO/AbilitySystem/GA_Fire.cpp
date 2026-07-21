@@ -115,8 +115,16 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         return;
     }
 
+    // Read stats from the active weapon data, falling back to GA_Fire's own defaults
+    const UGothicWeaponData* WeaponData = Char->GetActiveWeaponData();
+    const float EffectiveDamage     = WeaponData ? WeaponData->Damage             : Damage;
+    const float EffectiveVitalMult  = WeaponData ? WeaponData->VitalDamageMultiplier : VitalDamageMultiplier;
+    const float EffectiveRange      = WeaponData ? WeaponData->TraceRange         : TraceRange;
+    TSubclassOf<UGameplayEffect> EffectiveDamageGE = WeaponData && WeaponData->DamageEffect
+        ? WeaponData->DamageEffect : DamageEffectClass;
+
     const FVector Start = Camera->GetComponentLocation();
-    const FVector End   = Start + (Camera->GetForwardVector() * TraceRange);
+    const FVector End   = Start + (Camera->GetForwardVector() * EffectiveRange);
 
     FHitResult Hit;
     FCollisionQueryParams Params;
@@ -142,12 +150,12 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Hit.GetActor());
     UAbilitySystemComponent* SourceASC = GetAbilitySystemComponentFromActorInfo();
 
-    if (!TargetASC || !SourceASC || !DamageEffectClass)
+    if (!TargetASC || !SourceASC || !EffectiveDamageGE)
     {
         return;
     }
 
-    float FinalDamage = Damage;
+    float FinalDamage = EffectiveDamage;
     bool bIsVitalHit = false;
 
     if (UGothicVitalPointComponent* VitalPoint =
@@ -160,7 +168,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
     if (bIsVitalHit)
     {
-        FinalDamage *= VitalDamageMultiplier;
+        FinalDamage *= EffectiveVitalMult;
     }
 
     FGameplayEffectContextHandle Context = SourceASC->MakeEffectContext();
@@ -168,7 +176,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     Context.AddInstigator(Char, Char);
 
     FGameplayEffectSpecHandle Spec =
-        SourceASC->MakeOutgoingSpec(DamageEffectClass, GetAbilityLevel(), Context);
+        SourceASC->MakeOutgoingSpec(EffectiveDamageGE, GetAbilityLevel(), Context);
 
     if (!Spec.IsValid())
     {

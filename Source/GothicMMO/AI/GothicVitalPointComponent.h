@@ -148,6 +148,17 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|VitalPoint")
     int32 GetActiveVitalIndex() const { return ActiveVitalIndex; }
 
+    // ── Read highlight — called by GA_Read ────────────────────────────────
+
+    /** Activates the Read overlay on the mesh at the given world position. */
+    void SetReadHighlight(const FVector& WorldPos);
+
+    /** Clears the Read overlay. Called when GA_Read ends. */
+    void ClearReadHighlight();
+
+    /** True while GA_Read is actively highlighting the next vital. */
+    bool bReadHighlightActive = false;
+
     // ── Delegates ────────────────────────────────────────────────────────────
 
     /** Fires when the vital point shifts. Subscribe to this for The Read. */
@@ -231,6 +242,36 @@ public:
     UPROPERTY(EditDefaultsOnly, Category = "Gothic|VitalPoint|Shimmer")
     float ShimmerScale = 1.f;
 
+    // ── Material overlay — mesh-integrated vital highlight ────────────────────
+    //
+    // The material-based approach draws the vital glow ON the mesh surface
+    // rather than as a floating particle. Requires two Vector parameters in
+    // the enemy's master material:
+    //   - VitalPointWorldPos  → current vital location (warm amber glow)
+    //   - ReadPointWorldPos   → predicted next vital from The Read (cooler tint)
+    //
+    // The shader samples distance from each pixel's AbsoluteWorldPosition to
+    // the parameter and creates emissive output within the radius. Both default
+    // to (0,0,-99999) = off-world = no visible glow.
+
+    /** Material parameter name for the current vital world position. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|VitalPoint|Material")
+    FName VitalPosParamName = FName("VitalPointWorldPos");
+
+    /** Material parameter name for The Read's predicted position. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|VitalPoint|Material")
+    FName ReadPosParamName = FName("ReadPointWorldPos");
+
+    /**
+     * Base material for the vital overlay. Create a simple translucent
+     * emissive material (M_VitalOverlay) and assign it here in the
+     * enemy Blueprint's VitalPointComponent. The C++ creates a DMI from
+     * it and applies it via SetOverlayMaterial — no editing of
+     * existing character materials needed.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|VitalPoint|Material")
+    TObjectPtr<UMaterialInterface> VitalOverlayMaterial;
+
 protected:
     /** Skeletal mesh reference cached on BeginPlay for bone queries. */
     UPROPERTY()
@@ -265,38 +306,26 @@ protected:
     UPROPERTY()
     TObjectPtr<UNiagaraComponent> ShimmerComponent;
 
+    /** Dynamic Material Instances created for the mesh overlay glow. */
+    UPROPERTY()
+    TObjectPtr<UMaterialInstanceDynamic> OverlayDMI;
+
     // ── Internal ─────────────────────────────────────────────────────────────
 
     /** Moves the active vital to the pre-committed NextVitalIndex and rolls a new one. */
     void ShiftVitalPoint();
 
-    /**
-     * Rolls a new NextVitalIndex, uniform over all indices except the active
-     * one. Server only. With the vital frozen (or a single-entry array) the
-     * next index is the active index — there is no future to predict.
-     */
     void RollNextVitalIndex();
-
-    /** Computes world position for a given vital point index. */
     FVector ComputeWorldLocation(int32 Index) const;
-
-    /** Timer callback for independent shift. */
     void OnShiftTimerFired();
-
-    /**
-     * Spawns the shimmer once (BeginPlay, non-dedicated machines only) and
-     * parents it to the active vital's bone.
-     */
     void SpawnShimmer();
-
-    /**
-     * Re-parents the existing shimmer to the active vital's bone + offset.
-     * Called from every path that changes ActiveVitalIndex:
-     *   ShiftVitalPoint (server/standalone), OnRep_ActiveVitalIndex (clients),
-     *   and FreezeVitalPoint's snap branch. Standing gotcha #3 applies —
-     *   the OnRep alone would leave standalone PIE with a frozen shimmer.
-     */
     void UpdateShimmerAttachment();
+
+    /** Creates Dynamic Material Instances for all mesh slots. */
+    void CreateVitalMaterials();
+
+    /** Updates the VitalPointWorldPos parameter on all DMIs. Called every tick. */
+    void UpdateVitalMaterialPosition();
 
     /** Replication callback — clients update visuals when index changes. */
     UFUNCTION()
