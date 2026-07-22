@@ -5,26 +5,20 @@
 #include "AbilitySystemComponent.h"
 #include "GameplayTagContainer.h"
 
-UGothicMeleeHitboxComponent::UGothicMeleeHitboxComponent()
+UGothicMeleeHitboxComponent::UGothicMeleeHitboxComponent(
+    const FObjectInitializer& ObjectInitializer)
+    : Super(ObjectInitializer)
 {
     PrimaryComponentTick.bCanEverTick = false;
 
-    // Default box size — override per-enemy in Blueprint
-    SetBoxExtent(FVector(40.f, 60.f, 30.f));
-
-    // Starts disabled — anim notifies control the window
-    SetCollisionEnabled(ECollisionEnabled::NoCollision);
-    SetCollisionResponseToAllChannels(ECR_Ignore);
-    SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+    // Direct member set — avoids UpdateBodySetup() which calls NewObject
+    BoxExtent = FVector(40.f, 60.f, 30.f);
 
     // Don't render in game
-    SetHiddenInGame(true);
-
-    // Show in editor for tuning
-#if WITH_EDITORONLY_DATA
-    SetHiddenInGame(false);
-    ShapeColor = FColor::Red;
     bHiddenInGame = true;
+
+#if WITH_EDITORONLY_DATA
+    ShapeColor = FColor::Red;
 #endif
 }
 
@@ -32,10 +26,13 @@ void UGothicMeleeHitboxComponent::BeginPlay()
 {
     Super::BeginPlay();
 
-    OnComponentBeginOverlap.AddDynamic(this, &UGothicMeleeHitboxComponent::OnHitboxOverlap);
+    OnComponentBeginOverlap.AddDynamic(
+        this, &UGothicMeleeHitboxComponent::OnHitboxOverlap);
 
-    // Ensure collision is off at start
+    // Collision setup here, not in constructor
     SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    SetCollisionResponseToAllChannels(ECR_Ignore);
+    SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 }
 
 void UGothicMeleeHitboxComponent::EnableHitbox()

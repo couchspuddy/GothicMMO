@@ -32,7 +32,7 @@ class GOTHICMMO_API UGothicMeleeHitboxComponent : public UBoxComponent
     GENERATED_BODY()
 
 public:
-    UGothicMeleeHitboxComponent();
+    UGothicMeleeHitboxComponent(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
     /**
      * Called by anim notify to open the damage window.
