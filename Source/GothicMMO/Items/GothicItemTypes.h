@@ -28,13 +28,22 @@ enum class EGothicItemRarity : uint8
 UENUM(BlueprintType)
 enum class EGothicEquipSlot : uint8
 {
-    PrimaryWeapon   UMETA(DisplayName = "Primary Weapon"),
-    SpecialWeapon   UMETA(DisplayName = "Special Weapon"),
+    // Weapon slots (indices 0-2 map to WeaponSlots array)
+    Sidearm         UMETA(DisplayName = "Sidearm"),
+    Piece           UMETA(DisplayName = "Piece"),
+    Rig             UMETA(DisplayName = "Rig"),
+
+    // Armor slots (ten, locked per design doc)
     Head            UMETA(DisplayName = "Head"),
+    Neck            UMETA(DisplayName = "Neck"),
     Chest           UMETA(DisplayName = "Chest"),
-    Arms            UMETA(DisplayName = "Arms"),
-    Legs            UMETA(DisplayName = "Legs"),
-    ClassItem       UMETA(DisplayName = "Class Item"),
+    Back            UMETA(DisplayName = "Back"),
+    LeftArm         UMETA(DisplayName = "Left Arm"),
+    RightArm        UMETA(DisplayName = "Right Arm"),
+    Wrist           UMETA(DisplayName = "Wrist"),
+    LeftLeg         UMETA(DisplayName = "Left Leg"),
+    RightLeg        UMETA(DisplayName = "Right Leg"),
+    Feet            UMETA(DisplayName = "Feet"),
 };
 
 /** Primary stats — creed-mapped, from PROGRESSION_STATS_AND_BALANCE.md. */

@@ -18,6 +18,9 @@
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AI/GothicEnemyAnimInstance.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Items/GothicItemDefinition.h"
+#include "Items/GothicLootTable.h"
+#include "Items/GothicWorldPickup.h"
 
 AGothicEnemyBase::AGothicEnemyBase()
 {
@@ -150,6 +153,7 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
     }
 
     AwardSelahToNearbyEmbers();
+    SpawnLootDrop();
 
     if (HealthBarWidget)
     {
@@ -256,6 +260,37 @@ void AGothicEnemyBase::DestroyCorpse()
     Destroy();
 }
 
+void AGothicEnemyBase::SpawnLootDrop()
+{
+    if (!HasAuthority() || !LootTable)
+    {
+        return;
+    }
+
+    FGothicItemInstance RolledItem;
+    if (!LootTable->RollDrop(RolledItem))
+    {
+        UE_LOG(LogTemp, Log, TEXT("%s: Loot roll — nothing dropped"), *GetName());
+        return;
+    }
+
+    // Spawn the pickup slightly above the corpse so it doesn't clip into the floor
+    FVector SpawnLocation = GetActorLocation() + FVector(0.f, 0.f, 50.f);
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+    AGothicWorldPickup* Pickup = GetWorld()->SpawnActor<AGothicWorldPickup>(
+        AGothicWorldPickup::StaticClass(), SpawnLocation, FRotator::ZeroRotator, SpawnParams);
+
+    if (Pickup)
+    {
+        Pickup->InitializePickup(RolledItem);
+        UE_LOG(LogTemp, Log, TEXT("%s: Spawned loot pickup — %s"),
+            *GetName(),
+            RolledItem.Definition ? *RolledItem.Definition->ItemID.ToString() : TEXT("Unknown"));
+    }
+}
+
 void AGothicEnemyBase::MulticastOnHit_Implementation(
     FVector HitLocation, bool bVitalHit, float DamageAmount)
 {
@@ -266,4 +301,3 @@ void AGothicEnemyBase::MulticastOnHit_Implementation(
     UE_LOG(LogTemp, Log, TEXT("%s: MulticastOnHit | Loc=%s | Vital=%d | Dmg=%.1f"),
         *GetName(), *HitLocation.ToString(), bVitalHit ? 1 : 0, DamageAmount);
 }
-

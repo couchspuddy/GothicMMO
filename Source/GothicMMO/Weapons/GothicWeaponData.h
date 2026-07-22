@@ -13,6 +13,7 @@
 
 class UGameplayEffect;
 class UNiagaraSystem;
+class UStaticMesh;
 
 UCLASS(BlueprintType)
 class GOTHICMMO_API UGothicWeaponData : public UPrimaryDataAsset
@@ -23,6 +24,24 @@ public:
     /** Display name shown in HUD/UI. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon")
     FText WeaponName;
+
+    // ── Visual ──────────────────────────────────────────────────────────
+
+    /** First-person weapon mesh. Assign a static mesh for now; swap to skeletal when animated weapons arrive. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Visual")
+    TObjectPtr<UStaticMesh> WeaponMesh;
+
+    /** Offset from the camera attach point. Tune per weapon in the data asset. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Visual")
+    FVector MeshOffset = FVector(30.f, 15.f, -15.f);
+
+    /** Rotation offset — lets you orient each weapon model without editing the mesh. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Visual")
+    FRotator MeshRotation = FRotator::ZeroRotator;
+
+    /** Scale override. Most placeholder meshes will need this. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Visual")
+    FVector MeshScale = FVector(1.f);
 
     // ── Damage ───────────────────────────────────────────────────────────
 

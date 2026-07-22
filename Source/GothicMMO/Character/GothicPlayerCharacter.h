@@ -18,9 +18,11 @@
 #include "CoreMinimal.h"
 #include "Character/GothicCharacterBase.h"
 #include "Weapons/GothicWeaponData.h"
+#include "Items/GothicItemTypes.h"
 #include "GothicPlayerCharacter.generated.h"
 
 class UCameraComponent;
+class UStaticMeshComponent;
 class UInputMappingContext;
 class UInputAction;
 class UGothicInputHandlerComponent;
@@ -71,7 +73,18 @@ public:
 
     UPROPERTY(BlueprintReadOnly, Category = "Gothic|Weapons")
     int32 ActiveWeaponIndex = 0;
-    
+
+    /**
+     * Swap to a weapon slot by index. Updates mesh, crosshair, and ammo state.
+     * Safe to call with the current index — early-outs if already active.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
+    void SwapWeapon(int32 NewIndex);
+
+    /** Called after SwapWeapon completes — Blueprint can play swap animations, sounds. */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Weapons")
+    void OnWeaponSwapped(int32 NewIndex, const UGothicWeaponData* NewWeaponData);
+
 protected:
     virtual void BeginPlay() override;
 
@@ -80,6 +93,12 @@ protected:
     // -------------------------------------------------------------------------
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
     TObjectPtr<UCameraComponent> FirstPersonCamera;
+
+    // -------------------------------------------------------------------------
+    // Weapon Mesh — attached to camera, swapped on weapon change
+    // -------------------------------------------------------------------------
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
+    TObjectPtr<UStaticMeshComponent> WeaponMeshComponent;
 
     // -------------------------------------------------------------------------
     // Input Mapping Context
@@ -104,6 +123,16 @@ protected:
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
     TObjectPtr<UInputAction> SprintAction;
+
+    /** Press 1 for Sidearm, 2 for Piece, 3 for Rig. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+    TObjectPtr<UInputAction> WeaponSlot1Action;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+    TObjectPtr<UInputAction> WeaponSlot2Action;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+    TObjectPtr<UInputAction> WeaponSlot3Action;
 
     // -------------------------------------------------------------------------
     // Input Handler Component
@@ -153,11 +182,30 @@ protected:
     void OnLook(const FInputActionValue& Value);
     void OnSprintStarted();
     void OnSprintStopped();
+    void OnWeaponSlot1();
+    void OnWeaponSlot2();
+    void OnWeaponSlot3();
 
     // -------------------------------------------------------------------------
     // GAS init
     // -------------------------------------------------------------------------
     void InitGASFromPlayerState();
+
+    /**
+     * Called when the inventory equips or unequips an item.
+     * If the item is a weapon, updates the matching WeaponSlot.
+     */
+    UFUNCTION()
+    void OnEquipmentChanged(EGothicEquipSlot Slot, const FGothicItemInstance& Item);
+
+    /**
+     * Maps an equip slot enum to a weapon slot index.
+     * Returns -1 if the slot is not a weapon slot.
+     */
+    static int32 EquipSlotToWeaponIndex(EGothicEquipSlot Slot);
+
+    /** Refreshes the weapon mesh and crosshair if the given index is active. */
+    void RefreshWeaponVisuals(int32 SlotIndex);
 
 private:
     bool bHUDReady = false;

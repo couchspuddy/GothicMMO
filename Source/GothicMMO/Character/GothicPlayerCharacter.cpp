@@ -12,6 +12,7 @@
 #include "Camera/CameraComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/LocalPlayer.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -19,6 +20,8 @@
 #include "TimerManager.h"
 #include "Engine/World.h"
 #include "AbilitySystemBlueprintLibrary.h"
+#include "Items/GothicInventoryComponent.h"
+#include "Items/GothicItemDefinition.h"
 
 AGothicPlayerCharacter::AGothicPlayerCharacter()
 {
@@ -40,6 +43,12 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     GetCharacterMovement()->bOrientRotationToMovement = false;
     GetCharacterMovement()->MaxWalkSpeed              = 500.f;  // Overwritten by WalkSpeed in BeginPlay
     GetCharacterMovement()->JumpZVelocity             = 700.f;
+
+    // Weapon mesh — attached to camera, swapped per active weapon
+    WeaponMeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("WeaponMesh"));
+    WeaponMeshComponent->SetupAttachment(FirstPersonCamera);
+    WeaponMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    WeaponMeshComponent->SetOnlyOwnerSee(true);  // Only the local player sees their own weapon
 
     // Create the input handler component
     InputHandler = CreateDefaultSubobject<UGothicInputHandlerComponent>(TEXT("InputHandler"));
@@ -67,6 +76,28 @@ void AGothicPlayerCharacter::BeginPlay()
             {
                 UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: DefaultMappingContext is null"));
             }
+        }
+    }
+
+    // Initialize ammo for all weapon slots from their data assets
+    for (FGothicWeaponSlot& Slot : WeaponSlots)
+    {
+        Slot.InitFromData();
+    }
+
+    // Show the starting weapon mesh
+    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex))
+    {
+        const UGothicWeaponData* StartWeapon = WeaponSlots[ActiveWeaponIndex].WeaponData;
+        if (StartWeapon && WeaponMeshComponent)
+        {
+            WeaponMeshComponent->SetStaticMesh(StartWeapon->WeaponMesh);
+            WeaponMeshComponent->SetRelativeLocation(StartWeapon->MeshOffset);
+            WeaponMeshComponent->SetRelativeRotation(StartWeapon->MeshRotation);
+            WeaponMeshComponent->SetRelativeScale3D(StartWeapon->MeshScale);
+
+            UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Starting weapon — %s"),
+                *StartWeapon->WeaponName.ToString());
         }
     }
 
@@ -190,6 +221,30 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
 
         UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Attribute delegates registered"));
     }
+
+    // Bind to inventory equipment changes so weapon slots update when gear is equipped
+    if (UGothicInventoryComponent* Inventory = PS->GetInventory())
+    {
+        Inventory->OnItemEquipped.AddDynamic(this, &AGothicPlayerCharacter::OnEquipmentChanged);
+        UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Inventory equipment delegate bound"));
+
+        // Sync weapon slots with anything already equipped (e.g. after respawn)
+        for (int32 i = 0; i < WeaponSlots.Num(); ++i)
+        {
+            EGothicEquipSlot EquipSlot = static_cast<EGothicEquipSlot>(i);
+            if (const FGothicItemInstance* Equipped = Inventory->GetEquippedItem(EquipSlot))
+            {
+                if (Equipped->Definition && Equipped->Definition->IsWeapon())
+                {
+                    WeaponSlots[i].WeaponData = Equipped->Definition->WeaponData;
+                    WeaponSlots[i].InitFromData();
+                    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Synced weapon slot %d — %s"),
+                        i, *Equipped->Definition->WeaponData->WeaponName.ToString());
+                }
+            }
+        }
+        RefreshWeaponVisuals(ActiveWeaponIndex);
+    }
 }
 
 void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -227,6 +282,14 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
         EIC->BindAction(SprintAction, ETriggerEvent::Started,   this, &AGothicPlayerCharacter::OnSprintStarted);
         EIC->BindAction(SprintAction, ETriggerEvent::Completed, this, &AGothicPlayerCharacter::OnSprintStopped);
     }
+
+    // Weapon slot swap — 1/2/3 keys
+    if (WeaponSlot1Action)
+        EIC->BindAction(WeaponSlot1Action, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnWeaponSlot1);
+    if (WeaponSlot2Action)
+        EIC->BindAction(WeaponSlot2Action, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnWeaponSlot2);
+    if (WeaponSlot3Action)
+        EIC->BindAction(WeaponSlot3Action, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnWeaponSlot3);
 
     // Ability inputs go through InputHandler → ASC tag pipeline
     // ASC may not be ready here — bindings are set up again in InitGASFromPlayerState
@@ -455,5 +518,132 @@ void AGothicPlayerCharacter::ApplyRecoilKick()
     if (APlayerController* PC = Cast<APlayerController>(GetController()))
     {
         PC->AddPitchInput(-0.5f);  // slight upward kick
+    }
+}
+
+void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
+{
+    if (NewIndex == ActiveWeaponIndex)
+    {
+        return;
+    }
+
+    if (!WeaponSlots.IsValidIndex(NewIndex))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SwapWeapon: Invalid index %d (have %d slots)"),
+            NewIndex, WeaponSlots.Num());
+        return;
+    }
+
+    ActiveWeaponIndex = NewIndex;
+    const UGothicWeaponData* NewWeapon = WeaponSlots[NewIndex].WeaponData;
+
+    if (!NewWeapon)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SwapWeapon: Slot %d has no WeaponData assigned"), NewIndex);
+        WeaponMeshComponent->SetStaticMesh(nullptr);
+        return;
+    }
+
+    // Update mesh and crosshair
+    RefreshWeaponVisuals(NewIndex);
+
+    UE_LOG(LogTemp, Log, TEXT("SwapWeapon: Switched to slot %d — %s | Mag: %d/%d | Reserve: %d"),
+        NewIndex,
+        *NewWeapon->WeaponName.ToString(),
+        WeaponSlots[NewIndex].CurrentMagazine,
+        NewWeapon->MagazineCapacity,
+        WeaponSlots[NewIndex].CurrentReserve);
+
+    // Blueprint hook for swap animation / audio
+    OnWeaponSwapped(NewIndex, NewWeapon);
+}
+
+void AGothicPlayerCharacter::OnWeaponSlot1() { SwapWeapon(0); }
+void AGothicPlayerCharacter::OnWeaponSlot2() { SwapWeapon(1); }
+void AGothicPlayerCharacter::OnWeaponSlot3() { SwapWeapon(2); }
+
+int32 AGothicPlayerCharacter::EquipSlotToWeaponIndex(EGothicEquipSlot Slot)
+{
+    switch (Slot)
+    {
+        case EGothicEquipSlot::Sidearm: return 0;
+        case EGothicEquipSlot::Piece:   return 1;
+        case EGothicEquipSlot::Rig:     return 2;
+        default:                        return -1;
+    }
+}
+
+void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGothicItemInstance& Item)
+{
+    const int32 WeaponIndex = EquipSlotToWeaponIndex(Slot);
+    if (WeaponIndex < 0)
+    {
+        // Not a weapon slot — armor equip, nothing to do here
+        return;
+    }
+
+    if (!WeaponSlots.IsValidIndex(WeaponIndex))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("OnEquipmentChanged: WeaponSlots index %d out of range"), WeaponIndex);
+        return;
+    }
+
+    if (Item.Definition && Item.Definition->IsWeapon())
+    {
+        WeaponSlots[WeaponIndex].WeaponData = Item.Definition->WeaponData;
+        WeaponSlots[WeaponIndex].InitFromData();
+
+        UE_LOG(LogTemp, Log, TEXT("OnEquipmentChanged: Slot %d updated — %s | Mag: %d | Reserve: %d"),
+            WeaponIndex,
+            *Item.Definition->WeaponData->WeaponName.ToString(),
+            WeaponSlots[WeaponIndex].CurrentMagazine,
+            WeaponSlots[WeaponIndex].CurrentReserve);
+    }
+    else
+    {
+        // Unequipped or non-weapon item — clear the slot
+        WeaponSlots[WeaponIndex].WeaponData = nullptr;
+        WeaponSlots[WeaponIndex].CurrentMagazine = 0;
+        WeaponSlots[WeaponIndex].CurrentReserve = 0;
+
+        UE_LOG(LogTemp, Log, TEXT("OnEquipmentChanged: Slot %d cleared"), WeaponIndex);
+    }
+
+    // If this is the active slot, update visuals immediately
+    if (WeaponIndex == ActiveWeaponIndex)
+    {
+        RefreshWeaponVisuals(WeaponIndex);
+    }
+}
+
+void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
+{
+    if (!WeaponMeshComponent || !WeaponSlots.IsValidIndex(SlotIndex))
+    {
+        return;
+    }
+
+    const UGothicWeaponData* WeaponData = WeaponSlots[SlotIndex].WeaponData;
+    if (WeaponData)
+    {
+        WeaponMeshComponent->SetStaticMesh(WeaponData->WeaponMesh);
+        WeaponMeshComponent->SetRelativeLocation(WeaponData->MeshOffset);
+        WeaponMeshComponent->SetRelativeRotation(WeaponData->MeshRotation);
+        WeaponMeshComponent->SetRelativeScale3D(WeaponData->MeshScale);
+
+        if (IsLocallyControlled())
+        {
+            APlayerController* PC = Cast<APlayerController>(GetController());
+            AGothicHUD* GothicHUD = PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
+            if (GothicHUD)
+            {
+                GothicHUD->SetCrosshairType(WeaponData->CrosshairType);
+            }
+        }
+    }
+    else
+    {
+        WeaponMeshComponent->SetStaticMesh(nullptr);
     }
 }

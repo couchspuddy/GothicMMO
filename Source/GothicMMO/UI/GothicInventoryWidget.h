@@ -38,7 +38,7 @@ struct FGothicItemUIData
     EGothicItemRarity Rarity = EGothicItemRarity::Salvage;
 
     UPROPERTY(BlueprintReadOnly, Category = "UI")
-    EGothicEquipSlot EquipSlot = EGothicEquipSlot::PrimaryWeapon;
+    EGothicEquipSlot EquipSlot = EGothicEquipSlot::Sidearm;
 
     UPROPERTY(BlueprintReadOnly, Category = "UI")
     int32 GearPower = 0;

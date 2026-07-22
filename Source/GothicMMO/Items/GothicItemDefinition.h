@@ -43,7 +43,7 @@ public:
 
     /** Which equipment slot this item occupies. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Item|Classification")
-    EGothicEquipSlot EquipSlot = EGothicEquipSlot::PrimaryWeapon;
+    EGothicEquipSlot EquipSlot = EGothicEquipSlot::Sidearm;
 
     /** Rarity tier — determines dismantle currency and Strain behavior. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Item|Classification")

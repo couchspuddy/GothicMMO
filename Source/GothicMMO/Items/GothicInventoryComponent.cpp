@@ -385,12 +385,12 @@ void UGothicInventoryComponent::DebugSpawnTestItems()
 
     // ── Salvage tier ─────────────────────────────────────────────────────
     MakeItem(FName("RustedBracer"), FText::FromString("Rusted Bracer"),
-        EGothicItemRarity::Salvage, EGothicEquipSlot::Arms,
+        EGothicItemRarity::Salvage, EGothicEquipSlot::LeftArm,
         1, EGothicPrimaryStat::Resolve, FVector2D(3.f, 8.f),
         0.f, 5, 0.f, ArmorSecondaries, 1);
 
     MakeItem(FName("TornGreaves"), FText::FromString("Torn Greaves"),
-        EGothicItemRarity::Salvage, EGothicEquipSlot::Legs,
+        EGothicItemRarity::Salvage, EGothicEquipSlot::LeftLeg,
         1, EGothicPrimaryStat::Conviction, FVector2D(3.f, 8.f),
         0.f, 5, 0.f, ArmorSecondaries, 1);
 
@@ -417,7 +417,7 @@ void UGothicInventoryComponent::DebugSpawnTestItems()
         0.f, 25, 0.f, ArmorSecondaries, 2);
 
     MakeItem(FName("HuntersEmblem"), FText::FromString("Hunter's Emblem"),
-        EGothicItemRarity::Remembered, EGothicEquipSlot::ClassItem,
+        EGothicItemRarity::Remembered, EGothicEquipSlot::Wrist,
         3, EGothicPrimaryStat::Clarity, FVector2D(10.f, 22.f),
         0.f, 35, 0.f, ArmorSecondaries, 2);
 
@@ -428,7 +428,7 @@ void UGothicInventoryComponent::DebugSpawnTestItems()
         25.f, 0, 5.f, ArmorSecondaries, 3);
 
     MakeItem(FName("PriorFlameGauntlets"), FText::FromString("Prior Flame Gauntlets"),
-        EGothicItemRarity::Resonant, EGothicEquipSlot::Arms,
+        EGothicItemRarity::Resonant, EGothicEquipSlot::LeftArm,
         4, EGothicPrimaryStat::Conviction, FVector2D(12.f, 24.f),
         20.f, 0, 4.f, ArmorSecondaries, 3);
 

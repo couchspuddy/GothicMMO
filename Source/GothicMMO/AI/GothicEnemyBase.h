@@ -21,6 +21,7 @@
 
 class UAIPerceptionComponent;
 class UWidgetComponent;
+class UGothicLootTable;
 class UGothicMeleeHitboxComponent;
 class AGothicEncounterVolume;
 
@@ -161,12 +162,11 @@ protected:
     float CorpseLifetime = 10.f;
 
     /**
-     * Optional loot table DataAsset.
-     * Assign in Blueprint child to define what the enemy drops.
-     * (Loot system implementation: future feature.)
+     * Loot table for this enemy type. Assign per Blueprint child.
+     * On death, RollDrop() picks a weighted random item and spawns a world pickup.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
-    TObjectPtr<UDataAsset> LootTable;
+    TObjectPtr<UGothicLootTable> LootTable;
 
     /** Radius within which players receive Selah on this enemy's death. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
@@ -206,4 +206,5 @@ private:
     /** Delayed destruction after death animation plays out. */
     void DestroyCorpse();
     void AwardSelahToNearbyEmbers();
+    void SpawnLootDrop();
 };
