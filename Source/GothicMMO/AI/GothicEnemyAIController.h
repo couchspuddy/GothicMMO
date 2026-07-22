@@ -105,6 +105,11 @@ public:
     /** The default walk speed before any decel scaling. Cached on possess. */
     UFUNCTION(BlueprintPure, Category = "Gothic|AI")
     float GetDefaultWalkSpeed() const { return DefaultWalkSpeed; }
+    
+    /** Pauses the BT for the given duration — pack regroup on member death. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|AI")
+    void EnterRegroupPause(float Duration);
+
 
 protected:
     /** Assign in BP_GothicEnemyAIController. */
@@ -160,6 +165,7 @@ protected:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI")
     float LeashRange = 3000.f;
+    
 
 private:
     /** Cached patrol spawn point — enemy returns here when leash breaks. */

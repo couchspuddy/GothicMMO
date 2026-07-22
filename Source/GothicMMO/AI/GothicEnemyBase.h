@@ -22,6 +22,15 @@
 class UAIPerceptionComponent;
 class UWidgetComponent;
 class UGothicMeleeHitboxComponent;
+class AGothicEncounterVolume;
+
+// Forward-declared here so both GothicEnemyBase and GothicEncounterVolume
+// resolve the same delegate type from a single declaration.
+class AGothicEnemyBase;  // needed before the delegate macro expands
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
+    FOnEnemyDied,
+    AGothicEnemyBase*, DeadEnemy);
 
 /** Enemy tier affects loot tables and XP reward. */
 UENUM(BlueprintType)
@@ -62,6 +71,56 @@ public:
     /** Returns the hitbox component for direct access from BT tasks if needed. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Combat")
     UGothicMeleeHitboxComponent* GetMeleeHitbox() const { return MeleeHitbox; }
+
+    // -----------------------------------------------------------------
+    // Encounter integration — the encounter volume binds to OnEnemyDied
+    // to track roster deaths without polling.
+    // -----------------------------------------------------------------
+
+    /** Broadcast from OnDeath — the encounter volume listens to this. */
+    UPROPERTY(BlueprintAssignable, Category = "Gothic|Enemy")
+    FOnEnemyDied OnEnemyDied;
+
+    /** Set by the encounter volume in BeginPlay. Null for free-roaming enemies. */
+    UPROPERTY()
+    TObjectPtr<AGothicEncounterVolume> OwningEncounter;
+
+    // -----------------------------------------------------------------
+    // Accursed identity — revealed during the Selah moment, not combat.
+    // -----------------------------------------------------------------
+
+    /** The human name this Accursed had before the Bleed took them.
+     *  Set per-instance in the level or per-Blueprint default. */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|Lore")
+    FText AccursedName;
+
+    UFUNCTION(BlueprintPure, Category = "Gothic|Lore")
+    FText GetAccursedName() const { return AccursedName; }
+
+    // -----------------------------------------------------------------
+    // Pack coordination — optional stamp for Thrall pack grouping.
+    // -----------------------------------------------------------------
+
+    UFUNCTION(BlueprintCallable, Category = "Gothic|AI")
+    void SetPackID(FName NewPackID) { PackID = NewPackID; }
+
+    UFUNCTION(BlueprintPure, Category = "Gothic|AI")
+    FName GetPackID() const { return PackID; }
+
+    /** Public read access for encounter volume Selah accumulation. */
+    float GetSelahAwardAmount() const { return SelahAwardAmount; }
+    TSubclassOf<UGameplayEffect> GetSelahGainEffect() const { return SelahGainEffect; }
+    
+    /** Multicast RPC — server broadcasts hit feedback to all clients. */
+    UFUNCTION(NetMulticast, Unreliable)
+    void MulticastOnHit(FVector HitLocation, bool bVitalHit, float DamageAmount);
+    
+    /** Per-enemy regroup pause duration after a pack member dies. Set in Blueprint. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI")
+    float PackRegroupDuration = 1.5f;
+
+    UFUNCTION(BlueprintPure, Category = "Gothic|AI")
+    float GetPackRegroupDuration() const { return PackRegroupDuration; }
 
 protected:
     // -------------------------------------------------------------------------
@@ -128,10 +187,18 @@ protected:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Combat")
     FName HitboxAttachBone = FName("hand_r");
+    
+
+    
+
 
 private:
     UPROPERTY()
     TObjectPtr<AActor> CombatTarget;
+
+    /** Pack group identifier — enemies with the same PackID coordinate. */
+    UPROPERTY(EditAnywhere, Category = "Gothic|AI")
+    FName PackID = NAME_None;
 
     UFUNCTION()
     void OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors);

@@ -16,6 +16,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Character/GothicPlayerCharacter.h"
 #include "AbilitySystemBlueprintLibrary.h"
+#include "AI/GothicEnemyAnimInstance.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 AGothicEnemyBase::AGothicEnemyBase()
@@ -254,3 +255,15 @@ void AGothicEnemyBase::DestroyCorpse()
 {
     Destroy();
 }
+
+void AGothicEnemyBase::MulticastOnHit_Implementation(
+    FVector HitLocation, bool bVitalHit, float DamageAmount)
+{
+    // This runs on every client (and the server). Drive visual/audio feedback here.
+    // The anim instance's OnHitFeedback is the intended consumer — if it's wired up,
+    // forward to it. Otherwise log so it's visible during testing.
+
+    UE_LOG(LogTemp, Log, TEXT("%s: MulticastOnHit | Loc=%s | Vital=%d | Dmg=%.1f"),
+        *GetName(), *HitLocation.ToString(), bVitalHit ? 1 : 0, DamageAmount);
+}
+

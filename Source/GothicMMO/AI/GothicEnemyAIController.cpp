@@ -1,6 +1,8 @@
 // GothicEnemyAIController.cpp
 
 #include "AI/GothicEnemyAIController.h"
+
+#include "TimerManager.h"
 #include "AI/GothicEnemyBase.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
@@ -52,9 +54,9 @@ void AGothicEnemyAIController::OnUnPossess()
     GetWorldTimerManager().ClearTimer(LeashCheckTimer);
 
     // Restore default speed in case decel was active when unpossessed
-    if (APawn* OldPawn = GetPawn())
+    if (APawn* UnpossessedPawn = GetPawn())
     {
-        if (ACharacter* Char = Cast<ACharacter>(OldPawn))
+        if (ACharacter* Char = Cast<ACharacter>(UnpossessedPawn))
         {
             Char->GetCharacterMovement()->MaxWalkSpeed = DefaultWalkSpeed;
         }
@@ -148,5 +150,26 @@ void AGothicEnemyAIController::CheckLeash()
         {
             Blackboard->SetValueAsVector(GothicBBKeys::TargetLocation, Target->GetActorLocation());
         }
+    }
+}
+
+void AGothicEnemyAIController::EnterRegroupPause(float Duration)
+{
+    if (UBehaviorTreeComponent* BTComp =
+        Cast<UBehaviorTreeComponent>(GetBrainComponent()))
+    {
+        BTComp->PauseLogic(TEXT("PackRegroup"));
+
+        FTimerHandle RegroupTimer;
+        GetWorldTimerManager().SetTimer(RegroupTimer, [BTComp]()
+        {
+            if (BTComp)
+            {
+                BTComp->ResumeLogic(TEXT("PackRegroup"));
+            }
+        }, Duration, false);
+
+        UE_LOG(LogTemp, Log, TEXT("%s: Regroup pause %.1fs"),
+            *GetName(), Duration);
     }
 }

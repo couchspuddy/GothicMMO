@@ -17,6 +17,7 @@
 
 #include "CoreMinimal.h"
 #include "Character/GothicCharacterBase.h"
+#include "Weapons/GothicWeaponData.h"
 #include "GothicPlayerCharacter.generated.h"
 
 class UCameraComponent;
@@ -48,7 +49,29 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
     void TriggerSelahMoment();
+    
+    /** True if the active weapon has at least one round in its magazine. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    bool HasRoundChambered() const;
 
+    /** Decrements the active weapon's magazine by one round. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
+    void ConsumeRound();
+
+    /** Applies recoil camera kick — cosmetic, runs on the local client. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
+    void ApplyRecoilKick();
+
+    /** Returns the active weapon's data asset for stat lookups. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    const UGothicWeaponData* GetActiveWeaponData() const;
+
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons")
+    TArray<FGothicWeaponSlot> WeaponSlots;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Gothic|Weapons")
+    int32 ActiveWeaponIndex = 0;
+    
 protected:
     virtual void BeginPlay() override;
 

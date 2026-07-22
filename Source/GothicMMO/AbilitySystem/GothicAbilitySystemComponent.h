@@ -26,7 +26,10 @@ enum class EGothicAbilitySlot : uint8
     Ability2      UMETA(DisplayName = "Ability 2"),
     Ability3      UMETA(DisplayName = "Ability 3"),
     SuperAbility  UMETA(DisplayName = "Super / Covenant Power"),
+    PrimaryFire   UMETA(DisplayName = "Primary Fire"),
 };
+
+
 
 UCLASS()
 class GOTHICMMO_API UGothicAbilitySystemComponent : public UAbilitySystemComponent
@@ -35,6 +38,12 @@ class GOTHICMMO_API UGothicAbilitySystemComponent : public UAbilitySystemCompone
 
 public:
     UGothicAbilitySystemComponent();
+    
+    /** Static convenience — applies a GE from one ASC to another without building a full spec inline. */
+    static void ApplyEffectToASC(
+        UAbilitySystemComponent* TargetASC,
+        TSubclassOf<UGameplayEffect> EffectClass,
+        AActor* SourceActor);
 
     /**
      * Grants a list of abilities from a data-driven array.

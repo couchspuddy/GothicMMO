@@ -172,3 +172,20 @@ void UGothicAbilitySystemComponent::RegisterAbilitySlot(
     UE_LOG(LogTemp, Log, TEXT("RegisterAbilitySlot: Slot %d registered"), (int32)Slot);
     SlotToAbilityMap.Add(Slot, Handle);
 }
+
+void UGothicAbilitySystemComponent::ApplyEffectToASC(
+    UAbilitySystemComponent* TargetASC,
+    TSubclassOf<UGameplayEffect> EffectClass,
+    AActor* SourceActor)
+{
+    if (!TargetASC || !EffectClass) return;
+
+    FGameplayEffectContextHandle Context = TargetASC->MakeEffectContext();
+    Context.AddSourceObject(SourceActor);
+
+    FGameplayEffectSpecHandle Spec = TargetASC->MakeOutgoingSpec(EffectClass, 1.f, Context);
+    if (Spec.IsValid())
+    {
+        TargetASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+    }
+}

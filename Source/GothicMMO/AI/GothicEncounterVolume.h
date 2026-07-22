@@ -18,6 +18,8 @@ class AGothicEnemySpawnPoint;
 class UBoxComponent;
 class AGothicPlayerCharacter;
 
+
+
 UCLASS()
 class GOTHICMMO_API AGothicEncounterVolume : public AActor
 {
@@ -94,6 +96,7 @@ private:
 
 	UFUNCTION()
 	void HandleEnemyDied(AGothicEnemyBase* DeadEnemy);
+	
 	
 	// AGothicEncounterVolume.h — add to private section
 	float CachedTotalSelah = 0.f;

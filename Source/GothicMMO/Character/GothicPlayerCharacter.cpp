@@ -266,7 +266,7 @@ void AGothicPlayerCharacter::Tick(float DeltaTime)
     {
         const float Remaining = AbilitySystemComponent->GetCooldownRemainingForSlot(SlotsToTrack[i]);
         const float Total     = AbilitySystemComponent->GetCooldownTotalForSlot(SlotsToTrack[i]);
-        GothicHUD->UpdateAbilityCooldown(i, Remaining, Total);
+        GothicHUD->UpdateAbilityCooldown(SlotsToTrack[i], Remaining, Total);
     }
 }
 
@@ -415,4 +415,45 @@ void AGothicPlayerCharacter::TriggerSelahMoment()
 
     // Blueprint handles the visual and audio — call the event
     OnSelahMoment();
+}
+
+bool AGothicPlayerCharacter::HasRoundChambered() const
+{
+    if (!WeaponSlots.IsValidIndex(ActiveWeaponIndex))
+    {
+        return false;
+    }
+    return WeaponSlots[ActiveWeaponIndex].CurrentMagazine > 0;
+}
+
+void AGothicPlayerCharacter::ConsumeRound()
+{
+    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex)
+        && WeaponSlots[ActiveWeaponIndex].CurrentMagazine > 0)
+    {
+        WeaponSlots[ActiveWeaponIndex].CurrentMagazine--;
+
+        UE_LOG(LogTemp, Log, TEXT("ConsumeRound: %d remaining in magazine"),
+            WeaponSlots[ActiveWeaponIndex].CurrentMagazine);
+    }
+}
+
+const UGothicWeaponData* AGothicPlayerCharacter::GetActiveWeaponData() const
+{
+    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex))
+    {
+        return WeaponSlots[ActiveWeaponIndex].WeaponData;
+    }
+    return nullptr;
+}
+
+void AGothicPlayerCharacter::ApplyRecoilKick()
+{
+    // Stub — add camera punch here once feel tuning starts.
+    // Typical pattern: additive pitch/yaw via AddControllerPitchInput
+    // with a short interp-back timer.
+    if (APlayerController* PC = Cast<APlayerController>(GetController()))
+    {
+        PC->AddPitchInput(-0.5f);  // slight upward kick
+    }
 }

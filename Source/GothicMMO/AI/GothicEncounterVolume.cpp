@@ -125,10 +125,10 @@ void AGothicEncounterVolume::HandleEnemyDied(AGothicEnemyBase* DeadEnemy)
         for (AGothicEnemyBase* Enemy : EncounterEnemies)
         {
             if (!Enemy) continue;
-            CachedTotalSelah += Enemy->SelahAwardAmount;
-            if (!CachedGainEffect && Enemy->SelahGainEffect)
+            CachedTotalSelah += Enemy->GetSelahAwardAmount();
+            if (!CachedGainEffect && Enemy->GetSelahGainEffect())
             {
-                CachedGainEffect = Enemy->SelahGainEffect;
+                CachedGainEffect = Enemy->GetSelahGainEffect();
             }
         }
 
