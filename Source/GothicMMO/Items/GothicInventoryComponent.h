@@ -10,9 +10,11 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Items/GothicItemTypes.h"
+#include "ActiveGameplayEffectHandle.h"
 #include "GothicInventoryComponent.generated.h"
 
 class UGothicItemDefinition;
+class UGameplayEffect;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInventoryChanged, const FGothicItemInstance&, Item);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnItemEquipped, EGothicEquipSlot, Slot, const FGothicItemInstance&, Item);
@@ -146,10 +148,23 @@ protected:
     UPROPERTY(BlueprintReadOnly, Category = "Gothic|Inventory")
     TMap<EGothicEquipSlot, FGothicItemInstance> EquippedItems;
 
+    /** The GameplayEffect used to apply equipment stat bonuses. Assign GE_EquipmentStats in BP. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Inventory")
+    TSubclassOf<UGameplayEffect> EquipmentStatsEffect;
+
 private:
     /** Find a mutable item in the inventory by ID. */
     FGothicItemInstance* FindItemMutable(const FGuid& InstanceID);
 
     /** Recalculate and broadcast strain. */
     void RecalculateStrain();
+
+    /** Active GE handles per equipped slot — removed on unequip. */
+    TMap<EGothicEquipSlot, FActiveGameplayEffectHandle> ActiveStatEffects;
+
+    /** Apply the item's stats as a GameplayEffect on the owning ASC. */
+    void ApplyEquipmentStats(EGothicEquipSlot Slot, const FGothicItemInstance& Item);
+
+    /** Remove the stat effect for a slot. */
+    void RemoveEquipmentStats(EGothicEquipSlot Slot);
 };

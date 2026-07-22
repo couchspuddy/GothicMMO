@@ -20,15 +20,12 @@ class UGothicGameplayAbility;
 UENUM(BlueprintType)
 enum class EGothicAbilitySlot : uint8
 {
-    PassiveAbility1 UMETA(DisplayName = "Passive Ability 1"),
-    PassiveAbility2 UMETA(DisplayName = "Passive Ability 2"),
     LightAttack   UMETA(DisplayName = "Light Attack"),
     HeavyAttack   UMETA(DisplayName = "Heavy Attack"),
     Ability1      UMETA(DisplayName = "Ability 1"),
     Ability2      UMETA(DisplayName = "Ability 2"),
     Ability3      UMETA(DisplayName = "Ability 3"),
     SuperAbility  UMETA(DisplayName = "Super / Covenant Power"),
-    PrimaryFire   UMETA(DisplayName = "Primary Fire"),
 };
 
 UCLASS()
@@ -38,39 +35,6 @@ class GOTHICMMO_API UGothicAbilitySystemComponent : public UAbilitySystemCompone
 
 public:
     UGothicAbilitySystemComponent();
-
-    /**
-     * THE project-wide way to apply a GameplayEffect class to an ASC.
-     * Replaces the MakeEffectContext → MakeOutgoingSpec → SetByCaller →
-     * ApplyGameplayEffectSpecToSelf chain that was hand-copied in seven files
-     * — where a fix applied to one copy (e.g. GA_Fire's July 15 instigator
-     * fix) reliably failed to reach the others, because there was no single
-     * place to fix.
-     *
-     * Static and taking the target ASC as a parameter deliberately: callers
-     * hold plain UAbilitySystemComponent* (ability CachedASC members, the
-     * encounter volume's player ASCs) and shouldn't need a cast to use it.
-     *
-     * @param ASC              The ASC to apply the effect to. Null-safe.
-     * @param EffectClass      The GameplayEffect class. Null-safe.
-     * @param SourceObject     Optional context source (the granting actor).
-     * @param SetByCallerTag   Optional SetByCaller channel (e.g. GothicTags::Data_Selah).
-     *                         Invalid tag = no SetByCaller written.
-     * @param SetByCallerValue Magnitude for the SetByCaller channel.
-     * @param Level            Effect level.
-     * @return The active effect handle (valid for Duration/Infinite effects —
-     *         store it if you need to remove or refresh the effect later, as
-     *         Lunge, Reckoning, and the ramp do). Instant effects return an
-     *         invalid handle by GAS design; that is not a failure.
-     */
-    UFUNCTION(BlueprintCallable, Category = "Gothic|Abilities")
-    static FActiveGameplayEffectHandle ApplyEffectToASC(
-        UAbilitySystemComponent* ASC,
-        TSubclassOf<UGameplayEffect> EffectClass,
-        UObject* SourceObject = nullptr,
-        FGameplayTag SetByCallerTag = FGameplayTag(),
-        float SetByCallerValue = 0.f,
-        float Level = 1.f);
 
     /**
      * Grants a list of abilities from a data-driven array.
@@ -99,6 +63,13 @@ public:
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|Abilities")
     float GetCooldownRemainingForSlot(EGothicAbilitySlot Slot) const;
+
+    /**
+     * Returns the total cooldown duration for the active cooldown on a slot.
+     * 0 if no cooldown is active. Used by HUD for fill-percentage calculation.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Abilities")
+    float GetCooldownTotalForSlot(EGothicAbilitySlot Slot) const;
 
     /**
      * Called by the PlayerController when an input tag fires.

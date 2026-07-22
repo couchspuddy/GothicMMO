@@ -3,6 +3,12 @@
 // Runs a Behavior Tree (assign BT_EnemyCombat in Blueprint).
 // Manages the Blackboard and exposes helper functions to BT Tasks.
 //
+// Engagement model:
+//   Enemies do NOT run directly to the player. They approach to a
+//   PreferredEngageDistance, decelerate in the last ApproachDecelDistance,
+//   and wait a staggered delay before committing. Attack tasks then
+//   close the remaining gap with a lunge built into the animation.
+//
 // Blueprint child: BP_GothicEnemyAIController
 //   - Set BehaviorTreeAsset to BT_EnemyCombat
 //   - Assign to enemy Blueprint's AIControllerClass
@@ -23,35 +29,36 @@ class UBlackboardComponent;
 // ============================================================================
 namespace GothicBBKeys
 {
-    static const FName TargetActor     = TEXT("TargetActor");     // AActor*
-    static const FName TargetLocation  = TEXT("TargetLocation");  // FVector
-    static const FName bCanSeeTarget   = TEXT("bCanSeeTarget");   // bool
-    static const FName bIsInCombat     = TEXT("bIsInCombat");     // bool
-    static const FName PatrolOrigin    = TEXT("PatrolOrigin");    // FVector
-    static const FName AttackRange     = TEXT("AttackRange");     // float
-    static const FName ChosenAction    = TEXT("ChosenAction");    // FName   — WeightedActionSelect output
-    static const FName RepositionPoint = TEXT("RepositionPoint"); // FVector — ComputeRepositionPoint output
-    static const FName bPackRegroup    = TEXT("bPackRegroup");    // bool    — PackSubsystem sync pause
+    static const FName TargetActor          = TEXT("TargetActor");            // AActor*
+    static const FName TargetLocation       = TEXT("TargetLocation");         // FVector
+    static const FName bCanSeeTarget        = TEXT("bCanSeeTarget");          // bool
+    static const FName bIsInCombat          = TEXT("bIsInCombat");            // bool
+    static const FName PatrolOrigin          = TEXT("PatrolOrigin");           // FVector
+    static const FName AttackRange           = TEXT("AttackRange");            // float
+    static const FName EngageDistance        = TEXT("EngageDistance");          // float — stop here, don't stand on player
+    static const FName StaggerDelay          = TEXT("StaggerDelay");           // float — randomized per-enemy approach delay
 }
 
 UCLASS()
 class GOTHICMMO_API AGothicEnemyAIController : public AAIController
-                                               
 {
     GENERATED_BODY()
 
 public:
     AGothicEnemyAIController();
+
     virtual FGenericTeamId GetGenericTeamId() const override
     {
         return FGenericTeamId(1);
     }
+
     virtual void OnPossess(APawn* InPawn) override;
     virtual void OnUnPossess() override;
 
     /**
      * Called by AGothicEnemyBase::SetCombatTarget when perception fires.
      * Updates the Blackboard and transitions the BT to combat mode.
+     * Rolls a new StaggerDelay each time combat is entered.
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|AI")
     void SetBlackboardTarget(AActor* NewTarget);
@@ -71,13 +78,33 @@ public:
     AActor* GetTargetActor() const;
 
     /**
-     * Returns true if the enemy can reach its attack range to the target.
-     * Used by BT Decorators to gate attack tasks.
+     * Returns true if the target is within MeleeAttackRange.
+     * This gates the attack task — NOT the approach distance.
+     * The enemy holds at EngageDistance, then the attack task
+     * checks this before lunging.
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|AI")
     bool IsTargetInAttackRange() const;
-    
-    void EnterRegroupPause(float Duration);
+
+    // -------------------------------------------------------------------------
+    // Engagement tuning — read by BTService_ApproachSpeed
+    // -------------------------------------------------------------------------
+
+    /** The distance the enemy tries to hold before attacking (cm). */
+    UFUNCTION(BlueprintPure, Category = "Gothic|AI")
+    float GetPreferredEngageDistance() const { return PreferredEngageDistance; }
+
+    /** Distance at which the enemy begins decelerating (cm). */
+    UFUNCTION(BlueprintPure, Category = "Gothic|AI")
+    float GetApproachDecelDistance() const { return ApproachDecelDistance; }
+
+    /** Speed multiplier at engage distance (0-1). */
+    UFUNCTION(BlueprintPure, Category = "Gothic|AI")
+    float GetDecelSpeedMultiplier() const { return DecelSpeedMultiplier; }
+
+    /** The default walk speed before any decel scaling. Cached on possess. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|AI")
+    float GetDefaultWalkSpeed() const { return DefaultWalkSpeed; }
 
 protected:
     /** Assign in BP_GothicEnemyAIController. */
@@ -86,10 +113,46 @@ protected:
 
     /**
      * Standard melee attack range (cm).
-     * Blueprint children override this per-enemy type.
+     * This is the "can I attack" gate, not the approach distance.
+     * Should be SMALLER than PreferredEngageDistance — the attack's
+     * lunge animation covers the gap.
      */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI")
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI|Attack")
     float MeleeAttackRange = 200.f;
+
+    /**
+     * Distance the enemy holds from the target before attacking (cm).
+     * Set this per-tier in Blueprint children:
+     *   Thrall: ~250   (close but not on top)
+     *   Retained: ~350 (deliberate, measured)
+     *   Feral: ~300    (fast closer, earns the gap)
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI|Engagement")
+    float PreferredEngageDistance = 300.f;
+
+    /**
+     * Distance at which the enemy starts decelerating (cm).
+     * When closer than this to the target, speed scales down linearly
+     * from full to DecelSpeedMultiplier at EngageDistance.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI|Engagement")
+    float ApproachDecelDistance = 500.f;
+
+    /**
+     * Speed multiplier at engagement distance.
+     * 0.6 means 60% of MaxWalkSpeed when arriving at stance distance.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI|Engagement")
+    float DecelSpeedMultiplier = 0.6f;
+
+    /**
+     * Range for the randomized stagger delay (seconds).
+     * Each time combat is entered, a random value in this range is
+     * written to the Blackboard. The BT uses a Wait node reading
+     * StaggerDelay before beginning the approach.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI|Engagement")
+    FVector2D StaggerDelayRange = FVector2D(0.3f, 1.2f);
 
     /**
      * Range at which the enemy gives up chasing and returns to patrol (cm).
@@ -98,42 +161,14 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI")
     float LeashRange = 3000.f;
 
-    /**
-     * Editor/debug only — dumps full AI state on the existing 2s leash timer.
-     * Answers "why did she stop" definitively in one PIE pass by sampling every
-     * variable that could gate the Behavior Tree, from every source that writes one.
-     *
-     * Turn this on for the boss and the Feral Retained; leave it off elsewhere.
-     * Strip or leave behind the flag once the disengagement defect is closed.
-     */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gothic|AI|Debug")
-    bool bDebugAIState = false;
-
 private:
     /** Cached patrol spawn point — enemy returns here when leash breaks. */
     FVector PatrolOrigin;
 
+    /** Cached default walk speed from the possessed pawn's movement component. */
+    float DefaultWalkSpeed = 0.f;
+
     /** Periodic check to see if the target escaped the leash range. */
     FTimerHandle LeashCheckTimer;
     void CheckLeash();
-    
-    /** Clears bPackRegroup after the pause duration. One handle per
-     *  controller — a retrigger (shouldn't happen inside the subsystem's
-     *  lockout window, but defensively) resets rather than stacks. */
-    FTimerHandle RegroupPauseTimer;
-
-    /** Single-line multi-value state dump. Called from CheckLeash when bDebugAIState. */
-    void LogAIState(APawn* OwnerPawn);
-
-    /**
-     * Verifies every key in GothicBBKeys exists on the running Blackboard asset
-     * with the expected type. Called on possess, before any writes.
-     *
-     * Exists because UBlackboardComponent::SetValueAs* fails silently on a missing
-     * or mistyped key — no warning, no error, no effect. BB_BestialLucid shipped
-     * without bIsInCombat/bCanSeeTarget and cost a night: the boss held a target,
-     * saw the player at 1m, ran her tree, and never fought, because two writes
-     * evaporated. This makes that a startup error instead of a mystery.
-     */
-    void ValidateBlackboardKeys();
 };

@@ -9,39 +9,6 @@ UGothicAbilitySystemComponent::UGothicAbilitySystemComponent()
     ReplicationMode = EGameplayEffectReplicationMode::Full;
 }
 
-FActiveGameplayEffectHandle UGothicAbilitySystemComponent::ApplyEffectToASC(
-    UAbilitySystemComponent* ASC,
-    TSubclassOf<UGameplayEffect> EffectClass,
-    UObject* SourceObject,
-    FGameplayTag SetByCallerTag,
-    float SetByCallerValue,
-    float Level)
-{
-    if (!ASC || !EffectClass)
-    {
-        return FActiveGameplayEffectHandle();
-    }
-
-    FGameplayEffectContextHandle Context = ASC->MakeEffectContext();
-    if (SourceObject)
-    {
-        Context.AddSourceObject(SourceObject);
-    }
-
-    FGameplayEffectSpecHandle Spec = ASC->MakeOutgoingSpec(EffectClass, Level, Context);
-    if (!Spec.IsValid())
-    {
-        return FActiveGameplayEffectHandle();
-    }
-
-    if (SetByCallerTag.IsValid())
-    {
-        Spec.Data->SetSetByCallerMagnitude(SetByCallerTag, SetByCallerValue);
-    }
-
-    return ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
-}
-
 void UGothicAbilitySystemComponent::GrantStartupAbilities(
     const TArray<TSubclassOf<UGothicGameplayAbility>>& AbilitiesToGrant,
     int32 Level)
@@ -127,10 +94,41 @@ float UGothicAbilitySystemComponent::GetCooldownRemainingForSlot(EGothicAbilityS
     return 0.f;
 }
 
+float UGothicAbilitySystemComponent::GetCooldownTotalForSlot(EGothicAbilitySlot Slot) const
+{
+    if (const FGameplayAbilitySpecHandle* Handle = SlotToAbilityMap.Find(Slot))
+    {
+        if (const FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(*Handle))
+        {
+            const UGothicGameplayAbility* AbilityCDO = Cast<UGothicGameplayAbility>(Spec->Ability);
+            if (AbilityCDO)
+            {
+                const FGameplayTagContainer* CooldownTags = AbilityCDO->GetCooldownTags();
+                if (CooldownTags && CooldownTags->Num() > 0)
+                {
+                    FGameplayEffectQuery Query =
+                        FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(*CooldownTags);
+
+                    TArray<float> Durations = GetActiveEffectsDuration(Query);
+
+                    if (Durations.Num() > 0)
+                    {
+                        float MaxDuration = 0.f;
+                        for (float D : Durations)
+                        {
+                            MaxDuration = FMath::Max(MaxDuration, D);
+                        }
+                        return MaxDuration;
+                    }
+                }
+            }
+        }
+    }
+    return 0.f;
+}
+
 void UGothicAbilitySystemComponent::AbilityInputTagPressed(const FGameplayTag& InputTag)
 {
-    // ">>> AbilityInputTagPressed" debug log stripped July 17 — it was on the
-    // housekeeping strip list and fired on every ability keypress.
     ABILITYLIST_SCOPE_LOCK();
     for (FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
     {

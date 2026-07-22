@@ -11,7 +11,7 @@
 
 AGothicWorldPickup::AGothicWorldPickup()
 {
-    PrimaryActorTick.bCanEverTick = false;
+    PrimaryActorTick.bCanEverTick = true;
     bReplicates = true;
 
     // Interaction sphere — auto-collects on overlap
@@ -21,11 +21,20 @@ AGothicWorldPickup::AGothicWorldPickup()
     InteractionSphere->SetGenerateOverlapEvents(true);
     SetRootComponent(InteractionSphere);
 
-    // Visual mesh — placeholder sphere, replace with proper loot mesh later
+    // Visual mesh — default engine sphere, scaled small
     PickupMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PickupMesh"));
     PickupMesh->SetupAttachment(InteractionSphere);
     PickupMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-    PickupMesh->SetRelativeScale3D(FVector(0.3f));
+    PickupMesh->SetRelativeScale3D(FVector(0.25f));
+    PickupMesh->SetRelativeLocation(FVector(0.f, 0.f, 20.f));
+
+    // Default sphere mesh — engine built-in
+    static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereMesh(
+        TEXT("/Engine/BasicShapes/Sphere"));
+    if (SphereMesh.Succeeded())
+    {
+        PickupMesh->SetStaticMesh(SphereMesh.Object);
+    }
 }
 
 void AGothicWorldPickup::BeginPlay()
@@ -35,10 +44,7 @@ void AGothicWorldPickup::BeginPlay()
     InteractionSphere->OnComponentBeginOverlap.AddDynamic(
         this, &AGothicWorldPickup::OnOverlapBegin);
 
-    // Despawn timer
-    FTimerHandle DespawnTimer;
-    GetWorldTimerManager().SetTimer(DespawnTimer, this,
-        &AGothicWorldPickup::DespawnPickup, PickupLifetime, false);
+    // No despawn timer — items persist until collected
 }
 
 void AGothicWorldPickup::InitializePickup(const FGothicItemInstance& InItem)
@@ -50,6 +56,48 @@ void AGothicWorldPickup::InitializePickup(const FGothicItemInstance& InItem)
         UE_LOG(LogTemp, Log, TEXT("WorldPickup: Initialized with %s (Rarity %d)"),
             *HeldItem.Definition->ItemID.ToString(),
             (int32)HeldItem.Definition->Rarity);
+
+        // Set mesh color based on rarity
+        if (PickupMesh)
+        {
+            FLinearColor RarityColor;
+            switch (HeldItem.Definition->Rarity)
+            {
+                case EGothicItemRarity::Salvage:     RarityColor = FLinearColor(0.6f, 0.6f, 0.6f); break;
+                case EGothicItemRarity::Kept:        RarityColor = FLinearColor(0.2f, 0.8f, 0.2f); break;
+                case EGothicItemRarity::Remembered:  RarityColor = FLinearColor(0.3f, 0.4f, 1.0f); break;
+                case EGothicItemRarity::Resonant:    RarityColor = FLinearColor(0.6f, 0.1f, 0.9f); break;
+                case EGothicItemRarity::Pure:        RarityColor = FLinearColor(1.0f, 0.85f, 0.0f); break;
+                default:                             RarityColor = FLinearColor::White; break;
+            }
+
+            UMaterialInstanceDynamic* DynMat = PickupMesh->CreateAndSetMaterialInstanceDynamic(0);
+            if (DynMat)
+            {
+                DynMat->SetVectorParameterValue(FName("BaseColor"), RarityColor);
+                // Emissive glow so it's visible on the ground
+                DynMat->SetVectorParameterValue(FName("EmissiveColor"), RarityColor * 3.f);
+            }
+        }
+    }
+}
+
+void AGothicWorldPickup::Tick(float DeltaTime)
+{
+    Super::Tick(DeltaTime);
+
+    // Gentle hover rotation so items are visible on the floor
+    if (PickupMesh)
+    {
+        FRotator Rot = PickupMesh->GetRelativeRotation();
+        Rot.Yaw += 60.f * DeltaTime;
+        PickupMesh->SetRelativeRotation(Rot);
+
+        // Subtle bob up and down
+        float BobOffset = FMath::Sin(GetGameTimeSinceCreation() * 2.f) * 5.f;
+        FVector Loc = PickupMesh->GetRelativeLocation();
+        Loc.Z = 20.f + BobOffset;
+        PickupMesh->SetRelativeLocation(Loc);
     }
 }
 

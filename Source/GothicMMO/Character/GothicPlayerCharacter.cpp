@@ -4,12 +4,10 @@
 #include "Character/GothicInputHandlerComponent.h"
 #include "AbilitySystem/GothicAbilitySet.h"
 #include "AbilitySystem/GothicInputConfig.h"
-#include "AI/GothicCombatStateComponent.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "Game/GothicPlayerState.h"
 #include "UI/GothicHUD.h"
-#include "AI/GothicSteadfastComponent.h"
 #include "UI/GothicHUDWidget.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -20,20 +18,7 @@
 #include "InputActionValue.h"
 #include "TimerManager.h"
 #include "Engine/World.h"
-#include "AI/GothicVitalPointComponent.h"
-#include "Engine/Engine.h"
-#include "Components/CapsuleComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
-#include "Game/GothicGameMode.h"
-#include "Kismet/GameplayStatics.h"
-#include "AI/GothicEnemyBase.h"
-#include "AI/GothicEnemyAIController.h"
-#include "AI/GothicEncounterVolume.h"
-#include "Items/GothicInventoryComponent.h"
-#include "Items/GothicItemDefinition.h"
-#include "UI/GothicInventoryWidget.h"
-
-
 
 AGothicPlayerCharacter::AGothicPlayerCharacter()
 {
@@ -53,12 +38,12 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     bUseControllerRotationRoll  = false;
 
     GetCharacterMovement()->bOrientRotationToMovement = false;
-    GetCharacterMovement()->MaxWalkSpeed              = 500.f;
+    GetCharacterMovement()->MaxWalkSpeed              = 500.f;  // Overwritten by WalkSpeed in BeginPlay
     GetCharacterMovement()->JumpZVelocity             = 700.f;
-    CombatStateComponent = CreateDefaultSubobject<UGothicCombatStateComponent>(TEXT("CombatStateComponent"));
+
     // Create the input handler component
     InputHandler = CreateDefaultSubobject<UGothicInputHandlerComponent>(TEXT("InputHandler"));
-    SteadfastComponent = CreateDefaultSubobject<UGothicSteadfastComponent>(TEXT("SteadfastComponent"));
+
     UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Constructor complete"));
 }
 
@@ -85,16 +70,6 @@ void AGothicPlayerCharacter::BeginPlay()
         }
     }
 
-    // Initialize weapon slots from assigned weapon data
-    for (FGothicWeaponSlot& Slot : WeaponSlots)
-    {
-        Slot.InitFromData();
-    }
-    if (WeaponSlots.Num() > 0)
-    {
-        UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Initialized %d weapon slots"), WeaponSlots.Num());
-    }
-
     // Delay HUD polling until widget is fully constructed
     bHUDReady = false;
     FTimerHandle HUDInitTimer;
@@ -102,20 +77,13 @@ void AGothicPlayerCharacter::BeginPlay()
     {
         APlayerController* PC = GetWorld()->GetFirstPlayerController();
         AGothicHUD* GothicHUD = PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
-        
 
         UE_LOG(LogTemp, Log, TEXT("HUD Timer fired | PC: %s | GothicHUD: %s | Widget: %s"),
             PC ? TEXT("Valid") : TEXT("NULL"),
             GothicHUD ? TEXT("Valid") : TEXT("NULL"),
             GothicHUD && GothicHUD->GetHUDWidget() ? TEXT("Valid") : TEXT("NULL"));
 
-        if (GothicHUD)
-        {
-            GothicHUD->NotifyOwningPawnChanged(this);
-        }
-
         bHUDReady = true;
-        BroadcastAmmoChanged(); // initial push — widget now exists
     }, 0.1f, false);
 }
 
@@ -152,30 +120,9 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         AttributeSet ? TEXT("Valid") : TEXT("NULL"));
 
     InitializeGAS();
-    
-    // Restore SuperMeter if this is a respawn — everything else in
-    // GE_InitStats_Player resets normally, but Reckoning progress persists
-    // through death. HasAuthority() gated since this is a direct attribute
-    // write and should be server-authoritative, same as InitializeGAS itself.
-    if (HasAuthority() && AttributeSet)
-    {
-        const float CachedSuper = PS->GetCachedSuperMeterOnDeath();
-        if (CachedSuper >= 0.f)
-        {
-            AttributeSet->SetSuperMeter(PS->ConsumeCachedSuperMeterOnDeath());
-            UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Restored SuperMeter to %.1f after respawn"), CachedSuper);
-
-            // Contract death: Steadfast resets to full, matching post-Selah state.
-            // Only runs on respawn (CachedSuper >= 0 means we died).
-            AttributeSet->SetSteadfast(AttributeSet->GetMaxSteadfast());
-            UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Steadfast restored to max (%.1f)"),
-                AttributeSet->GetMaxSteadfast());
-        }
-    }
-
 
     // Grant ability sets — data driven, replaces old StartupAbilities array
-    if (HasAuthority())
+    if (HasAuthority() && !bAbilitiesGranted)
     {
         for (const TObjectPtr<UGothicAbilitySet>& AbilitySet : StartupAbilitySets)
         {
@@ -185,11 +132,8 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
                     *AbilitySet->GetName());
                 AbilitySet->GiveToAbilitySystem(AbilitySystemComponent, this);
             }
-            else
-            {
-                UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: Null ability set in StartupAbilitySets"));
-            }
         }
+        bAbilitiesGranted = true;
     }
 
     // Setup ability input bindings now that ASC is confirmed valid
@@ -206,66 +150,45 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         }
     }
 
-if (IsLocallyControlled() && AbilitySystemComponent && !bAttributeDelegatesBound)
+    // Health attribute delegate
+    if (IsLocallyControlled() && AbilitySystemComponent)
     {
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-            UGothicAttributeSet::GetHealthAttribute()).AddWeakLambda(this,
-            [this](const FOnAttributeChangeData& Data)
-            {
-                if (AGothicHUD* GothicHUD = GetLocalGothicHUD())
-                {
-                    GothicHUD->UpdateHealth(Data.NewValue, AttributeSet->GetMaxHealth());
-                }
-            });
+    UGothicAttributeSet::GetSelahAttribute()).AddLambda(
+    [this](const FOnAttributeChangeData& Data)
+    {
+        if (!IsLocallyControlled()) return;
 
+        UE_LOG(LogTemp, Log, TEXT("Selah changed: %.0f"), Data.NewValue);
+
+        APlayerController* PC = GetWorld()->GetFirstPlayerController();
+        if (!PC) return;
+
+        AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
+        if (GothicHUD)
+        {
+            GothicHUD->UpdateSelah(Data.NewValue);
+        }
+    });
+
+        // Super meter delegate
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-            UGothicAttributeSet::GetSuperMeterAttribute()).AddWeakLambda(this,
+            UGothicAttributeSet::GetSuperMeterAttribute()).AddLambda(
             [this](const FOnAttributeChangeData& Data)
             {
-                if (AGothicHUD* GothicHUD = GetLocalGothicHUD())
+                if (!IsLocallyControlled()) return;
+
+                APlayerController* PC = GetWorld()->GetFirstPlayerController();
+                if (!PC) return;
+
+                AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
+                if (GothicHUD)
                 {
                     GothicHUD->UpdateSuperMeter(Data.NewValue, AttributeSet->GetMaxSuperMeter());
                 }
             });
 
-        // Restored — this was lost in an earlier rewrite of this function, which
-        // left AGothicHUD::UpdateSelah with no callers at all.
-        AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-            UGothicAttributeSet::GetSelahAttribute()).AddWeakLambda(this,
-            [this](const FOnAttributeChangeData& Data)
-            {
-                UE_LOG(LogTemp, Log, TEXT("Selah changed: %.0f"), Data.NewValue);
-                if (AGothicHUD* GothicHUD = GetLocalGothicHUD())
-                {
-                    GothicHUD->UpdateSelah(Data.NewValue);
-                }
-            });
-
-        OnAmmoChanged.AddWeakLambda(this,
-            [this](int32 Mag, int32 MagCap, int32 Reserve, int32 MaxReserve)
-            {
-                if (AGothicHUD* GothicHUD = GetLocalGothicHUD())
-                {
-                    GothicHUD->UpdateAmmo(Mag, MagCap, Reserve, MaxReserve);
-                }
-            });
-
-        bAttributeDelegatesBound = true;
         UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Attribute delegates registered"));
-    }
-
-    // Subscribe to inventory equipment changes to update weapon slots
-    if (UGothicInventoryComponent* Inventory = PS->GetInventory())
-    {
-        // Guard against double-binding (PossessedBy + OnRep_PlayerState both call this)
-        Inventory->OnItemEquipped.RemoveDynamic(this, &AGothicPlayerCharacter::OnInventoryEquipmentChanged);
-        Inventory->OnStrainChanged.RemoveDynamic(this, &AGothicPlayerCharacter::RefreshWeaponsFromInventory);
-
-        Inventory->OnItemEquipped.AddDynamic(this, &AGothicPlayerCharacter::OnInventoryEquipmentChanged);
-        Inventory->OnStrainChanged.AddDynamic(this, &AGothicPlayerCharacter::RefreshWeaponsFromInventory);
-
-        // Initial sync in case items were already equipped (e.g. respawn)
-        RefreshWeaponsFromInventory();
     }
 }
 
@@ -296,36 +219,15 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
     }
 
     // Non-GAS combat inputs — direct bindings
-    if (ADSAction)
+    if (FireAction)
+        EIC->BindAction(FireAction, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnFire);
+
+    if (SprintAction)
     {
-        EIC->BindAction(ADSAction, ETriggerEvent::Started,   this, &AGothicPlayerCharacter::OnADSStart);
-        EIC->BindAction(ADSAction, ETriggerEvent::Completed, this, &AGothicPlayerCharacter::OnADSEnd);
-    }
-    
-    if (ReloadAction)
-    {
-        EIC->BindAction(ReloadAction, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnReloadPressed);
-        EIC->BindAction(ReloadAction, ETriggerEvent::Completed, this, &AGothicPlayerCharacter::OnReloadReleased);
+        EIC->BindAction(SprintAction, ETriggerEvent::Started,   this, &AGothicPlayerCharacter::OnSprintStarted);
+        EIC->BindAction(SprintAction, ETriggerEvent::Completed, this, &AGothicPlayerCharacter::OnSprintStopped);
     }
 
-    // Weapon swap — 1 and 2 keys
-    if (SwapWeapon1Action)
-    {
-        EIC->BindAction(SwapWeapon1Action, ETriggerEvent::Started, this,
-            &AGothicPlayerCharacter::OnSwapToWeapon1);
-    }
-    if (SwapWeapon2Action)
-    {
-        EIC->BindAction(SwapWeapon2Action, ETriggerEvent::Started, this,
-            &AGothicPlayerCharacter::OnSwapToWeapon2);
-    }
-
-    // Inventory toggle
-    if (InventoryToggleAction)
-    {
-        EIC->BindAction(InventoryToggleAction, ETriggerEvent::Started, this,
-            &AGothicPlayerCharacter::ToggleInventory);
-    }
     // Ability inputs go through InputHandler → ASC tag pipeline
     // ASC may not be ready here — bindings are set up again in InitGASFromPlayerState
     if (InputHandler && AbilitySystemComponent)
@@ -339,49 +241,10 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
     }
 }
 
-void AGothicPlayerCharacter::ApplyRecoilKick()
-{
-    // Tick interpolates CurrentRecoilPitch back toward zero and feeds each frame's
-    // delta into AddControllerPitchInput, so the deltas sum to exactly -Kick and the
-    // player's aim returns to where it started. All this needs to do is add the kick
-    // and apply it once.
-    //
-    // If the gun kicks the wrong way in engine, negate RecoilKickPitch in the
-    // Blueprint rather than flipping the sign here — the recovery reads the same
-    // property and the two must agree.
-    // Request only. Tick owns the rotation — applying it here is what made the
-    // gun teleport on frame 1.
-    //
-    // Rapid fire stacks correctly by construction: shots add to the target faster
-    // than recovery bleeds it, so the sixth round climbs from a higher base than
-    // the first. That climb is what makes a 6-round magazine a constraint rather
-    // than a number on the HUD.
-    TargetRecoilPitch += RecoilKickPitch;
-}
-
 void AGothicPlayerCharacter::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
-    // Two curves, one applied delta. The camera chases the target quickly; the
-    // target decays slowly. Both start and end at zero, so the deltas sum to zero
-    // and the player's aim returns exactly where it began.
-    const float PreviousRecoilPitch = CurrentRecoilPitch;
 
-    CurrentRecoilPitch = FMath::FInterpTo(CurrentRecoilPitch, TargetRecoilPitch, DeltaTime, RecoilRiseSpeed);
-    TargetRecoilPitch  = FMath::FInterpTo(TargetRecoilPitch,  0.f,               DeltaTime, RecoilRecoverySpeed);
-
-    const float RecoilDelta = CurrentRecoilPitch - PreviousRecoilPitch;
-    if (Controller && !FMath::IsNearlyZero(RecoilDelta))
-    {
-        AddControllerPitchInput(RecoilDelta);
-    }
-    // ADS FOV interpolation
-    if (FirstPersonCamera)
-    {
-        float TargetFOV = bIsADS ? ADSFOV : HipFireFOV;
-        FirstPersonCamera->SetFieldOfView(
-            FMath::FInterpTo(FirstPersonCamera->FieldOfView, TargetFOV, DeltaTime, ADSInterpSpeed));
-    }
     if (!IsLocallyControlled() || !AbilitySystemComponent || !bHUDReady) return;
 
     APlayerController* PC = GetWorld()->GetFirstPlayerController();
@@ -390,19 +253,21 @@ void AGothicPlayerCharacter::Tick(float DeltaTime)
 
     UGothicHUDWidget* HUDWidget = GothicHUD->GetHUDWidget();
     if (!HUDWidget) return;
-    
-    // Poll cooldown for each ability slot
-    GothicHUD->UpdateAbilityCooldown(EGothicAbilitySlot::Ability1,
-        AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::Ability1),
-        4.0f);
 
-    GothicHUD->UpdateAbilityCooldown(EGothicAbilitySlot::Ability2,
-        AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::Ability2),
-        8.0f);
+    // Poll cooldown for each ability slot — totals pulled from actual GE durations
+    static const EGothicAbilitySlot SlotsToTrack[] = {
+        EGothicAbilitySlot::LightAttack,
+        EGothicAbilitySlot::Ability1,
+        EGothicAbilitySlot::Ability2,
+        EGothicAbilitySlot::Ability3,
+    };
 
-    GothicHUD->UpdateAbilityCooldown(EGothicAbilitySlot::Ability3,
-        AbilitySystemComponent->GetCooldownRemainingForSlot(EGothicAbilitySlot::Ability3),
-        3.5f);
+    for (int32 i = 0; i < UE_ARRAY_COUNT(SlotsToTrack); ++i)
+    {
+        const float Remaining = AbilitySystemComponent->GetCooldownRemainingForSlot(SlotsToTrack[i]);
+        const float Total     = AbilitySystemComponent->GetCooldownTotalForSlot(SlotsToTrack[i]);
+        GothicHUD->UpdateAbilityCooldown(i, Remaining, Total);
+    }
 }
 
 void AGothicPlayerCharacter::OnMove(const FInputActionValue& Value)
@@ -428,53 +293,58 @@ void AGothicPlayerCharacter::OnLook(const FInputActionValue& Value)
     AddControllerPitchInput(LookVec.Y);
 }
 
-bool AGothicPlayerCharacter::HasRoundChambered() const
+void AGothicPlayerCharacter::OnFire()
 {
-    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex) && WeaponSlots[ActiveWeaponIndex].WeaponData)
-    {
-        return WeaponSlots[ActiveWeaponIndex].CurrentMagazine > 0;
-    }
-    return CurrentMagazineAmmo > 0;
-}
+    UE_LOG(LogTemp, Log, TEXT("OnFire: Called"));
 
-void AGothicPlayerCharacter::ConsumeRound()
-{
-    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex) && WeaponSlots[ActiveWeaponIndex].WeaponData)
+    if (!FirstPersonCamera)
     {
-        FGothicWeaponSlot& Slot = WeaponSlots[ActiveWeaponIndex];
-        if (Slot.CurrentMagazine <= 0) return;
-        Slot.CurrentMagazine--;
+        UE_LOG(LogTemp, Warning, TEXT("OnFire: FirstPersonCamera is null"));
+        return;
+    }
+
+    const FVector Start = FirstPersonCamera->GetComponentLocation();
+    const FVector End   = Start + (FirstPersonCamera->GetForwardVector() * 5000.f);
+
+    FHitResult Hit;
+    FCollisionQueryParams Params;
+    Params.AddIgnoredActor(this);
+
+    bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Pawn, Params);
+
+    if (bHit && Hit.GetActor())
+    {
+        UE_LOG(LogTemp, Log, TEXT("OnFire: Hit %s"), *Hit.GetActor()->GetName());
+
+        UAbilitySystemComponent* TargetASC =
+            UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Hit.GetActor());
+
+        if (TargetASC && DamageEffectClass)
+        {
+            FGameplayEffectContextHandle Context =
+                AbilitySystemComponent->MakeEffectContext();
+            FGameplayEffectSpecHandle Spec =
+                AbilitySystemComponent->MakeOutgoingSpec(DamageEffectClass, 1.f, Context);
+
+            if (Spec.IsValid())
+            {
+                Spec.Data->SetSetByCallerMagnitude(
+                    FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
+                    PistolDamage);
+
+                AbilitySystemComponent->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
+                UE_LOG(LogTemp, Log, TEXT("OnFire: Damage applied to %s"), *Hit.GetActor()->GetName());
+            }
+        }
+        else
+        {
+            UE_LOG(LogTemp, Log, TEXT("OnFire: Hit %s but no ASC or no DamageEffectClass"),
+                *Hit.GetActor()->GetName());
+        }
     }
     else
     {
-        if (CurrentMagazineAmmo <= 0) return;
-        CurrentMagazineAmmo--;
-    }
-    BroadcastAmmoChanged();
-}
-
-AGothicHUD* AGothicPlayerCharacter::GetLocalGothicHUD() const
-{
-    if (!IsLocallyControlled())
-    {
-        return nullptr;
-    }
-    APlayerController* PC = Cast<APlayerController>(GetController());
-    return PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
-}
-
-void AGothicPlayerCharacter::BroadcastAmmoChanged()
-{
-    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex) && WeaponSlots[ActiveWeaponIndex].WeaponData)
-    {
-        const FGothicWeaponSlot& Slot = WeaponSlots[ActiveWeaponIndex];
-        OnAmmoChanged.Broadcast(Slot.CurrentMagazine, Slot.WeaponData->MagazineCapacity,
-                                Slot.CurrentReserve, Slot.WeaponData->MaxReserveAmmo);
-    }
-    else
-    {
-        OnAmmoChanged.Broadcast(CurrentMagazineAmmo, MagazineCapacity,
-                                CurrentReserveAmmo, MaxReserveAmmo);
+        UE_LOG(LogTemp, Log, TEXT("OnFire: No hit"));
     }
 }
 
@@ -528,368 +398,21 @@ void AGothicPlayerCharacter::OnMelee()
     }
 }
 
-void AGothicPlayerCharacter::TriggerSelahMoment_Implementation()
+void AGothicPlayerCharacter::OnSprintStarted()
+{
+    GetCharacterMovement()->MaxWalkSpeed = SprintSpeed;
+}
+
+void AGothicPlayerCharacter::OnSprintStopped()
+{
+    GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+}
+
+void AGothicPlayerCharacter::TriggerSelahMoment()
 {
     UE_LOG(LogTemp, Log, TEXT("TriggerSelahMoment: Selah moment triggered on %s"),
         *GetName());
+
+    // Blueprint handles the visual and audio — call the event
     OnSelahMoment();
-}
-
-void AGothicPlayerCharacter::ServerCollectEncounterSelah_Implementation(AGothicEncounterVolume* Encounter)
-{
-    if (Encounter)
-    {
-        Encounter->CompleteCollection();
-    }
-}
-
-void AGothicPlayerCharacter::OnADSStart()
-{
-    bIsADS = true;
-    GetCharacterMovement()->MaxWalkSpeed = ADSMovementSpeed;
-}
-
-void AGothicPlayerCharacter::OnADSEnd()
-{
-    bIsADS = false;
-    GetCharacterMovement()->MaxWalkSpeed = 500.f;
-}
-
-
-
-// cpp implementations
-void AGothicPlayerCharacter::OnReloadPressed()
-{
-    ReloadPressStartTime = GetWorld()->GetTimeSeconds();
-}
-
-void AGothicPlayerCharacter::OnReloadReleased()
-{
-    const float HeldDuration = GetWorld()->GetTimeSeconds() - ReloadPressStartTime;
-
-    if (HeldDuration >= HoldThreshold)
-    {
-        HoldReload();
-    }
-    else
-    {
-        TapReload();
-    }
-}
-
-void AGothicPlayerCharacter::TapReload()
-{
-    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex) && WeaponSlots[ActiveWeaponIndex].WeaponData)
-    {
-        FGothicWeaponSlot& Slot = WeaponSlots[ActiveWeaponIndex];
-        const int32 AmmoNeeded = Slot.WeaponData->MagazineCapacity - Slot.CurrentMagazine;
-        const int32 AmmoToTransfer = FMath::Min(AmmoNeeded, Slot.CurrentReserve);
-
-        Slot.CurrentMagazine += AmmoToTransfer;
-        Slot.CurrentReserve -= AmmoToTransfer;
-
-        UE_LOG(LogTemp, Log, TEXT("TapReload: [%s] Magazine %d/%d, Reserve %d"),
-            *Slot.WeaponData->WeaponName.ToString(),
-            Slot.CurrentMagazine, Slot.WeaponData->MagazineCapacity, Slot.CurrentReserve);
-    }
-    else
-    {
-        const int32 AmmoNeeded = MagazineCapacity - CurrentMagazineAmmo;
-        const int32 AmmoToTransfer = FMath::Min(AmmoNeeded, CurrentReserveAmmo);
-
-        CurrentMagazineAmmo += AmmoToTransfer;
-        CurrentReserveAmmo -= AmmoToTransfer;
-
-        UE_LOG(LogTemp, Log, TEXT("TapReload: Magazine %d/%d, Reserve %d"),
-            CurrentMagazineAmmo, MagazineCapacity, CurrentReserveAmmo);
-    }
-    BroadcastAmmoChanged();
-}
-
-void AGothicPlayerCharacter::HoldReload()
-{
-    if (!SteadfastComponent)
-    {
-        return;
-    }
-
-    const float CurrentSteadfast = SteadfastComponent->GetCurrentSteadfast();
-
-    // Tier thresholds — placeholder values, tune to feel once testable in engine.
-    float SteadfastCost = 0.f;
-    float AmmoGranted = 0.f;
-
-    if (CurrentSteadfast >= 60.f)
-    {
-        // High tier
-        SteadfastCost = 50.f;
-        AmmoGranted = 12.f;
-    }
-    else if (CurrentSteadfast >= 30.f)
-    {
-        // Mid-tier
-        SteadfastCost = 30.f;
-        AmmoGranted = 8.f;
-    }
-    else if (CurrentSteadfast >= 10.f)
-    {
-        // Low tier
-        SteadfastCost = 10.f;
-        AmmoGranted = 4.f;
-    }
-    else
-    {
-        UE_LOG(LogTemp, Log, TEXT("HoldReload: Insufficient Steadfast for any tier (%.1f current)"),
-            CurrentSteadfast);
-        return;
-    }
-
-    const float ActualAmmoGranted = SteadfastComponent->TryConvertSteadfast(SteadfastCost, AmmoGranted);
-
-    if (ActualAmmoGranted > 0.f)
-    {
-        if (WeaponSlots.IsValidIndex(ActiveWeaponIndex) && WeaponSlots[ActiveWeaponIndex].WeaponData)
-        {
-            FGothicWeaponSlot& Slot = WeaponSlots[ActiveWeaponIndex];
-            Slot.CurrentReserve = FMath::Min(
-                Slot.CurrentReserve + FMath::RoundToInt(ActualAmmoGranted),
-                Slot.WeaponData->MaxReserveAmmo);
-            UE_LOG(LogTemp, Log, TEXT("HoldReload: [%s] Tier conversion — cost %.1f, granted %d ammo, Reserve now %d"),
-                *Slot.WeaponData->WeaponName.ToString(),
-                SteadfastCost, FMath::RoundToInt(ActualAmmoGranted), Slot.CurrentReserve);
-        }
-        else
-        {
-            CurrentReserveAmmo = FMath::Min(CurrentReserveAmmo + FMath::RoundToInt(ActualAmmoGranted), MaxReserveAmmo);
-            UE_LOG(LogTemp, Log, TEXT("HoldReload: Tier conversion — cost %.1f, granted %d ammo, Reserve now %d"),
-                SteadfastCost, FMath::RoundToInt(ActualAmmoGranted), CurrentReserveAmmo);
-        }
-        BroadcastAmmoChanged();
-    }
-    else
-    {
-        UE_LOG(LogTemp, Log, TEXT("HoldReload: Conversion failed unexpectedly"));
-    }
-}
-
-bool AGothicPlayerCharacter::IsReckoningActive() const
-{
-    if (AbilitySystemComponent)
-    {
-        return AbilitySystemComponent->HasMatchingGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Reckoning")));
-    }
-    return false;
-}
-
-void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
-{
-    if (AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>())
-    {
-        if (AttributeSet)
-        {
-            PS->CacheSuperMeterOnDeath(AttributeSet->GetSuperMeter());
-        }
-    }
-
-    Super::OnDeath_Implementation(Killer);
-
-    if (!HasAuthority())
-    {
-        return;
-    }
-
-    // Force out of combat immediately — don't wait for the grace-period timeout.
-    if (UGothicCombatStateComponent* CombatState = FindComponentByClass<UGothicCombatStateComponent>())
-    {
-        CombatState->ForceLeaveCombat();
-    }
-
-    // Clear this pawn as a target from any enemy still tracking it — otherwise
-    // their in-progress attack routine silently carries over onto whatever
-    // pawn respawns here next.
-    TArray<AActor*> Enemies;
-    UGameplayStatics::GetAllActorsOfClass(GetWorld(), AGothicEnemyBase::StaticClass(), Enemies);
-    for (AActor* EnemyActor : Enemies)
-    {
-        AGothicEnemyBase* Enemy = Cast<AGothicEnemyBase>(EnemyActor);
-        if (Enemy && Enemy->GetCombatTarget() == this)
-        {
-            if (AGothicEnemyAIController* AIC = Cast<AGothicEnemyAIController>(Enemy->GetController()))
-            {
-                AIC->ClearCombatTarget();
-            }
-        }
-    }
-
-    if (AGothicGameMode* GM = GetWorld()->GetAuthGameMode<AGothicGameMode>())
-    {
-        GM->RequestRespawn(GetController());
-    }
-}
-
-// =============================================================================
-// Weapon Slots
-// =============================================================================
-
-const UGothicWeaponData* AGothicPlayerCharacter::GetActiveWeaponData() const
-{
-    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex))
-    {
-        return WeaponSlots[ActiveWeaponIndex].WeaponData;
-    }
-    return nullptr;
-}
-
-void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
-{
-    if (!WeaponSlots.IsValidIndex(NewIndex))
-    {
-        UE_LOG(LogTemp, Warning, TEXT("SwapWeapon: Invalid index %d (have %d slots)"),
-            NewIndex, WeaponSlots.Num());
-        return;
-    }
-
-    if (NewIndex == ActiveWeaponIndex)
-    {
-        return;
-    }
-
-    ActiveWeaponIndex = NewIndex;
-
-    const UGothicWeaponData* WeaponData = GetActiveWeaponData();
-    if (!WeaponData)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("SwapWeapon: Slot %d has no weapon data"), NewIndex);
-        return;
-    }
-
-    // Update crosshair
-    if (AGothicHUD* HUD = GetLocalGothicHUD())
-    {
-        HUD->SetCrosshairType(WeaponData->CrosshairType);
-    }
-
-    BroadcastAmmoChanged();
-
-    UE_LOG(LogTemp, Log, TEXT("SwapWeapon: Switched to slot %d — %s"),
-        NewIndex, *WeaponData->WeaponName.ToString());
-}
-
-// =============================================================================
-// Inventory → Weapon Slot Bridge
-// =============================================================================
-
-void AGothicPlayerCharacter::OnInventoryEquipmentChanged(EGothicEquipSlot Slot, const FGothicItemInstance& Item)
-{
-    // Only care about weapon slots
-    if (Slot == EGothicEquipSlot::PrimaryWeapon || Slot == EGothicEquipSlot::SpecialWeapon)
-    {
-        RefreshWeaponsFromInventory();
-    }
-}
-
-void AGothicPlayerCharacter::RefreshWeaponsFromInventory()
-{
-    AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
-    if (!PS) return;
-
-    UGothicInventoryComponent* Inventory = PS->GetInventory();
-    if (!Inventory) return;
-
-    // Map inventory equip slots to weapon slot indices
-    struct FSlotMapping
-    {
-        EGothicEquipSlot EquipSlot;
-        int32 WeaponIndex;
-    };
-    const FSlotMapping Mappings[] = {
-        { EGothicEquipSlot::PrimaryWeapon, 0 },
-        { EGothicEquipSlot::SpecialWeapon, 1 },
-    };
-
-    for (const FSlotMapping& Map : Mappings)
-    {
-        // Ensure the weapon slots array is large enough
-        while (WeaponSlots.Num() <= Map.WeaponIndex)
-        {
-            WeaponSlots.AddDefaulted();
-        }
-
-        const FGothicItemInstance* Equipped = Inventory->GetEquippedItem(Map.EquipSlot);
-        if (Equipped && Equipped->Definition && Equipped->Definition->WeaponData)
-        {
-            FGothicWeaponSlot& Slot = WeaponSlots[Map.WeaponIndex];
-            UGothicWeaponData* NewData = Equipped->Definition->WeaponData;
-
-            // Only re-initialize ammo if the weapon type actually changed
-            if (Slot.WeaponData != NewData)
-            {
-                Slot.WeaponData = NewData;
-                Slot.InitFromData();
-                UE_LOG(LogTemp, Log, TEXT("RefreshWeapons: Slot %d ← %s"),
-                    Map.WeaponIndex, *NewData->WeaponName.ToString());
-            }
-        }
-        else
-        {
-            // No weapon in this inventory slot — clear the weapon data
-            WeaponSlots[Map.WeaponIndex].WeaponData = nullptr;
-        }
-    }
-
-    BroadcastAmmoChanged();
-}
-
-// =============================================================================
-// Inventory UI Toggle
-// =============================================================================
-
-void AGothicPlayerCharacter::ToggleInventory()
-{
-    APlayerController* PC = Cast<APlayerController>(GetController());
-    if (!PC) return;
-
-    if (ActiveInventoryWidget && ActiveInventoryWidget->IsInViewport())
-    {
-        // Close inventory
-        ActiveInventoryWidget->RemoveFromParent();
-        ActiveInventoryWidget = nullptr;
-
-        PC->SetShowMouseCursor(false);
-        PC->SetInputMode(FInputModeGameOnly());
-
-        UE_LOG(LogTemp, Log, TEXT("Inventory: Closed"));
-        return;
-    }
-
-    // Open inventory
-    if (!InventoryWidgetClass)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("Inventory: InventoryWidgetClass not assigned on BP_GothicPlayerCharacter"));
-        return;
-    }
-
-    AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
-    if (!PS || !PS->GetInventory())
-    {
-        UE_LOG(LogTemp, Warning, TEXT("Inventory: No inventory component on PlayerState"));
-        return;
-    }
-
-    ActiveInventoryWidget = CreateWidget<UGothicInventoryWidget>(PC, InventoryWidgetClass);
-    if (ActiveInventoryWidget)
-    {
-        ActiveInventoryWidget->InitializeFromInventory(PS->GetInventory());
-        ActiveInventoryWidget->AddToViewport(10);
-
-        PC->SetShowMouseCursor(true);
-        FInputModeGameAndUI InputMode;
-        InputMode.SetWidgetToFocus(ActiveInventoryWidget->TakeWidget());
-        InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
-        PC->SetInputMode(InputMode);
-
-        UE_LOG(LogTemp, Log, TEXT("Inventory: Opened with %d items"),
-            PS->GetInventory()->GetItemCount());
-    }
 }

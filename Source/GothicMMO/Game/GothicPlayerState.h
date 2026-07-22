@@ -34,8 +34,7 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Gothic|PlayerState")
     UGothicAttributeSet* GetGothicAttributeSet() const { return AttributeSet; }
-
-    UFUNCTION(BlueprintPure, Category = "Gothic|PlayerState")
+    
     UFUNCTION(BlueprintPure, Category = "Gothic|PlayerState")
     UGothicInventoryComponent* GetInventory() const { return InventoryComponent; }
     

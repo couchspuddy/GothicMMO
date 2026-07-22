@@ -1,15 +1,12 @@
 // GothicEnemyBase.cpp
 
 #include "AI/GothicEnemyBase.h"
-#include "GothicMMO.h"                          // ECC_Weapon
-#include "AI/GothicCombatStateComponent.h"
+
 #include "TimerManager.h"
 #include "AI/GothicEnemyAIController.h"
-#include "AI/GothicPackSubsystem.h"
+#include "AI/GothicMeleeHitboxComponent.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
-#include "Items/GothicLootTable.h"
-#include "Items/GothicWorldPickup.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Perception/AIPerceptionComponent.h"
@@ -19,15 +16,6 @@
 #include "Kismet/GameplayStatics.h"
 #include "Character/GothicPlayerCharacter.h"
 #include "AbilitySystemBlueprintLibrary.h"
-#include "AIController.h"
-#include "BrainComponent.h"
-#include "Engine/Engine.h"
-#include "Engine/World.h"
-#include "AI/GothicVitalPointComponent.h"
-#include "Components/CapsuleComponent.h"
-#include "UI/GothicEnemyHealthBarWidget.h"
-#include "UI/GothicHUD.h"
-#include "NiagaraFunctionLibrary.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 AGothicEnemyBase::AGothicEnemyBase()
@@ -60,14 +48,15 @@ AGothicEnemyBase::AGothicEnemyBase()
     HealthBarWidget = CreateDefaultSubobject<UWidgetComponent>(TEXT("HealthBarWidget"));
     HealthBarWidget->SetupAttachment(RootComponent);
     HealthBarWidget->SetRelativeLocation(FVector(0.f, 0.f, 120.f));
-    HealthBarWidget->SetWidgetSpace(EWidgetSpace::Screen);  
+    HealthBarWidget->SetWidgetSpace(EWidgetSpace::World);
     HealthBarWidget->SetDrawSize(FVector2D(200.f, 20.f));
     HealthBarWidget->SetVisibility(false);
-    HealthBarWidget->SetCanEverAffectNavigation(false); 
-    
-    VitalPointComponent = CreateDefaultSubobject<UGothicVitalPointComponent>(
-    TEXT("VitalPointComponent"));
-    CombatStateComponent = CreateDefaultSubobject<UGothicCombatStateComponent>(TEXT("CombatStateComponent"));
+
+    // Melee hitbox — created here, attached to bone in BeginPlay
+    // (skeleton isn't available yet in the constructor)
+    MeleeHitbox = CreateDefaultSubobject<UGothicMeleeHitboxComponent>(TEXT("MeleeHitbox"));
+    MeleeHitbox->SetupAttachment(GetMesh());
+
     bReplicates = true;
 }
 
@@ -75,35 +64,18 @@ void AGothicEnemyBase::BeginPlay()
 {
     Super::BeginPlay();
 
-    // ECC_Weapon defaults to ECR_Ignore (DefaultEngine.ini) — every enemy mesh is
-    // transparent to hitscan unless something blocks it. Until now the only place
-    // that did was PlayDeathCosmetics, so a living enemy could not be shot at all;
-    // BP_Enemy_Draugr only worked because its Blueprint set the response by hand,
-    // which made an architectural gap look like a per-Blueprint override.
-    //
-    // Set at runtime, not in the constructor, deliberately: a Blueprint's serialized
-    // collision override beats constructor defaults, so a stale override on any enemy
-    // BP would silently reopen this. A BeginPlay write wins over both.
-    if (GetMesh())
-    {
-        GetMesh()->SetCollisionResponseToChannel(ECC_Weapon, ECR_Block);
-        GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Weapon, ECR_Block);
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("%s: No Mesh on BeginPlay — this enemy cannot be shot."), *GetName());
-    }
-
     InitializeGAS();
-    
-    // Pack registration — server only; AI and the pack subsystem are
-    // server-authoritative. Serialized (hand-placed) PackIDs land here;
-    // wave-spawned enemies come through SetPackID from the spawn stamp.
-    UE_LOG(LogTemp, Warning, TEXT("%s: PackID BeginPlay check — PackID='%s' HasAuthority=%d"),
-    *GetName(), *PackID.ToString(), HasAuthority());
-    if (HasAuthority() && !PackID.IsNone())
+
+    // Attach hitbox to the correct bone now that the skeleton is loaded
+    if (MeleeHitbox && GetMesh())
     {
-        SetPackID(PackID);
+        MeleeHitbox->AttachToComponent(
+            GetMesh(),
+            FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+            HitboxAttachBone);
+
+        UE_LOG(LogTemp, Log, TEXT("%s: Hitbox attached to bone '%s'"),
+            *GetName(), *HitboxAttachBone.ToString());
     }
 
     if (PerceptionComponent)
@@ -115,79 +87,21 @@ void AGothicEnemyBase::BeginPlay()
     if (AbilitySystemComponent && AttributeSet)
     {
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-    UGothicAttributeSet::GetHealthAttribute()).AddLambda(
-    [this](const FOnAttributeChangeData& Data)
-    {
-        // Notify vital point component of damage taken
-        if (VitalPointComponent && Data.NewValue < Data.OldValue)
-        {
-            const float DamageTaken = Data.OldValue - Data.NewValue;
-            VitalPointComponent->NotifyDamageTaken(DamageTaken);
-        }
-    });
-    }
-    if (HealthBarWidget)
-    {
-        HealthBarWidget->InitWidget();
-        if (UGothicEnemyHealthBarWidget* HealthBarUserWidget =
-                Cast<UGothicEnemyHealthBarWidget>(HealthBarWidget->GetUserWidgetObject()))
-        {
-            HealthBarUserWidget->SetOwningEnemy(this);
-        }
-        else
-        {
-            // Loud on purpose: this fires if HealthBarWidget's assigned Widget
-            // Class isn't a WBP_EnemyHealthBar-style child of
-            // UGothicEnemyHealthBarWidget — the bar will exist but read 0% forever,
-            // which otherwise looks identical to "enemy at full health" until
-            // someone notices it never moves.
-            UE_LOG(LogTemp, Warning,
-                TEXT("%s: HealthBarWidget's Widget Class is not a UGothicEnemyHealthBarWidget child — health bar will not update"),
-                *GetName());
-        }
-    }
-    
-}
-
-void AGothicEnemyBase::MulticastOnHit_Implementation(FVector_NetQuantize ImpactLocation, bool bWasVital, float DamageAmount)
-{
-    OnHitFeedback(ImpactLocation, bWasVital);
-
-    // All HUD feedback goes through the local player's HUD — no widget components
-    APlayerController* LocalPC = GetWorld()->GetFirstPlayerController();
-    if (LocalPC && LocalPC->IsLocalController())
-    {
-        if (AGothicHUD* GothicHUD = Cast<AGothicHUD>(LocalPC->GetHUD()))
-        {
-            GothicHUD->ShowDamageNumber(FVector(ImpactLocation), DamageAmount, bWasVital);
-            GothicHUD->RegisterEnemyHealthBar(this);
-        }
-    }
-
-    // Impact VFX — body or vital, spawned on every client at the hit location
-    UNiagaraSystem* EffectToSpawn = bWasVital ? VitalHitEffect : BodyHitEffect;
-    if (EffectToSpawn)
-    {
-        UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-            GetWorld(),
-            EffectToSpawn,
-            FVector(ImpactLocation),
-            FRotator::ZeroRotator,
-            FVector(1.f),
-            true,   // bAutoDestroy
-            true,   // bAutoActivate
-            ENCPoolMethod::AutoRelease);
+            UGothicAttributeSet::GetHealthAttribute()).AddLambda(
+            [this](const FOnAttributeChangeData& Data)
+            {
+                // Health changed — Blueprint widget can poll this
+            });
     }
 }
+
 void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
 {
     for (AActor* Actor : UpdatedActors)
     {
-        // UE5.8: GetCurrentStimulus was removed. Use GetActorsPerception instead.
         FActorPerceptionBlueprintInfo PerceptionInfo;
         if (PerceptionComponent->GetActorsPerception(Actor, PerceptionInfo))
         {
-            // Check if any stimulus was successfully sensed
             bool bSensed = false;
             for (const FAIStimulus& Stimulus : PerceptionInfo.LastSensedStimuli)
             {
@@ -200,6 +114,10 @@ void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
 
             if (bSensed)
             {
+                if (HealthBarWidget)
+                {
+                    HealthBarWidget->SetVisibility(true);
+                }
                 SetCombatTarget(Actor);
                 break;
             }
@@ -211,167 +129,125 @@ void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget)
 {
     CombatTarget = NewTarget;
 
-    // Notify the AI controller to update the Blackboard
     if (AGothicEnemyAIController* AIC = Cast<AGothicEnemyAIController>(GetController()))
     {
         AIC->SetBlackboardTarget(NewTarget);
     }
 }
 
-void AGothicEnemyBase::SetPackID(FName NewPackID)
-{
-    if (!HasAuthority())
-    {
-        return;
-    }
-
-    UGothicPackSubsystem* PackSys =
-        GetWorld() ? GetWorld()->GetSubsystem<UGothicPackSubsystem>() : nullptr;
-    if (!PackSys)
-    {
-        return;
-    }
-
-    // Moving between packs: leave the old one first. Registering under the
-    // same ID twice is a no-op inside the subsystem, so BeginPlay calling
-    // this with the value it already holds is harmless.
-    if (!PackID.IsNone() && PackID != NewPackID)
-    {
-        PackSys->UnregisterMember(PackID, this);
-    }
-
-    PackID = NewPackID;
-
-    if (!PackID.IsNone())
-    {
-        PackSys->RegisterMember(PackID, this);
-    }
-}
-
-void AGothicEnemyBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
-{
-    // Corpse destruction, encounter collection, level teardown — every exit
-    // path deregisters. The subsystem holds weak ptrs so a missed exit
-    // wouldn't crash, but a clean unregister keeps pack counts honest.
-    if (HasAuthority() && !PackID.IsNone())
-    {
-        if (UGothicPackSubsystem* PackSys =
-            GetWorld() ? GetWorld()->GetSubsystem<UGothicPackSubsystem>() : nullptr)
-        {
-            PackSys->UnregisterMember(PackID, this);
-        }
-    }
-
-    Super::EndPlay(EndPlayReason);
-}
 void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
 {
-    // Stop AI before Super — controller is still valid here
-    if (AAIController* AIC = Cast<AAIController>(GetController()))
-    {
-        AIC->StopMovement();
-        if (AIC->GetBrainComponent())
-        {
-            AIC->GetBrainComponent()->StopLogic(TEXT("Dead"));
-        }
-    }
-
     Super::OnDeath_Implementation(Killer);
-    OnEnemyDied.Broadcast(this);
 
-    // Cosmetics fan out to every machine, this one included.
-    MulticastOnDeath(Killer);
+    UE_LOG(LogTemp, Log, TEXT("GothicEnemyBase: %s died — running Selah proximity check"),
+        *GetName());
 
-    // Loot drop — server only. Roll the loot table and spawn a world pickup.
-    if (LootTable)
+    // Force-disable hitbox so a dying enemy can't damage players mid-death anim
+    if (MeleeHitbox)
     {
-        FGothicItemInstance DroppedItem;
-        if (LootTable->RollDrop(DroppedItem))
-        {
-            const FVector SpawnLocation = GetActorLocation() + FVector(0.f, 0.f, 50.f);
-            AGothicWorldPickup* Pickup = GetWorld()->SpawnActor<AGothicWorldPickup>(
-                AGothicWorldPickup::StaticClass(), SpawnLocation, FRotator::ZeroRotator);
-            if (Pickup)
-            {
-                Pickup->InitializePickup(DroppedItem);
-            }
-        }
-    }
-    
-    // Pack sync — every living packmate enters the regroup pause in the
-    // same frame. OnDeath only runs on the server (see MulticastOnDeath's
-    // comment), so no authority check needed beyond the one already implied.
-    if (!PackID.IsNone())
-    {
-        if (UGothicPackSubsystem* PackSys =
-            GetWorld() ? GetWorld()->GetSubsystem<UGothicPackSubsystem>() : nullptr)
-        {
-            PackSys->NotifyMemberDeath(PackID, this);
-        }
+        MeleeHitbox->DisableHitbox();
     }
 
-    if (!OwningEncounter)
-    {
-        FTimerHandle CorpseTimer;
-        GetWorldTimerManager().SetTimer(
-            CorpseTimer,
-            this,
-            &AGothicEnemyBase::DestroyCorpse,
-            CorpseLifetime,
-            false);
-    }
-}
-
-
-
-void AGothicEnemyBase::MulticastOnDeath_Implementation(AActor* Killer)
-{
-    PlayDeathCosmetics();
-    OnDeathFeedback(Killer);
-}
-
-void AGothicEnemyBase::PlayDeathCosmetics()
-{
-    if (bDeathCosmeticsPlayed)
-    {
-        return;
-    }
-    bDeathCosmeticsPlayed = true;
+    AwardSelahToNearbyEmbers();
 
     if (HealthBarWidget)
     {
         HealthBarWidget->SetVisibility(false);
     }
 
-    if (GetMesh())
+    if (GetController())
     {
-        GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-        GetMesh()->SetCollisionProfileName(FName("Ragdoll"));
-        GetMesh()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
-        GetMesh()->SetSimulatePhysics(true);
-        GetMesh()->SetCollisionResponseToChannel(ECC_Weapon, ECR_Block);
+        GetController()->StopMovement();
     }
 
-    GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    FTimerHandle CorpseTimer;
+    GetWorldTimerManager().SetTimer(
+        CorpseTimer,
+        this,
+        &AGothicEnemyBase::DestroyCorpse,
+        CorpseLifetime,
+        false);
+}
 
-    // Clients never ran Super::OnDeath_Implementation, so their movement component
-    // is still live and will fight the ragdoll. Shut it down locally on every machine.
-    if (GetCharacterMovement())
+void AGothicEnemyBase::AwardSelahToNearbyEmbers()
+{
+    if (!GetWorld())
     {
-        GetCharacterMovement()->StopMovementImmediately();
-        GetCharacterMovement()->DisableMovement();
-        GetCharacterMovement()->SetComponentTickEnabled(false);
+        UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: No world"));
+        return;
     }
 
-    // Death VFX — spawned at the enemy's center mass
-    if (DeathEffect)
+    UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Checking %.0f unit radius around %s"),
+        SelahAwardRadius, *GetName());
+
+    TArray<AActor*> NearbyActors;
+    UGameplayStatics::GetAllActorsOfClass(
+        GetWorld(),
+        AGothicPlayerCharacter::StaticClass(),
+        NearbyActors);
+
+    int32 PlayersAwarded = 0;
+
+    for (AActor* Actor : NearbyActors)
     {
-        UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-            GetWorld(),
-            DeathEffect,
-            GetActorLocation() + FVector(0.f, 0.f, 50.f),
-            GetActorRotation());
+        float Distance = FVector::Dist(GetActorLocation(), Actor->GetActorLocation());
+
+        UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Player %s is %.0f units away"),
+            *Actor->GetName(), Distance);
+
+        if (Distance > SelahAwardRadius)
+        {
+            UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Too far — no Selah"));
+            continue;
+        }
+
+        UGothicAbilitySystemComponent* PlayerASC =
+            Cast<UGothicAbilitySystemComponent>(
+                UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Actor));
+
+        if (!PlayerASC)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: No ASC on player %s"),
+                *Actor->GetName());
+            continue;
+        }
+
+        if (!SelahGainEffect)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: SelahGainEffect not assigned on %s"),
+                *GetName());
+            continue;
+        }
+
+        FGameplayEffectContextHandle Context = PlayerASC->MakeEffectContext();
+        Context.AddSourceObject(this);
+
+        FGameplayEffectSpecHandle Spec = PlayerASC->MakeOutgoingSpec(
+            SelahGainEffect, 1.f, Context);
+
+        if (Spec.IsValid())
+        {
+            Spec.Data->SetSetByCallerMagnitude(
+                FGameplayTag::RequestGameplayTag(FName("Data.Selah")),
+                SelahAwardAmount);
+
+            PlayerASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+
+            UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Awarded %.1f Selah to %s"),
+                SelahAwardAmount, *Actor->GetName());
+
+            PlayersAwarded++;
+
+            AGothicPlayerCharacter* PlayerChar = Cast<AGothicPlayerCharacter>(Actor);
+            if (PlayerChar)
+            {
+                PlayerChar->TriggerSelahMoment();
+            }
+        }
     }
+
+    UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Awarded Selah to %d players"),
+        PlayersAwarded);
 }
 
 void AGothicEnemyBase::DestroyCorpse()

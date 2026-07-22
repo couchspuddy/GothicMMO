@@ -5,6 +5,7 @@
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
+#include "GameplayEffect.h"
 
 UGothicInventoryComponent::UGothicInventoryComponent()
 {
@@ -124,6 +125,7 @@ bool UGothicInventoryComponent::EquipItem(const FGuid& InstanceID)
     FGothicItemInstance ItemCopy = *Item;
     RemoveItem(InstanceID);
     EquippedItems.Add(Slot, ItemCopy);
+    ApplyEquipmentStats(Slot, ItemCopy);
 
     RecalculateStrain();
     OnItemEquipped.Broadcast(Slot, ItemCopy);
@@ -142,6 +144,7 @@ bool UGothicInventoryComponent::UnequipSlot(EGothicEquipSlot Slot)
     }
 
     FGothicItemInstance Unequipped = EquippedItems[Slot];
+    RemoveEquipmentStats(Slot);
     EquippedItems.Remove(Slot);
 
     // Return to inventory
@@ -436,4 +439,82 @@ void UGothicInventoryComponent::DebugSpawnTestItems()
         40.f, 0, 10.f, ArmorSecondaries, 4);
 
     UE_LOG(LogTemp, Log, TEXT("DebugSpawnTestItems: Spawned 10 test items across all rarities"));
+}
+
+// =============================================================================
+// Equipment Stats — Apply/Remove GE per equipped slot
+// =============================================================================
+
+void UGothicInventoryComponent::ApplyEquipmentStats(EGothicEquipSlot Slot, const FGothicItemInstance& Item)
+{
+    if (!EquipmentStatsEffect || !Item.Definition)
+    {
+        return;
+    }
+
+    UAbilitySystemComponent* ASC =
+        UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(GetOwner());
+
+    if (!ASC)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("EquipStats: No ASC on owner"));
+        return;
+    }
+
+    FGameplayEffectContextHandle Context = ASC->MakeEffectContext();
+    Context.AddSourceObject(this);
+
+    FGameplayEffectSpecHandle Spec = ASC->MakeOutgoingSpec(
+        EquipmentStatsEffect, 1.f, Context);
+
+    if (!Spec.IsValid())
+    {
+        return;
+    }
+
+    // Map primary stat to the appropriate SetByCaller tag
+    float PrimaryValue = Item.PrimaryStatValue;
+    switch (Item.Definition->PrimaryStatType)
+    {
+        case EGothicPrimaryStat::Resolve:
+            Spec.Data->SetSetByCallerMagnitude(
+                FGameplayTag::RequestGameplayTag(FName("Data.Stat.MaxHealth")),
+                PrimaryValue);
+            break;
+        case EGothicPrimaryStat::Conviction:
+            Spec.Data->SetSetByCallerMagnitude(
+                FGameplayTag::RequestGameplayTag(FName("Data.Stat.AttackPower")),
+                PrimaryValue);
+            break;
+        case EGothicPrimaryStat::Clarity:
+            Spec.Data->SetSetByCallerMagnitude(
+                FGameplayTag::RequestGameplayTag(FName("Data.Stat.MaxEther")),
+                PrimaryValue);
+            break;
+    }
+
+    FActiveGameplayEffectHandle Handle = ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+    ActiveStatEffects.Add(Slot, Handle);
+
+    UE_LOG(LogTemp, Log, TEXT("EquipStats: Applied %s stats — %s +%.1f"),
+        *Item.Definition->ItemID.ToString(),
+        *UEnum::GetValueAsString(Item.Definition->PrimaryStatType),
+        PrimaryValue);
+}
+
+void UGothicInventoryComponent::RemoveEquipmentStats(EGothicEquipSlot Slot)
+{
+    if (FActiveGameplayEffectHandle* Handle = ActiveStatEffects.Find(Slot))
+    {
+        UAbilitySystemComponent* ASC =
+            UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(GetOwner());
+
+        if (ASC && Handle->IsValid())
+        {
+            ASC->RemoveActiveGameplayEffect(*Handle);
+            UE_LOG(LogTemp, Log, TEXT("EquipStats: Removed stats for slot %d"), (int32)Slot);
+        }
+
+        ActiveStatEffects.Remove(Slot);
+    }
 }
