@@ -8,9 +8,12 @@
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "Game/GothicPlayerState.h"
 #include "UI/GothicHUD.h"
+#include "AI/GothicSteadfastComponent.h"
 #include "UI/GothicHUDWidget.h"
+#include "UI/GothicInventoryWidget.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/LocalPlayer.h"
@@ -115,6 +118,10 @@ void AGothicPlayerCharacter::BeginPlay()
             GothicHUD && GothicHUD->GetHUDWidget() ? TEXT("Valid") : TEXT("NULL"));
 
         bHUDReady = true;
+
+        // First ammo readout — nothing has fired or reloaded yet, so without this
+        // the magazine display stays blank until the player's first shot.
+        PushAmmoToHUD();
     }, 0.1f, false);
 }
 
@@ -223,27 +230,36 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     }
 
     // Bind to inventory equipment changes so weapon slots update when gear is equipped
-    if (UGothicInventoryComponent* Inventory = PS->GetInventory())
+    // Guarded: PossessedBy + OnRep_PlayerState both call InitGASFromPlayerState
+    if (!bInventoryBound)
     {
-        Inventory->OnItemEquipped.AddDynamic(this, &AGothicPlayerCharacter::OnEquipmentChanged);
-        UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Inventory equipment delegate bound"));
-
-        // Sync weapon slots with anything already equipped (e.g. after respawn)
-        for (int32 i = 0; i < WeaponSlots.Num(); ++i)
+        if (UGothicInventoryComponent* Inventory = PS->GetInventory())
         {
-            EGothicEquipSlot EquipSlot = static_cast<EGothicEquipSlot>(i);
-            if (const FGothicItemInstance* Equipped = Inventory->GetEquippedItem(EquipSlot))
+            Inventory->OnItemEquipped.AddDynamic(this, &AGothicPlayerCharacter::OnEquipmentChanged);
+            bInventoryBound = true;
+            UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Inventory equipment delegate bound"));
+
+            // Sync weapon slots with anything already equipped (e.g. after respawn)
+            static const EGothicEquipSlot WeaponEquipSlots[] = {
+                EGothicEquipSlot::Sidearm,
+                EGothicEquipSlot::Piece,
+                EGothicEquipSlot::Rig
+            };
+            for (int32 i = 0; i < WeaponSlots.Num() && i < 3; ++i)
             {
-                if (Equipped->Definition && Equipped->Definition->IsWeapon())
+                if (const FGothicItemInstance* Equipped = Inventory->GetEquippedItem(WeaponEquipSlots[i]))
                 {
-                    WeaponSlots[i].WeaponData = Equipped->Definition->WeaponData;
-                    WeaponSlots[i].InitFromData();
-                    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Synced weapon slot %d — %s"),
-                        i, *Equipped->Definition->WeaponData->WeaponName.ToString());
+                    if (Equipped->Definition && Equipped->Definition->IsWeapon())
+                    {
+                        WeaponSlots[i].WeaponData = Equipped->Definition->WeaponData;
+                        WeaponSlots[i].InitFromData();
+                        UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Synced weapon slot %d — %s"),
+                            i, *Equipped->Definition->WeaponData->WeaponName.ToString());
+                    }
                 }
             }
+            RefreshWeaponVisuals(ActiveWeaponIndex);
         }
-        RefreshWeaponVisuals(ActiveWeaponIndex);
     }
 }
 
@@ -290,6 +306,27 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
         EIC->BindAction(WeaponSlot2Action, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnWeaponSlot2);
     if (WeaponSlot3Action)
         EIC->BindAction(WeaponSlot3Action, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnWeaponSlot3);
+
+    // Reload — press starts the hold, release decides tap vs. already-converted
+    if (ReloadAction)
+    {
+        EIC->BindAction(ReloadAction, ETriggerEvent::Started,   this, &AGothicPlayerCharacter::OnReloadPressed);
+        EIC->BindAction(ReloadAction, ETriggerEvent::Completed, this, &AGothicPlayerCharacter::OnReloadReleased);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: ReloadAction not assigned — reload and Steadfast conversion cannot fire. Assign IA_Reload in BP_GothicPlayerCharacter."));
+    }
+
+    // Inventory screen toggle
+    if (InventoryToggleAction)
+    {
+        EIC->BindAction(InventoryToggleAction, ETriggerEvent::Started, this, &AGothicPlayerCharacter::ToggleInventory);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: InventoryToggleAction not assigned — inventory cannot be opened. Assign IA_InventoryToggle in BP_GothicPlayerCharacter."));
+    }
 
     // Ability inputs go through InputHandler → ASC tag pipeline
     // ASC may not be ready here — bindings are set up again in InitGASFromPlayerState
@@ -486,18 +523,235 @@ bool AGothicPlayerCharacter::HasRoundChambered() const
     {
         return false;
     }
-    return WeaponSlots[ActiveWeaponIndex].CurrentMagazine > 0;
+    // HasAmmo covers the ammo-less case — a Heavy Melee Rig is always ready
+    return WeaponSlots[ActiveWeaponIndex].HasAmmo();
 }
 
 void AGothicPlayerCharacter::ConsumeRound()
 {
-    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex)
-        && WeaponSlots[ActiveWeaponIndex].CurrentMagazine > 0)
+    if (!WeaponSlots.IsValidIndex(ActiveWeaponIndex))
     {
-        WeaponSlots[ActiveWeaponIndex].CurrentMagazine--;
+        return;
+    }
+
+    FGothicWeaponSlot& Slot = WeaponSlots[ActiveWeaponIndex];
+
+    // Ammo-less weapons have nothing to spend
+    if (Slot.WeaponData && !Slot.WeaponData->bUsesAmmo)
+    {
+        return;
+    }
+
+    if (Slot.CurrentMagazine > 0)
+    {
+        Slot.CurrentMagazine--;
 
         UE_LOG(LogTemp, Log, TEXT("ConsumeRound: %d remaining in magazine"),
-            WeaponSlots[ActiveWeaponIndex].CurrentMagazine);
+            Slot.CurrentMagazine);
+
+        PushAmmoToHUD();
+    }
+}
+
+int32 AGothicPlayerCharacter::GetActiveSteadfastRefillCost() const
+{
+    const UGothicWeaponData* WeaponData = GetActiveWeaponData();
+    return WeaponData ? WeaponData->GetSteadfastRefillCost() : 0;
+}
+
+void AGothicPlayerCharacter::PushAmmoToHUD() const
+{
+    if (!IsLocallyControlled())
+    {
+        return;
+    }
+
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    AGothicHUD* GothicHUD = PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
+    if (!GothicHUD || !WeaponSlots.IsValidIndex(ActiveWeaponIndex))
+    {
+        return;
+    }
+
+    const FGothicWeaponSlot& Slot = WeaponSlots[ActiveWeaponIndex];
+    if (!Slot.WeaponData)
+    {
+        GothicHUD->UpdateAmmo(0, 0, 0, 0);
+        return;
+    }
+
+    GothicHUD->UpdateAmmo(
+        Slot.CurrentMagazine,
+        Slot.WeaponData->MagazineCapacity,
+        Slot.CurrentReserve,
+        Slot.WeaponData->MaxReserveAmmo);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Reload — tap to load from reserve, hold to convert Steadfast into reserve
+// ═══════════════════════════════════════════════════════════════════════════
+
+bool AGothicPlayerCharacter::ReloadActiveWeapon()
+{
+    if (!WeaponSlots.IsValidIndex(ActiveWeaponIndex))
+    {
+        return false;
+    }
+
+    FGothicWeaponSlot& Slot = WeaponSlots[ActiveWeaponIndex];
+    if (!Slot.WeaponData || !Slot.WeaponData->bUsesAmmo)
+    {
+        return false;
+    }
+
+    const int32 Space = Slot.WeaponData->MagazineCapacity - Slot.CurrentMagazine;
+    if (Space <= 0 || Slot.CurrentReserve <= 0)
+    {
+        return false;
+    }
+
+    const int32 Loaded = FMath::Min(Space, Slot.CurrentReserve);
+    Slot.CurrentMagazine += Loaded;
+    Slot.CurrentReserve  -= Loaded;
+
+    UE_LOG(LogTemp, Log, TEXT("Reload: loaded %d — Mag %d/%d | Reserve %d"),
+        Loaded, Slot.CurrentMagazine, Slot.WeaponData->MagazineCapacity, Slot.CurrentReserve);
+
+    PushAmmoToHUD();
+    OnReloadPerformed();
+    return true;
+}
+
+bool AGothicPlayerCharacter::ConvertSteadfastToReserve()
+{
+    if (!WeaponSlots.IsValidIndex(ActiveWeaponIndex))
+    {
+        return false;
+    }
+
+    FGothicWeaponSlot& Slot = WeaponSlots[ActiveWeaponIndex];
+    if (!Slot.WeaponData || !Slot.WeaponData->bUsesAmmo)
+    {
+        return false;
+    }
+
+    const int32 ReserveSpace = Slot.WeaponData->MaxReserveAmmo - Slot.CurrentReserve;
+    if (ReserveSpace <= 0)
+    {
+        return false;
+    }
+
+    UGothicSteadfastComponent* Steadfast = FindComponentByClass<UGothicSteadfastComponent>();
+    if (!Steadfast)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("ConvertSteadfastToReserve: no UGothicSteadfastComponent on %s"), *GetName());
+        return false;
+    }
+
+    // Charges are a design-side unit; Steadfast itself is a float attribute.
+    // Convert through the bar so the cost stays correct if MaxSteadfast is retuned.
+    const int32 ChargeCost = Slot.WeaponData->GetSteadfastRefillCost();
+    if (ChargeCost <= 0)
+    {
+        return false;
+    }
+
+    // A zero ceiling means the ASC isn't initialized yet. Without this guard the
+    // per-charge cost computes to zero and every conversion is free.
+    const float MaxSteadfast = Steadfast->GetMaxSteadfast();
+    if (MaxSteadfast <= 0.f)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("ConvertSteadfastToReserve: MaxSteadfast is 0 — ASC not ready, refusing a free conversion"));
+        return false;
+    }
+
+    const float PerCharge = MaxSteadfast / FMath::Max(1, SteadfastChargesPerFullBar);
+    const float Cost = ChargeCost * PerCharge;
+
+    const int32 Requested = FMath::Min(Slot.WeaponData->SteadfastRefillAmount, ReserveSpace);
+    const float Granted = Steadfast->TryConvertSteadfast(Cost, static_cast<float>(Requested));
+    if (Granted <= 0.f)
+    {
+        return false;
+    }
+
+    const int32 Rounds = FMath::Min(FMath::FloorToInt(Granted), ReserveSpace);
+    Slot.CurrentReserve += Rounds;
+
+    UE_LOG(LogTemp, Log, TEXT("Steadfast conversion: %d charges (%.1f) → %d rounds | Reserve %d/%d"),
+        ChargeCost, Cost, Rounds, Slot.CurrentReserve, Slot.WeaponData->MaxReserveAmmo);
+
+    PushAmmoToHUD();
+    OnSteadfastConverted(Rounds);
+    return true;
+}
+
+void AGothicPlayerCharacter::OnReloadPressed()
+{
+    // Inventory open — the key belongs to the UI
+    if (ActiveInventoryWidget)
+    {
+        return;
+    }
+
+    bSteadfastConversionFired = false;
+
+    GetWorldTimerManager().SetTimer(
+        SteadfastHoldTimerHandle,
+        this,
+        &AGothicPlayerCharacter::HandleSteadfastHoldTick,
+        SteadfastHoldThreshold,
+        false);
+}
+
+void AGothicPlayerCharacter::OnReloadReleased()
+{
+    const bool bWasConverting = bSteadfastConversionFired;
+
+    EndSteadfastHold();
+
+    // Released before the threshold — this was a tap, so do a normal reload.
+    // Past the threshold the payoff was already given mid-hold; releasing adds nothing.
+    if (!bWasConverting)
+    {
+        ReloadActiveWeapon();
+    }
+}
+
+void AGothicPlayerCharacter::HandleSteadfastHoldTick()
+{
+    const bool bFirst = !bSteadfastConversionFired;
+    bSteadfastConversionFired = true;
+
+    // Conversion is granted here, mid-hold — never deferred to release.
+    if (!ConvertSteadfastToReserve())
+    {
+        // Nothing left to convert, or nowhere to put it. Stop rather than spin.
+        if (bFirst)
+        {
+            UE_LOG(LogTemp, Log, TEXT("Steadfast conversion: nothing to convert"));
+        }
+        EndSteadfastHold();
+        return;
+    }
+
+    // Still held — queue the next conversion.
+    GetWorldTimerManager().SetTimer(
+        SteadfastHoldTimerHandle,
+        this,
+        &AGothicPlayerCharacter::HandleSteadfastHoldTick,
+        SteadfastHoldRepeatInterval,
+        false);
+}
+
+void AGothicPlayerCharacter::EndSteadfastHold()
+{
+    GetWorldTimerManager().ClearTimer(SteadfastHoldTimerHandle);
+
+    if (bSteadfastConversionFired)
+    {
+        bSteadfastConversionFired = false;
+        OnSteadfastConversionEnded();
     }
 }
 
@@ -512,12 +766,21 @@ const UGothicWeaponData* AGothicPlayerCharacter::GetActiveWeaponData() const
 
 void AGothicPlayerCharacter::ApplyRecoilKick()
 {
-    // Stub — add camera punch here once feel tuning starts.
-    // Typical pattern: additive pitch/yaw via AddControllerPitchInput
-    // with a short interp-back timer.
-    if (APlayerController* PC = Cast<APlayerController>(GetController()))
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    if (!PC)
     {
-        PC->AddPitchInput(-0.5f);  // slight upward kick
+        return;
+    }
+
+    const UGothicWeaponData* WeaponData = GetActiveWeaponData();
+    const float Pitch = WeaponData ? WeaponData->RecoilPitch : -0.5f;
+    const float YawSpread = WeaponData ? WeaponData->RecoilYawSpread : 0.f;
+
+    PC->AddPitchInput(Pitch);
+
+    if (YawSpread > 0.f)
+    {
+        PC->AddYawInput(FMath::FRandRange(-YawSpread, YawSpread));
     }
 }
 
@@ -545,8 +808,12 @@ void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
         return;
     }
 
+    // A swap abandons any in-progress conversion — the cost was tied to the old weapon's tier
+    EndSteadfastHold();
+
     // Update mesh and crosshair
     RefreshWeaponVisuals(NewIndex);
+    PushAmmoToHUD();
 
     UE_LOG(LogTemp, Log, TEXT("SwapWeapon: Switched to slot %d — %s | Mag: %d/%d | Reserve: %d"),
         NewIndex,
@@ -562,6 +829,87 @@ void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
 void AGothicPlayerCharacter::OnWeaponSlot1() { SwapWeapon(0); }
 void AGothicPlayerCharacter::OnWeaponSlot2() { SwapWeapon(1); }
 void AGothicPlayerCharacter::OnWeaponSlot3() { SwapWeapon(2); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Inventory UI
+// ═══════════════════════════════════════════════════════════════════════════
+
+void AGothicPlayerCharacter::ToggleInventory()
+{
+    if (!IsLocallyControlled())
+    {
+        return;
+    }
+
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    if (!PC)
+    {
+        return;
+    }
+
+    AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
+
+    // Already open — tear it down. NativeDestruct unbinds the inventory delegates.
+    if (ActiveInventoryWidget)
+    {
+        ActiveInventoryWidget->RemoveFromParent();
+        ActiveInventoryWidget = nullptr;
+
+        PC->SetInputMode(FInputModeGameOnly());
+        PC->SetShowMouseCursor(false);
+
+        if (GothicHUD)
+        {
+            GothicHUD->SetCrosshairVisible(true);
+        }
+
+        UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Inventory closed"));
+        return;
+    }
+
+    if (!InventoryWidgetClass)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: InventoryWidgetClass not assigned — set it to WBP_Inventory in BP_GothicPlayerCharacter."));
+        return;
+    }
+
+    // Inventory lives on the PlayerState alongside the ASC so it survives respawns
+    AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
+    UGothicInventoryComponent* Inventory = PS ? PS->GetInventory() : nullptr;
+    if (!Inventory)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: No inventory component on PlayerState — cannot open inventory."));
+        return;
+    }
+
+    ActiveInventoryWidget = CreateWidget<UGothicInventoryWidget>(PC, InventoryWidgetClass);
+    if (!ActiveInventoryWidget)
+    {
+        UE_LOG(LogTemp, Error, TEXT("GothicPlayerCharacter: CreateWidget failed for %s"), *InventoryWidgetClass->GetName());
+        return;
+    }
+
+    // Z-order 10 — above the HUD layout (0) and crosshair (1)
+    ActiveInventoryWidget->AddToViewport(10);
+
+    // After AddToViewport so the Blueprint's Construct has run before the
+    // OnInventoryRefreshed / OnEquipmentRefreshed events fire and populate the grid.
+    ActiveInventoryWidget->InitializeFromInventory(Inventory);
+
+    FInputModeGameAndUI InputMode;
+    InputMode.SetWidgetToFocus(ActiveInventoryWidget->TakeWidget());
+    InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+    InputMode.SetHideCursorDuringCapture(false);
+    PC->SetInputMode(InputMode);
+    PC->SetShowMouseCursor(true);
+
+    if (GothicHUD)
+    {
+        GothicHUD->SetCrosshairVisible(false);
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Inventory opened"));
+}
 
 int32 AGothicPlayerCharacter::EquipSlotToWeaponIndex(EGothicEquipSlot Slot)
 {
@@ -610,10 +958,13 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
         UE_LOG(LogTemp, Log, TEXT("OnEquipmentChanged: Slot %d cleared"), WeaponIndex);
     }
 
-    // If this is the active slot, update visuals immediately
+    // Equipping into the active slot swaps the weapon out from under any in-progress
+    // hold, so abandon it — the conversion cost was tied to the old weapon's tier.
     if (WeaponIndex == ActiveWeaponIndex)
     {
+        EndSteadfastHold();
         RefreshWeaponVisuals(WeaponIndex);
+        PushAmmoToHUD();
     }
 }
 

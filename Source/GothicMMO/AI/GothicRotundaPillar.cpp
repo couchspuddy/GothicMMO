@@ -30,6 +30,14 @@ void AGothicRotundaPillar::BeginPlay()
     Super::BeginPlay();
     CurrentHealth = MaxHealth;
     CurrentState = EPillarState::Healthy;
+
+    // Force blocking volume to start hidden and disabled
+    // regardless of how it was placed in the editor
+    if (BlockingVolumeActor)
+    {
+        BlockingVolumeActor->SetActorHiddenInGame(true);
+        BlockingVolumeActor->SetActorEnableCollision(false);
+    }
 }
 
 bool AGothicRotundaPillar::ApplyPillarDamage(float DamageAmount)

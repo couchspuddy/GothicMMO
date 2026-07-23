@@ -4,6 +4,7 @@
 
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "UI/GothicHUDWidget.h"
 #include "UI/GothicCrosshairWidget.h"
 #include "AI/GothicEnemyBase.h"
@@ -31,6 +32,13 @@ void AGothicHUD::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
 
+    // Nothing to drive while a menu owns the cursor — the crosshair is hidden and
+    // a center-screen trace would be meaningless anyway.
+    if (!bCrosshairVisible)
+    {
+        return;
+    }
+
     // Dynamic crosshair spread based on player movement speed.
     if (ACharacter* OwnerChar = Cast<ACharacter>(GetOwningPawn()))
     {
@@ -51,11 +59,21 @@ void AGothicHUD::Tick(float DeltaTime)
         ActiveCrosshairWidget->OnSpreadUpdated(CurrentSpread);
     }
 
-    // Crosshair enemy detection — line trace from center screen
+    // Crosshair enemy detection — line trace from center screen.
+    // Deprojects the viewport center rather than the mouse: the crosshair is pinned
+    // to center, and the cursor is free-floating whenever a menu is open.
     if (ActiveCrosshairWidget && GetOwningPlayerController())
     {
+        FVector2D ViewportSize;
+        if (GEngine && GEngine->GameViewport)
+        {
+            GEngine->GameViewport->GetViewportSize(ViewportSize);
+        }
+
         FVector WorldLocation, WorldDirection;
-        if (GetOwningPlayerController()->DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
+        if (ViewportSize.X > 0.f &&
+            GetOwningPlayerController()->DeprojectScreenPositionToWorld(
+                ViewportSize.X * 0.5f, ViewportSize.Y * 0.5f, WorldLocation, WorldDirection))
         {
             // Short trace to detect enemies in crosshair
             FHitResult Hit;
@@ -113,6 +131,24 @@ void AGothicHUD::SetCrosshairType(EGothicCrosshairType NewType)
         case EGothicCrosshairType::Throwable:
             CreateAndShowCrosshair(Crosshair_Throwable_Class);
             break;
+    }
+}
+
+void AGothicHUD::SetCrosshairVisible(bool bVisible)
+{
+    bCrosshairVisible = bVisible;
+
+    if (ActiveCrosshairWidget)
+    {
+        ActiveCrosshairWidget->SetVisibility(
+            bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+    }
+
+    // Reset spread so reopening doesn't snap from a stale value
+    if (!bVisible)
+    {
+        CurrentSpread = 0.f;
+        TargetSpread  = 0.f;
     }
 }
 
@@ -227,6 +263,12 @@ void AGothicHUD::CreateAndShowCrosshair(TSubclassOf<UGothicCrosshairWidget> Cros
     if (ActiveCrosshairWidget)
     {
         ActiveCrosshairWidget->AddToViewport(1);
+
+        // A weapon swap can happen while a menu is open — don't resurrect a hidden crosshair
+        if (!bCrosshairVisible)
+        {
+            ActiveCrosshairWidget->SetVisibility(ESlateVisibility::Collapsed);
+        }
     }
 }
 

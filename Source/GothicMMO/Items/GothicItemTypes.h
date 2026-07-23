@@ -24,26 +24,26 @@ enum class EGothicItemRarity : uint8
     Pure         UMETA(DisplayName = "Pure"),            // Pilgrimage only
 };
 
-/** Equipment slot types. */
+/** Equipment slot types. Explicit values prevent Blueprint data corruption when entries are added/reordered. */
 UENUM(BlueprintType)
 enum class EGothicEquipSlot : uint8
 {
-    // Weapon slots (indices 0-2 map to WeaponSlots array)
-    Sidearm         UMETA(DisplayName = "Sidearm"),
-    Piece           UMETA(DisplayName = "Piece"),
-    Rig             UMETA(DisplayName = "Rig"),
+    // Weapon slots (indices 0-2 map to WeaponSlots array on the player character)
+    Sidearm         = 0   UMETA(DisplayName = "Sidearm"),
+    Piece           = 1   UMETA(DisplayName = "Piece"),
+    Rig             = 2   UMETA(DisplayName = "Rig"),
 
     // Armor slots (ten, locked per design doc)
-    Head            UMETA(DisplayName = "Head"),
-    Neck            UMETA(DisplayName = "Neck"),
-    Chest           UMETA(DisplayName = "Chest"),
-    Back            UMETA(DisplayName = "Back"),
-    LeftArm         UMETA(DisplayName = "Left Arm"),
-    RightArm        UMETA(DisplayName = "Right Arm"),
-    Wrist           UMETA(DisplayName = "Wrist"),
-    LeftLeg         UMETA(DisplayName = "Left Leg"),
-    RightLeg        UMETA(DisplayName = "Right Leg"),
-    Feet            UMETA(DisplayName = "Feet"),
+    Head            = 10  UMETA(DisplayName = "Head"),
+    Neck            = 11  UMETA(DisplayName = "Neck"),
+    Chest           = 12  UMETA(DisplayName = "Chest"),
+    Back            = 13  UMETA(DisplayName = "Back"),
+    LeftArm         = 14  UMETA(DisplayName = "Left Arm"),
+    RightArm        = 15  UMETA(DisplayName = "Right Arm"),
+    Wrist           = 16  UMETA(DisplayName = "Wrist"),
+    LeftLeg         = 17  UMETA(DisplayName = "Left Leg"),
+    RightLeg        = 18  UMETA(DisplayName = "Right Leg"),
+    Feet            = 19  UMETA(DisplayName = "Feet"),
 };
 
 /** Primary stats — creed-mapped, from PROGRESSION_STATS_AND_BALANCE.md. */

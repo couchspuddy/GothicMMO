@@ -60,6 +60,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
     void SetCrosshairType(EGothicCrosshairType NewType);
 
+    /**
+     * Show or hide the crosshair. Hidden while a full-screen menu owns the cursor
+     * (inventory, pause) — spread and enemy detection stop updating while hidden.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
+    void SetCrosshairVisible(bool bVisible);
+
     // -------------------------------------------------------------------------
     // Called every frame to update dynamic crosshair spread
     // based on player movement speed
@@ -145,6 +152,9 @@ protected:
     // Dynamic crosshair spread
     float CurrentSpread = 0.f;
     float TargetSpread  = 0.f;
+
+    /** False while a menu owns the cursor. Survives crosshair swaps. */
+    bool bCrosshairVisible = true;
 
 private:
     void CreateAndShowLayout(TSubclassOf<UGothicHUDWidget> WidgetClass);

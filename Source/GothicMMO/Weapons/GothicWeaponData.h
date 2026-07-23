@@ -8,6 +8,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
+#include "Items/GothicItemTypes.h"
 #include "UI/GothicHUDTypes.h"
 #include "GothicWeaponData.generated.h"
 
@@ -24,6 +25,14 @@ public:
     /** Display name shown in HUD/UI. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon")
     FText WeaponName;
+
+    /**
+     * Which weapon slot this archetype belongs in — Sidearm, Piece, or Rig.
+     * The item definition carries its own EquipSlot; the inventory refuses the
+     * equip when the two disagree, so a Rig cannot be authored into a Sidearm slot.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon")
+    EGothicEquipSlot IntendedSlot = EGothicEquipSlot::Sidearm;
 
     // ── Visual ──────────────────────────────────────────────────────────
 
@@ -69,23 +78,63 @@ public:
 
     // ── Ammo ─────────────────────────────────────────────────────────────
 
-    /** Rounds per magazine. */
+    /**
+     * False for weapons that never consume ammo — the Heavy Melee Rig.
+     * When false the magazine and reserve fields are ignored entirely: the weapon
+     * always has a round chambered, firing consumes nothing, and it never reloads.
+     */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
+    bool bUsesAmmo = true;
+
+    /** Rounds per magazine. Ignored when bUsesAmmo is false. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo", meta = (EditCondition = "bUsesAmmo"))
     int32 MagazineCapacity = 6;
 
-    /** Maximum reserve ammo. */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
+    /** Maximum reserve ammo. Ignored when bUsesAmmo is false. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo", meta = (EditCondition = "bUsesAmmo"))
     int32 MaxReserveAmmo = 18;
 
-    /** Reserve ammo the weapon starts with. */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo")
+    /** Reserve ammo the weapon starts with. Ignored when bUsesAmmo is false. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo", meta = (EditCondition = "bUsesAmmo"))
     int32 StartingReserveAmmo = 18;
+
+    /**
+     * Steadfast charges spent converting a charge into reserve ammo.
+     * Tiered by slot per design: Sidearm = 1, Piece = 2, Rig = 3 — a Rig refill
+     * leaves zero defensive charges, which is the tension the tiering exists for.
+     * Read GetSteadfastRefillCost() rather than this field; it returns 0 for
+     * weapons that carry no ammo.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo", meta = (EditCondition = "bUsesAmmo", ClampMin = 0))
+    int32 SteadfastRefillCost = 1;
+
+    /** Reserve rounds granted per Steadfast refill. Ignored when bUsesAmmo is false. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo", meta = (EditCondition = "bUsesAmmo", ClampMin = 0))
+    int32 SteadfastRefillAmount = 12;
+
+    /** Steadfast cost to refill this weapon. Zero for weapons that carry no ammo. */
+    UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+    int32 GetSteadfastRefillCost() const { return bUsesAmmo ? SteadfastRefillCost : 0; }
 
     // ── Feedback ─────────────────────────────────────────────────────────
 
     /** Crosshair type shown when this weapon is active. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback")
     EGothicCrosshairType CrosshairType = EGothicCrosshairType::Pistol;
+
+    /**
+     * Camera pitch kick on fire (degrees, negative = upward).
+     * Revolver: -0.8, Repeating Pistol: -0.3, Bolt-Action: -1.5, etc.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback")
+    float RecoilPitch = -0.5f;
+
+    /**
+     * Random horizontal spread added to recoil (degrees).
+     * 0 = perfectly vertical kick. Higher = more unpredictable.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback")
+    float RecoilYawSpread = 0.f;
 
     /** Super meter gained per hit with this weapon. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback")
@@ -113,13 +162,28 @@ struct FGothicWeaponSlot
     UPROPERTY(BlueprintReadOnly, Category = "Weapon")
     int32 CurrentReserve = 0;
 
-    /** Initialize ammo from the weapon data's defaults. */
+    /** Initialize ammo from the weapon data's defaults. Ammo-less weapons stay at zero. */
     void InitFromData()
     {
-        if (WeaponData)
+        if (WeaponData && WeaponData->bUsesAmmo)
         {
             CurrentMagazine = WeaponData->MagazineCapacity;
             CurrentReserve = WeaponData->StartingReserveAmmo;
         }
+        else
+        {
+            CurrentMagazine = 0;
+            CurrentReserve = 0;
+        }
+    }
+
+    /** True if this slot can fire — ammo-less weapons are always ready. */
+    bool HasAmmo() const
+    {
+        if (!WeaponData)
+        {
+            return false;
+        }
+        return !WeaponData->bUsesAmmo || CurrentMagazine > 0;
     }
 };

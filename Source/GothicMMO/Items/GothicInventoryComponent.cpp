@@ -2,6 +2,7 @@
 
 #include "Items/GothicInventoryComponent.h"
 #include "Items/GothicItemDefinition.h"
+#include "Weapons/GothicWeaponData.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
@@ -105,6 +106,21 @@ bool UGothicInventoryComponent::EquipItem(const FGuid& InstanceID)
     }
 
     const EGothicEquipSlot Slot = Item->Definition->EquipSlot;
+
+    // A weapon's archetype declares the slot it belongs in. If the item definition
+    // disagrees, the asset is misauthored — refuse rather than silently loading a
+    // Rig into the Sidearm slot, where it would inherit the wrong Steadfast tier.
+    if (Item->Definition->IsWeapon()
+        && Item->Definition->WeaponData->IntendedSlot != Slot)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("Inventory: Cannot equip %s — weapon '%s' declares slot %d but the item definition says slot %d. Fix IntendedSlot on the weapon data or EquipSlot on the item definition."),
+            *Item->Definition->ItemID.ToString(),
+            *Item->Definition->WeaponData->WeaponName.ToString(),
+            (int32)Item->Definition->WeaponData->IntendedSlot,
+            (int32)Slot);
+        return false;
+    }
 
     // Check Resonance Strain budget for Resonant/Pure items
     if (Item->Definition->HasStrain() && WouldExceedStrain(*Item))

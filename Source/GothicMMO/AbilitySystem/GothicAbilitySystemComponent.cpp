@@ -2,6 +2,7 @@
 
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
+#include "GameplayEffect.h"
 
 UGothicAbilitySystemComponent::UGothicAbilitySystemComponent()
 {
@@ -96,6 +97,16 @@ float UGothicAbilitySystemComponent::GetCooldownRemainingForSlot(EGothicAbilityS
 
 float UGothicAbilitySystemComponent::GetCooldownTotalForSlot(EGothicAbilitySlot Slot) const
 {
+    // Read the designed duration from the cooldown GE's CDO — not from the
+    // active effect instance. The old implementation queried
+    // GetActiveEffectsDuration, which only returns a value while the cooldown
+    // is running. Every frame the ability is off cooldown, Total arrived as
+    // 0.f, producing a divide-by-zero in the HUD's Remaining/Total math.
+    //
+    // The total duration is a property of the design, not the runtime state.
+    // GetCooldownGameplayEffect() returns the CDO of whatever GE class is set
+    // in the Blueprint's CooldownGameplayEffectClass field.
+
     if (const FGameplayAbilitySpecHandle* Handle = SlotToAbilityMap.Find(Slot))
     {
         if (const FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(*Handle))
@@ -103,22 +114,35 @@ float UGothicAbilitySystemComponent::GetCooldownTotalForSlot(EGothicAbilitySlot 
             const UGothicGameplayAbility* AbilityCDO = Cast<UGothicGameplayAbility>(Spec->Ability);
             if (AbilityCDO)
             {
-                const FGameplayTagContainer* CooldownTags = AbilityCDO->GetCooldownTags();
-                if (CooldownTags && CooldownTags->Num() > 0)
+                const UGameplayEffect* CooldownGE = AbilityCDO->GetCooldownGameplayEffect();
+                if (CooldownGE)
                 {
-                    FGameplayEffectQuery Query =
-                        FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(*CooldownTags);
-
-                    TArray<float> Durations = GetActiveEffectsDuration(Query);
-
-                    if (Durations.Num() > 0)
+                    float DesignedDuration = 0.f;
+                    if (CooldownGE->DurationMagnitude.GetStaticMagnitudeIfPossible(
+                            1.f, DesignedDuration))
                     {
-                        float MaxDuration = 0.f;
-                        for (float D : Durations)
+                        return DesignedDuration;
+                    }
+
+                    // If the magnitude isn't a static float (SetByCaller, curve,
+                    // custom calc), fall back to querying the active instance —
+                    // better than zero, and only abilities with non-static
+                    // cooldowns would reach this path.
+                    const FGameplayTagContainer* CooldownTags = AbilityCDO->GetCooldownTags();
+                    if (CooldownTags && CooldownTags->Num() > 0)
+                    {
+                        FGameplayEffectQuery Query =
+                            FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(*CooldownTags);
+                        TArray<float> Durations = GetActiveEffectsDuration(Query);
+                        if (Durations.Num() > 0)
                         {
-                            MaxDuration = FMath::Max(MaxDuration, D);
+                            float MaxDuration = 0.f;
+                            for (float D : Durations)
+                            {
+                                MaxDuration = FMath::Max(MaxDuration, D);
+                            }
+                            return MaxDuration;
                         }
-                        return MaxDuration;
                     }
                 }
             }

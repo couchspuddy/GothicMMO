@@ -27,6 +27,7 @@ class UInputMappingContext;
 class UInputAction;
 class UGothicInputHandlerComponent;
 class UGothicAbilitySet;
+class UGothicInventoryWidget;
 struct FInputActionValue;
 
 UCLASS()
@@ -68,6 +69,86 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
     const UGothicWeaponData* GetActiveWeaponData() const;
 
+    /**
+     * Steadfast charges the active weapon costs to refill — 1/2/3 by slot tier.
+     * Zero when the weapon carries no ammo. Read rather than hardcoded, so
+     * retuning an archetype is a data-asset edit.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    int32 GetActiveSteadfastRefillCost() const;
+
+    // -------------------------------------------------------------------------
+    // Reload
+    //
+    // Tap  — pull rounds from reserve into the magazine.
+    // Hold — convert Steadfast into reserve ammo. The conversion fires the moment
+    //        the hold threshold is reached and repeats on an interval while held.
+    //        It is deliberately NOT granted on release: the player must see the
+    //        ammo arrive while still holding, or the hold has no readable payoff.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Tap reload — refills the active weapon's magazine from its reserve.
+     * Returns false if there is no reserve, the magazine is already full, or the
+     * weapon carries no ammo.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
+    bool ReloadActiveWeapon();
+
+    /**
+     * Hold reload — spends Steadfast to add reserve ammo for the active weapon.
+     * Cost scales with the weapon's slot tier (Sidearm 1 / Piece 2 / Rig 3
+     * charges). Returns false when Steadfast is short, the reserve is already
+     * full, or the weapon carries no ammo.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
+    bool ConvertSteadfastToReserve();
+
+    /** True while the reload key is held past the conversion threshold. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    bool IsConvertingSteadfast() const { return bSteadfastConversionFired; }
+
+    /** Seconds the reload key must be held before Steadfast conversion begins. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons")
+    float SteadfastHoldThreshold = 0.5f;
+
+    /** Seconds between repeat conversions while the key stays held. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons")
+    float SteadfastHoldRepeatInterval = 0.6f;
+
+    /**
+     * How many refill "charges" a full Steadfast bar represents.
+     * Cost per conversion is RefillCost * (MaxSteadfast / this). At the default of
+     * 3, a Rig refill (3 charges) empties the bar exactly — which is the design's
+     * stated tension, and keeps the cost correct if MaxSteadfast is ever retuned.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons", meta = (ClampMin = 1))
+    int32 SteadfastChargesPerFullBar = 3;
+
+    /** Fired after a successful tap reload — play the reload montage and audio here. */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Weapons")
+    void OnReloadPerformed();
+
+    /**
+     * Fired on each Steadfast conversion while the key is held, including the
+     * first one at the threshold. RoundsGranted is what actually landed in the
+     * reserve after clamping.
+     */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Weapons")
+    void OnSteadfastConverted(int32 RoundsGranted);
+
+    /**
+     * Fired when the hold ends — on release, or when conversion stops because
+     * Steadfast ran out or the reserve filled. Use it to stop any looping
+     * conversion VFX or audio started by OnSteadfastConverted.
+     */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Weapons")
+    void OnSteadfastConversionEnded();
+
+    /** Pushes the active weapon's ammo state to the HUD. Safe to call at any time. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
+    void PushAmmoToHUD() const;
+
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons")
     TArray<FGothicWeaponSlot> WeaponSlots;
 
@@ -84,6 +165,17 @@ public:
     /** Called after SwapWeapon completes — Blueprint can play swap animations, sounds. */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Weapons")
     void OnWeaponSwapped(int32 NewIndex, const UGothicWeaponData* NewWeaponData);
+
+    /**
+     * Opens the inventory screen, or closes it if already open.
+     * Bound to InventoryToggleAction; also callable from Blueprint (e.g. a UI close button).
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
+    void ToggleInventory();
+
+    /** True while the inventory screen is on the viewport. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
+    bool IsInventoryOpen() const { return ActiveInventoryWidget != nullptr; }
 
 protected:
     virtual void BeginPlay() override;
@@ -133,6 +225,26 @@ protected:
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
     TObjectPtr<UInputAction> WeaponSlot3Action;
+
+    /** Assign IA_InventoryToggle in BP_GothicPlayerCharacter. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+    TObjectPtr<UInputAction> InventoryToggleAction;
+
+    /**
+     * Assign IA_Reload in BP_GothicPlayerCharacter.
+     * Bound directly rather than through the ability tag pipeline — reload has no
+     * cost, cooldown, or tags, and the hold needs both press and release on the
+     * pawn. Sprint is bound the same way for the same reason.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+    TObjectPtr<UInputAction> ReloadAction;
+
+    // -------------------------------------------------------------------------
+    // Inventory UI
+    // -------------------------------------------------------------------------
+    /** Assign WBP_Inventory in BP_GothicPlayerCharacter. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Inventory")
+    TSubclassOf<UGothicInventoryWidget> InventoryWidgetClass;
 
     // -------------------------------------------------------------------------
     // Input Handler Component
@@ -210,4 +322,31 @@ protected:
 private:
     bool bHUDReady = false;
     bool bAbilitiesGranted = false;
+    bool bInventoryBound = false;
+
+    // -------------------------------------------------------------------------
+    // Reload hold state
+    // -------------------------------------------------------------------------
+
+    /** Reload key went down — starts the hold timer. */
+    void OnReloadPressed();
+
+    /** Reload key came up — tap-reloads if the threshold was never reached. */
+    void OnReloadReleased();
+
+    /** Threshold reached, or a repeat interval elapsed, while the key is still held. */
+    void HandleSteadfastHoldTick();
+
+    /** Stops the hold timer and fires OnSteadfastConversionEnded if it had begun. */
+    void EndSteadfastHold();
+
+    /** Drives both the initial threshold delay and the repeat interval. */
+    FTimerHandle SteadfastHoldTimerHandle;
+
+    /** True once the hold crossed the threshold — suppresses the tap reload on release. */
+    bool bSteadfastConversionFired = false;
+
+    /** The live inventory screen. Null while closed — doubles as the open/closed flag. */
+    UPROPERTY()
+    TObjectPtr<UGothicInventoryWidget> ActiveInventoryWidget;
 };
