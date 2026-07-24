@@ -23,6 +23,7 @@ class UAIPerceptionComponent;
 class UWidgetComponent;
 class UGothicLootTable;
 class UGothicMeleeHitboxComponent;
+class UGothicVitalPointComponent;
 class AGothicEncounterVolume;
 
 // Forward-declared here so both GothicEnemyBase and GothicEncounterVolume
@@ -144,6 +145,11 @@ protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Combat")
     TObjectPtr<UGothicMeleeHitboxComponent> MeleeHitbox;
 
+    /** Moving vital point + amber overlay. Configure BoneName locations and
+     *  VitalOverlayMaterial per enemy Blueprint (rig-agnostic). */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Combat")
+    TObjectPtr<UGothicVitalPointComponent> VitalPointComponent;
+
     // -------------------------------------------------------------------------
     // Data — set in Blueprint
     // -------------------------------------------------------------------------
@@ -187,6 +193,15 @@ protected:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Combat")
     FName HitboxAttachBone = FName("hand_r");
+
+    /**
+     * How fast (deg/sec) the enemy turns to keep facing its focus target.
+     * Higher tracks harder; lower is more flankable. A big boss wants this
+     * lowish (~180) so getting behind her is real counterplay; trash can be
+     * snappier. Applied to RotationRate.Yaw in BeginPlay.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Combat")
+    float TurnRateDegrees = 300.f;
 
 private:
     UPROPERTY()

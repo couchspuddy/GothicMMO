@@ -28,6 +28,7 @@ class UInputAction;
 class UGothicInputHandlerComponent;
 class UGothicAbilitySet;
 class UGothicInventoryWidget;
+class UGA_TheLovedAndTheLost;
 struct FInputActionValue;
 
 UCLASS()
@@ -61,6 +62,27 @@ public:
     /** Returns the active weapon's data asset for stat lookups. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
     const UGothicWeaponData* GetActiveWeaponData() const;
+
+    /**
+     * Gear Power of the copy in the active weapon slot, or 0 when the slot was
+     * filled from the Blueprint default loadout rather than a rolled drop.
+     * Callers treat 0 as "baseline, no scaling" — see UGA_Fire::PerformFireTrace.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    int32 GetActiveGearPower() const;
+
+    // -------------------------------------------------------------------------
+    // Passive state — for the HUD's passive display. Resolve the granted passive
+    // ability instances off the ASC so UMG can bind without reaching into GAS.
+    // -------------------------------------------------------------------------
+
+    /** The Loved and The Lost ramp progress 0..1, or 0 if the passive isn't granted. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Passives")
+    float GetLovedAndLostRamp() const;
+
+    /** True while The Loved and The Lost is ramping (Hunter in combat). */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Passives")
+    bool IsLovedAndLostActive() const;
 
     /**
      * Steadfast charges the active weapon costs to refill — 1/2/3 by slot tier.
@@ -255,18 +277,13 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Abilities")
     TArray<TObjectPtr<UGothicAbilitySet>> StartupAbilitySets;
 
-    // -------------------------------------------------------------------------
-    // Combat — direct damage values for non-GAS actions
-    // -------------------------------------------------------------------------
-    UPROPERTY(EditDefaultsOnly, Category = "Combat")
-    TSubclassOf<UGameplayEffect> DamageEffectClass;
+    // Combat damage values used to live here (DamageEffectClass, PistolDamage,
+    // MeleeDamage) to serve OnFire() and OnMelee(). Both of those are gone, and
+    // these had no readers left — a tuning trap, since editing them on the
+    // Blueprint would have silently done nothing. Damage now belongs to the
+    // abilities: GA_Fire reads UGothicWeaponData, GA_HuntersStrike and GA_Slicer
+    // carry their own DamageEffectClass.
 
-    UPROPERTY(EditDefaultsOnly, Category = "Combat")
-    float PistolDamage = 15.f;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Combat")
-    float MeleeDamage = 10.f;
-    
     /** Override in Blueprint to handle visual and audio of the Selah moment. */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Selah")
     void OnSelahMoment();
@@ -287,6 +304,20 @@ protected:
     void OnLook(const FInputActionValue& Value);
     void OnSprintStarted();
     void OnSprintStopped();
+
+public:
+    /**
+     * Recompute MaxWalkSpeed from the sprint state plus the MovementSpeed
+     * secondary stat. Call after anything that can change gear, since attribute
+     * changes do not push into CharacterMovement on their own.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Movement")
+    void RefreshMovementSpeed();
+
+protected:
+    /** True while the sprint input is held. Drives RefreshMovementSpeed's base. */
+    bool bIsSprinting = false;
+
     void OnWeaponSlot1();
     void OnWeaponSlot2();
     void OnWeaponSlot3();
@@ -316,6 +347,9 @@ private:
     bool bHUDReady = false;
     bool bAbilitiesGranted = false;
     bool bInventoryBound = false;
+
+    /** Resolve the granted Loved-and-the-Lost passive instance, or null. */
+    const UGA_TheLovedAndTheLost* FindLovedAndLost() const;
 
     // -------------------------------------------------------------------------
     // Reload hold state

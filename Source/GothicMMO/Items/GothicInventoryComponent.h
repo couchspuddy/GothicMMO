@@ -165,6 +165,14 @@ private:
     /** Apply the item's stats as a GameplayEffect on the owning ASC. */
     void ApplyEquipmentStats(EGothicEquipSlot Slot, const FGothicItemInstance& Item);
 
+    /**
+     * SetByCaller tag a secondary stat writes through on GE_EquipmentStats.
+     * Returns NAME_None for anything unmapped. Keep in step with the modifiers
+     * authored on the effect — GAS ignores a SetByCaller with no matching
+     * modifier silently, so a mismatch presents as "the stat rolled zero".
+     */
+    static FName SecondaryStatToSetByCallerTag(EGothicSecondaryStat StatType);
+
     /** Remove the stat effect for a slot. */
     void RemoveEquipmentStats(EGothicEquipSlot Slot);
 };

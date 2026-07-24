@@ -68,6 +68,61 @@ struct FGothicItemUIData
     TObjectPtr<UTexture2D> Icon;
 };
 
+/**
+ * The character's live totals after equipment, for the equip screen's stat
+ * panel. Read from the ASC, so it already includes everything gear applied
+ * through GE_EquipmentStats — the widget never re-adds item values itself.
+ */
+USTRUCT(BlueprintType)
+struct FGothicCharacterStatSummary
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float Health = 0.f;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float MaxHealth = 0.f;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float AttackPower = 0.f;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float Defense = 0.f;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float MaxEther = 0.f;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float MovementSpeed = 0.f;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float EvasionChance = 0.f;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float AbilityHaste = 0.f;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float VitalPointRadius = 0.f;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float SteadfastRate = 0.f;
+
+    /** INERT — no consumer yet. Shown so gear reads honestly, not as a promise. */
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float HealingReceived = 0.f;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float ReloadSpeed = 0.f;
+};
+
+/**
+ * Difference a candidate item would make against whatever occupies its slot.
+ * Every field is candidate-minus-equipped, so positive is an upgrade and the
+ * widget can colour on sign without knowing anything about the stats.
+ */
+USTRUCT(BlueprintType)
+struct FGothicEquipComparison
+{
+    GENERATED_BODY()
+
+    /** False when the candidate ID resolves to nothing — treat the rest as meaningless. */
+    UPROPERTY(BlueprintReadOnly, Category = "UI") bool bValid = false;
+
+    /** True when the slot is currently empty, so every delta is a pure gain. */
+    UPROPERTY(BlueprintReadOnly, Category = "UI") bool bSlotEmpty = true;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UI") EGothicEquipSlot Slot = EGothicEquipSlot::Sidearm;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") int32 GearPowerDelta = 0;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float PrimaryStatDelta = 0.f;
+    UPROPERTY(BlueprintReadOnly, Category = "UI") float StrainDelta = 0.f;
+
+    /**
+     * Per-secondary delta. A stat on only one of the two items still appears,
+     * with the missing side counted as zero — otherwise losing a stat entirely
+     * would silently vanish from the comparison instead of reading as a loss.
+     */
+    UPROPERTY(BlueprintReadOnly, Category = "UI") TArray<FGothicStatRoll> SecondaryDeltas;
+};
+
 UCLASS(Abstract, Blueprintable)
 class GOTHICMMO_API UGothicInventoryWidget : public UUserWidget
 {
@@ -98,6 +153,26 @@ public:
     /** Current Silver balance. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
     int32 GetSilver() const;
+
+    /** Live character totals after gear, for the stat panel. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
+    FGothicCharacterStatSummary GetCharacterStatSummary() const;
+
+    /**
+     * What equipping this item would change, against whatever is in its slot.
+     * Drives the upgrade/downgrade arrows on the item entry.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
+    FGothicEquipComparison CompareToEquipped(const FGuid& InstanceID) const;
+
+    /** Every slot in EGothicEquipSlot, in declaration order — lets the paper
+     *  doll build itself rather than hardcoding thirteen entries in UMG. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
+    static TArray<EGothicEquipSlot> GetAllEquipSlots();
+
+    /** Display label for a slot ("Left Arm"), so UMG needn't switch on the enum. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
+    static FText GetEquipSlotDisplayName(EGothicEquipSlot EquipSlot);
 
     // ── Actions — Blueprint calls these from button clicks ───────────────
 

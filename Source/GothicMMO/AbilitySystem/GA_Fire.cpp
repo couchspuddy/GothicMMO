@@ -4,6 +4,7 @@
 
 #include "GothicMMO.h"                          // ECC_Weapon
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
+#include "AbilitySystem/GothicAttributeSet.h"   // AttackPower scalar
 #include "AI/GothicEnemyBase.h"
 #include "AI/GothicVitalPointComponent.h"
 #include "Character/GothicPlayerCharacter.h"
@@ -127,9 +128,23 @@ void UGA_Fire::ApplyCooldown(
         return;
     }
 
-    const float FireInterval = WeaponData
+    float FireInterval = WeaponData
         ? WeaponData->GetFireInterval()
         : (FallbackRoundsPerMinute > 0.f ? 60.f / FallbackRoundsPerMinute : 0.f);
+
+    // AbilityHaste is a percent cooldown reduction, clamped so gear can shorten
+    // the interval but never reach zero. Note this only reaches cooldowns driven
+    // by a Data.Cooldown SetByCaller — of the project's abilities that is Fire
+    // alone; the rest carry fixed durations on their GE assets and are unaffected
+    // until they are converted to the same pattern.
+    if (const UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo())
+    {
+        const float Haste = FMath::Clamp(
+            ASC->GetNumericAttribute(UGothicAttributeSet::GetAbilityHasteAttribute()),
+            0.f, MaxAbilityHastePercent);
+
+        FireInterval *= (1.f - (Haste / 100.f));
+    }
 
     Spec.Data->SetSetByCallerMagnitude(
         FGameplayTag::RequestGameplayTag(FName("Data.Cooldown")), FireInterval);
@@ -178,7 +193,33 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         return;
     }
 
-    float FinalDamage = EffectiveDamage;
+    // Two independent scalars sit on top of the archetype's authored damage.
+    //
+    //   Gear Power  — which *copy* of the weapon this is. Comes from the rolled
+    //                 FGothicItemInstance via the weapon slot. This is what makes
+    //                 a Pure Revolver hit harder than a Salvage one; before this
+    //                 the instance was discarded at the equip boundary and every
+    //                 copy of an archetype was identical.
+    //
+    //   AttackPower — how strong the *character* is. An existing attribute, fed
+    //                 by the Conviction primary stat through ApplyEquipmentStats,
+    //                 which until now had no reader anywhere in the project.
+    //
+    // Both are expressed relative to a baseline so that an unrolled weapon on the
+    // default loadout, and a character at starting AttackPower, both scale by 1.0
+    // and the archetype numbers in WEAPON_ARCHETYPES.md remain the honest values.
+    const float GearScalar = (BaselineGearPower > 0.f && Char->GetActiveGearPower() > 0)
+        ? static_cast<float>(Char->GetActiveGearPower()) / BaselineGearPower
+        : 1.f;
+
+    const float RawAttackPower = SourceASC->GetNumericAttribute(
+        UGothicAttributeSet::GetAttackPowerAttribute());
+
+    const float AttackScalar = (BaselineAttackPower > 0.f && RawAttackPower > 0.f)
+        ? RawAttackPower / BaselineAttackPower
+        : 1.f;
+
+    float FinalDamage = EffectiveDamage * GearScalar * AttackScalar;
     bool bIsVitalHit = false;
 
     if (UGothicVitalPointComponent* VitalPoint =
@@ -186,12 +227,26 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     {
         const bool bReckoning = SourceASC->HasMatchingGameplayTag(
             FGameplayTag::RequestGameplayTag(FName("State.Reckoning")));
-        bIsVitalHit = bReckoning || VitalPoint->IsVitalPointHit(Hit.ImpactPoint);
+        const float RadiusBonus = SourceASC->GetNumericAttribute(
+            UGothicAttributeSet::GetVitalPointRadiusAttribute());
+
+        bIsVitalHit = bReckoning || VitalPoint->IsVitalPointHit(Hit.ImpactPoint, RadiusBonus);
     }
 
     if (bIsVitalHit)
     {
         FinalDamage *= EffectiveVitalMult;
+
+        // The Read: while its buff tag is up, vital hits deal extra damage. This
+        // is the whole payoff of the redesigned Read — an instant self-buff that
+        // rewards landing vitals during the window, stacking multiplicatively on
+        // top of the weapon's own vital multiplier. Same tag-check pattern as
+        // Reckoning above; see UGA_Read.
+        if (SourceASC->HasMatchingGameplayTag(
+                FGameplayTag::RequestGameplayTag(FName("State.Read"))))
+        {
+            FinalDamage *= ReadVitalDamageMultiplier;
+        }
     }
 
     FGameplayEffectContextHandle Context = SourceASC->MakeEffectContext();

@@ -61,6 +61,21 @@ bool AGothicRotundaPillar::ApplyPillarDamage(float DamageAmount)
     return false;
 }
 
+void AGothicRotundaPillar::TriggerWallCollapse()
+{
+    if (CurrentState == EPillarState::Destroyed)
+    {
+        return;
+    }
+
+    // Drive health to zero through the normal path rather than jumping straight
+    // to BeginCeilingCollapse — that keeps the Destroyed transition, the
+    // OnPillarCollapse BIE, and the OnPillarDestroyed broadcast identical to a
+    // combat kill, so the arena manager and any listeners see one consistent
+    // collapse event whatever caused it.
+    ApplyPillarDamage(CurrentHealth);
+}
+
 void AGothicRotundaPillar::TransitionToState(EPillarState NewState)
 {
     if (CurrentState == NewState) return;

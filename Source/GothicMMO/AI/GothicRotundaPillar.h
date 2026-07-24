@@ -47,6 +47,22 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|Arena")
     bool ApplyPillarDamage(float DamageAmount);
 
+    /**
+     * Force an immediate collapse regardless of remaining health.
+     *
+     * GA_BestialLucidWallPound finds the nearest WallPoundTarget-tagged actor
+     * and calls this by name (FindFunction/ProcessEvent) — it is the scripted
+     * Phase 2 opener that drops the pillar the boss just moved to. The pillars
+     * carry that tag, so this is the seam that connects Wall Pound to the pillar
+     * collapse system; before it existed Wall Pound activated and collapsed
+     * nothing. Reuses the ordinary destruction path, so the ceiling drops, the
+     * collapse volume deals its 80 to anyone underneath, and the arena manager's
+     * OnPillarDestroyed bookkeeping all fire exactly as a combat kill would.
+     * No-op if already destroyed.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Arena")
+    void TriggerWallCollapse();
+
     UFUNCTION(BlueprintPure, Category = "Gothic|Arena")
     EPillarState GetPillarState() const { return CurrentState; }
 

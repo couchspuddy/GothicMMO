@@ -189,6 +189,25 @@ struct FGothicWeaponSlot
     UPROPERTY(BlueprintReadOnly, Category = "Weapon")
     int32 CurrentReserve = 0;
 
+    /**
+     * Gear Power of the equipped copy, carried over from FGothicItemInstance
+     * when the slot is filled from the inventory. Zero means "no rolled copy
+     * behind this slot" — a weapon assigned directly on the Blueprint default
+     * loadout — and is treated as the baseline, i.e. no scaling.
+     *
+     * This exists because the slot used to keep only the UGothicWeaponData
+     * asset, which is shared by every copy of an archetype. A Salvage Revolver
+     * and a Pure Revolver therefore hit identically: the instance was dropped
+     * at the equip boundary and could never reach the fire trace.
+     *
+     * NOTE: the instance's rolled SecondaryStats are still not carried here,
+     * and are applied nowhere in the project — see ApplyEquipmentStats, which
+     * maps PrimaryStatValue only. Connecting those is separate work affecting
+     * all ten armour slots, not just weapons.
+     */
+    UPROPERTY(BlueprintReadOnly, Category = "Weapon")
+    int32 GearPower = 0;
+
     /** Initialize ammo from the weapon data's defaults. Ammo-less weapons stay at zero. */
     void InitFromData()
     {

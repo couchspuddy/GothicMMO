@@ -5,6 +5,9 @@
 #include "TimerManager.h"
 #include "AI/GothicEnemyAIController.h"
 #include "AI/GothicMeleeHitboxComponent.h"
+#include "AI/GothicVitalPointComponent.h"
+#include "UI/GothicHUD.h"
+#include "GameFramework/PlayerController.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "Components/CapsuleComponent.h"
@@ -61,6 +64,12 @@ AGothicEnemyBase::AGothicEnemyBase()
     MeleeHitbox = CreateDefaultSubobject<UGothicMeleeHitboxComponent>(TEXT("MeleeHitbox"));
     MeleeHitbox->SetupAttachment(GetMesh());
 
+    // Vital point system — lives on the base so every enemy has vitals + the
+    // amber overlay, not just the one Blueprint that happened to add it by hand.
+    // Bone locations and the overlay material stay per-Blueprint data (the
+    // component is rig-agnostic), configured on the enemy Blueprints.
+    VitalPointComponent = CreateDefaultSubobject<UGothicVitalPointComponent>(TEXT("VitalPoint"));
+
     bReplicates = true;
 }
 
@@ -69,6 +78,29 @@ void AGothicEnemyBase::BeginPlay()
     Super::BeginPlay();
 
     InitializeGAS();
+
+    // Face the target, turn smoothly. Set in BeginPlay rather than the
+    // constructor so a Blueprint's serialized bOrientRotationToMovement can't
+    // silently win (the collision-override gotcha, same shape).
+    //
+    // The old behavior — orient to movement — is exactly why the boss "turned
+    // its back": every strafe or reposition rotated her to face where she was
+    // walking. With bUseControllerDesiredRotation the pawn instead rotates toward
+    // the AI controller's desired rotation, and the controller keeps its focus on
+    // the combat target (see AGothicEnemyAIController::SetBlackboardTarget). So
+    // she strafes and repositions while continuously facing the player, turning
+    // at RotationRate rather than snapping — a boss that tracks you, not one that
+    // wanders. Flankable by design: the turn rate is finite, so getting behind
+    // her is real counterplay.
+    if (UCharacterMovementComponent* Move = GetCharacterMovement())
+    {
+        Move->bOrientRotationToMovement    = false;
+        Move->bUseControllerDesiredRotation = true;
+        Move->RotationRate = FRotator(0.f, TurnRateDegrees, 0.f);
+    }
+    bUseControllerRotationYaw   = false; // desired-rotation path handles yaw smoothly
+    bUseControllerRotationPitch = false;
+    bUseControllerRotationRoll  = false;
 
     // Attach hitbox to the correct bone now that the skeleton is loaded
     if (MeleeHitbox && GetMesh())
@@ -116,10 +148,10 @@ void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
 
             if (bSensed)
             {
-                if (HealthBarWidget)
-                {
-                    HealthBarWidget->SetVisibility(true);
-                }
+                // Health bars are now the HUD's canvas system (screen-projected,
+                // player-facing), driven by RegisterEnemyHealthBar on hit — not
+                // the old world-space HealthBarWidget, which never faced the
+                // camera and whose widget was never bound to this enemy's health.
                 SetCombatTarget(Actor);
                 break;
             }
@@ -148,7 +180,13 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
         MeleeHitbox->DisableHitbox();
     }
 
-    AwardSelahToNearbyEmbers();
+    // Selah is NOT awarded per-kill. It belongs entirely to the encounter system:
+    // clearing an AGothicEncounterVolume raises the on-screen prompt, and the
+    // player's hold-to-collect fires the Selah moment (name cycle → award) via
+    // CompleteCollection. A per-kill award here both double-paid encounter enemies
+    // and auto-triggered the moment on any nearby kill — the exact bug reported.
+    // (This AwardSelahToNearbyEmbers path was deleted once before for the same
+    // reason; left the function in place but no longer called.)
     SpawnLootDrop();
 
     if (HealthBarWidget)
@@ -292,4 +330,18 @@ void AGothicEnemyBase::MulticastOnHit_Implementation(
         }
     }
 
+    // Floating damage number + the canvas health bar. Both run per-client, so the
+    // local player's own HUD is the right target. ShowDamageNumber and
+    // RegisterEnemyHealthBar both existed with zero callers project-wide — the
+    // reason no number and no working health bar ever appeared. The canvas health
+    // bar is screen-projected, so it is always player-facing by construction,
+    // unlike the old world-space HealthBarWidget component.
+    if (const APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr)
+    {
+        if (AGothicHUD* HUD = Cast<AGothicHUD>(PC->GetHUD()))
+        {
+            HUD->ShowDamageNumber(HitLocation, DamageAmount, bVitalHit);
+            HUD->RegisterEnemyHealthBar(this);
+        }
+    }
 }

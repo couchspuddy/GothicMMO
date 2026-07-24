@@ -104,6 +104,37 @@ protected:
     float TraceRange = 5000.f;
 
     /**
+     * Gear Power that scales damage by exactly 1.0. UGothicItemDefinition
+     * defines GearPower as GearTier * 100, so 100 is a Tier 1 drop — meaning a
+     * Tier 1 weapon deals the damage its archetype asset actually says, and the
+     * numbers in WEAPON_ARCHETYPES.md stay readable as authored.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Scaling", meta = (ClampMin = 1))
+    float BaselineGearPower = 100.f;
+
+    /**
+     * AttackPower that scales damage by exactly 1.0. Matches the attribute's
+     * own init value in UGothicAttributeSet, so a character wearing nothing
+     * scales by 1.0 and gear is strictly additive on top.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Scaling", meta = (ClampMin = 1))
+    float BaselineAttackPower = 10.f;
+
+    /**
+     * Extra vital-damage multiplier applied while the State.Read tag is active,
+     * on top of the weapon's own vital multiplier. Default 1.5 turns a normal
+     * 2.0x vital into 3.0x during the window. Set by the redesigned UGA_Read via
+     * GE_ReadState; 1.0 here disables the bonus.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Scaling", meta = (ClampMin = 1))
+    float ReadVitalDamageMultiplier = 1.5f;
+
+    /** Ceiling on AbilityHaste's cooldown reduction, so stacked rolls can never
+     *  drive the fire interval to zero. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Scaling", meta = (ClampMin = 0, ClampMax = 90))
+    float MaxAbilityHastePercent = 60.f;
+
+    /**
      * Fire rate used when the pawn has no weapon data to read — same fallback role
      * as Damage and TraceRange above. A weapon with a data asset always wins.
      */

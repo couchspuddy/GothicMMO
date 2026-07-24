@@ -230,21 +230,18 @@ FVector UGothicVitalPointComponent::GetNextVitalWorldLocation() const
     return ComputeWorldLocation(NextVitalIndex);
 }
 
-bool UGothicVitalPointComponent::IsVitalPointHit(const FVector& HitWorldLocation) const
+bool UGothicVitalPointComponent::IsVitalPointHit(const FVector& HitWorldLocation, float BonusRadius) const
 {
     const FVector CurrentLocation = GetCurrentVitalWorldLocation();
     const float Distance = FVector::Dist(HitWorldLocation, CurrentLocation);
 
-    const int32 BoneIdx = (CachedMesh && VitalPointLocations.IsValidIndex(ActiveVitalIndex))
-        ? CachedMesh->GetBoneIndex(VitalPointLocations[ActiveVitalIndex].BoneName) : -2;
+    // BonusRadius comes from the *shooter's* VitalPointRadius secondary stat.
+    // The radius itself belongs to the target's component, so the attacker's
+    // contribution has to be passed in rather than read here — this component
+    // has no idea who is shooting it.
+    const float EffectiveRadius = FMath::Max(0.f, HitDetectionRadius + BonusRadius);
 
-    UE_LOG(LogTemp, Warning, TEXT("VitalCheck: Idx=%d Bone=%s BoneIdx=%d | Dist=%.1f Radius=%.1f | Hit=%d"),
-        ActiveVitalIndex,
-        VitalPointLocations.IsValidIndex(ActiveVitalIndex)
-            ? *VitalPointLocations[ActiveVitalIndex].BoneName.ToString() : TEXT("BADIDX"),
-        BoneIdx, Distance, HitDetectionRadius, Distance <= HitDetectionRadius ? 1 : 0);
-
-    return Distance <= HitDetectionRadius;
+    return Distance <= EffectiveRadius;
 }
 
 void UGothicVitalPointComponent::OnShiftTimerFired()

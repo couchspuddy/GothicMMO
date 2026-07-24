@@ -50,6 +50,23 @@ public:
         bool bReplicateEndAbility,
         bool bWasCancelled) override;
 
+    /**
+     * Ramp progress 0..1 for the HUD's passive meter. 0 when not in combat,
+     * climbs to 1 over RampUpDuration. Server-authoritative — the value is only
+     * meaningful on the machine running the ramp (fine for standalone/listen).
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Passives")
+    float GetRampAlpha() const
+    {
+        return RampUpDuration > 0.f
+            ? FMath::Clamp(CurrentRampTime / RampUpDuration, 0.f, 1.f)
+            : 0.f;
+    }
+
+    /** True while the ramp buff is applied (i.e. the Hunter is in combat). */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Passives")
+    bool IsRampActive() const { return ActiveRampHandle.IsValid(); }
+
 protected:
     /** Tag that indicates the character is currently in combat. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "TheLovedAndTheLost")

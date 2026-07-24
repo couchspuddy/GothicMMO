@@ -142,7 +142,7 @@ public:
      * Called by the damage pipeline to determine bonus damage.
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|VitalPoint")
-    bool IsVitalPointHit(const FVector& HitWorldLocation) const;
+    bool IsVitalPointHit(const FVector& HitWorldLocation, float BonusRadius = 0.f) const;
 
     /** Returns the current active vital point index. */
     UFUNCTION(BlueprintPure, Category = "Gothic|VitalPoint")

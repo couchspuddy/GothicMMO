@@ -37,12 +37,11 @@ bool UGothicInventoryComponent::AddItem(const FGothicItemInstance& Item)
     Items.Add(Item);
     OnItemAdded.Broadcast(Item);
 
-
-    // Auto-equip if the slot is empty — saves a manual equip step during gameplay
-    if (Item.Definition && !EquippedItems.Contains(Item.Definition->EquipSlot))
-    {
-        EquipItem(Item.InstanceID);
-    }
+    // Picked-up items accumulate in the inventory and are equipped deliberately
+    // from the equip screen. The previous auto-equip-into-empty-slot behavior
+    // immediately moved each new-slot item out of Items (EquipItem removes it),
+    // so the inventory never appeared to fill — and it could swap the active
+    // weapon mid-fight. Equipping is now always an explicit player choice.
 
     return true;
 }
@@ -490,9 +489,49 @@ void UGothicInventoryComponent::ApplyEquipmentStats(EGothicEquipSlot Slot, const
             break;
     }
 
+    // Secondary stats. Each rolled stat maps to its own SetByCaller tag on the
+    // same effect, so one GE carries the whole item rather than one per stat.
+    //
+    // GE_EquipmentStats must declare a modifier for every tag below, each with
+    // a SetByCaller magnitude. A tag with no matching modifier is silently
+    // ignored by GAS — no warning, no error — so a missing modifier looks
+    // exactly like a stat that rolled zero.
+    for (const FGothicStatRoll& Roll : Item.SecondaryStats)
+    {
+        const FName TagName = SecondaryStatToSetByCallerTag(Roll.StatType);
+        if (TagName.IsNone())
+        {
+            continue;
+        }
+
+        Spec.Data->SetSetByCallerMagnitude(
+            FGameplayTag::RequestGameplayTag(TagName), Roll.Value);
+    }
+
     FActiveGameplayEffectHandle Handle = ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
     ActiveStatEffects.Add(Slot, Handle);
+}
 
+FName UGothicInventoryComponent::SecondaryStatToSetByCallerTag(EGothicSecondaryStat StatType)
+{
+    switch (StatType)
+    {
+        // FlatDamage deliberately feeds AttackPower rather than a stat of its
+        // own — AttackPower is already the damage scalar GA_Fire reads.
+        case EGothicSecondaryStat::FlatDamage:       return FName("Data.Stat.AttackPower");
+        case EGothicSecondaryStat::MovementSpeed:    return FName("Data.Stat.MovementSpeed");
+        case EGothicSecondaryStat::EvasionChance:    return FName("Data.Stat.EvasionChance");
+        case EGothicSecondaryStat::AbilityHaste:     return FName("Data.Stat.AbilityHaste");
+        case EGothicSecondaryStat::VitalPointRadius: return FName("Data.Stat.VitalPointRadius");
+        case EGothicSecondaryStat::SteadfastRate:    return FName("Data.Stat.SteadfastRate");
+
+        // Both of these apply cleanly to their attribute, but the attribute has
+        // no consumer yet: nothing in the project heals, and reload is instant.
+        // They are mapped anyway so the value is real the moment one exists.
+        case EGothicSecondaryStat::HealingReceived:  return FName("Data.Stat.HealingReceived");
+        case EGothicSecondaryStat::ReloadSpeed:      return FName("Data.Stat.ReloadSpeed");
+    }
+    return NAME_None;
 }
 
 void UGothicInventoryComponent::RemoveEquipmentStats(EGothicEquipSlot Slot)

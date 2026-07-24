@@ -60,7 +60,12 @@ void UGothicSteadfastComponent::TickComponent(float DeltaTime, ELevelTick TickTy
         return; // already full
     }
 
-    const float NewSteadfast = FMath::Min(CurrentSteadfast + (FillRatePerSecond * DeltaTime), MaxSteadfast);
+    // SteadfastRate is an additive per-second bonus from gear. Clamped at zero
+    // so a negative roll can never invert the fill into a drain.
+    const float EffectiveRate =
+        FMath::Max(0.f, FillRatePerSecond + AttributeSet->GetSteadfastRate());
+
+    const float NewSteadfast = FMath::Min(CurrentSteadfast + (EffectiveRate * DeltaTime), MaxSteadfast);
 
     // Direct attribute set — Steadfast is a simple accumulating resource,
     // not something that needs a GameplayEffect spec for a per-tick fill.

@@ -3,6 +3,9 @@
 #include "UI/GothicInventoryWidget.h"
 #include "Items/GothicInventoryComponent.h"
 #include "Items/GothicItemDefinition.h"
+#include "AbilitySystem/GothicAttributeSet.h"
+#include "AbilitySystemBlueprintLibrary.h"
+#include "AbilitySystemComponent.h"
 
 void UGothicInventoryWidget::InitializeFromInventory(UGothicInventoryComponent* InInventory)
 {
@@ -79,6 +82,132 @@ float UGothicInventoryWidget::GetResonanceCap() const
 int32 UGothicInventoryWidget::GetSilver() const
 {
     return CachedInventory ? CachedInventory->Silver : 0;
+}
+
+FGothicCharacterStatSummary UGothicInventoryWidget::GetCharacterStatSummary() const
+{
+    FGothicCharacterStatSummary Out;
+
+    if (!CachedInventory)
+    {
+        return Out;
+    }
+
+    // The inventory lives on the PlayerState, and so does the ASC — ask the
+    // PlayerState directly rather than routing through the pawn, which does not
+    // survive death (standing gotcha #4).
+    const UAbilitySystemComponent* ASC =
+        UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(CachedInventory->GetOwner());
+
+    if (!ASC)
+    {
+        return Out;
+    }
+
+    Out.Health           = ASC->GetNumericAttribute(UGothicAttributeSet::GetHealthAttribute());
+    Out.MaxHealth        = ASC->GetNumericAttribute(UGothicAttributeSet::GetMaxHealthAttribute());
+    Out.AttackPower      = ASC->GetNumericAttribute(UGothicAttributeSet::GetAttackPowerAttribute());
+    Out.Defense          = ASC->GetNumericAttribute(UGothicAttributeSet::GetDefenseAttribute());
+    Out.MaxEther         = ASC->GetNumericAttribute(UGothicAttributeSet::GetMaxEtherAttribute());
+    Out.MovementSpeed    = ASC->GetNumericAttribute(UGothicAttributeSet::GetMovementSpeedAttribute());
+    Out.EvasionChance    = ASC->GetNumericAttribute(UGothicAttributeSet::GetEvasionChanceAttribute());
+    Out.AbilityHaste     = ASC->GetNumericAttribute(UGothicAttributeSet::GetAbilityHasteAttribute());
+    Out.VitalPointRadius = ASC->GetNumericAttribute(UGothicAttributeSet::GetVitalPointRadiusAttribute());
+    Out.SteadfastRate    = ASC->GetNumericAttribute(UGothicAttributeSet::GetSteadfastRateAttribute());
+    Out.HealingReceived  = ASC->GetNumericAttribute(UGothicAttributeSet::GetHealingReceivedAttribute());
+    Out.ReloadSpeed      = ASC->GetNumericAttribute(UGothicAttributeSet::GetReloadSpeedAttribute());
+
+    return Out;
+}
+
+FGothicEquipComparison UGothicInventoryWidget::CompareToEquipped(const FGuid& InstanceID) const
+{
+    FGothicEquipComparison Out;
+
+    if (!CachedInventory)
+    {
+        return Out;
+    }
+
+    const FGothicItemInstance* Candidate = CachedInventory->FindItem(InstanceID);
+    if (!Candidate || !Candidate->Definition)
+    {
+        return Out;
+    }
+
+    Out.bValid = true;
+    Out.Slot   = Candidate->Definition->EquipSlot;
+
+    const FGothicItemInstance* Current = CachedInventory->GetEquippedItem(Out.Slot);
+    Out.bSlotEmpty = (Current == nullptr);
+
+    const int32 CurrentGearPower  = Current ? Current->GearPower       : 0;
+    const float CurrentPrimary    = Current ? Current->PrimaryStatValue : 0.f;
+    const float CurrentStrain     = Current ? Current->StrainCost       : 0.f;
+
+    Out.GearPowerDelta   = Candidate->GearPower       - CurrentGearPower;
+    Out.PrimaryStatDelta = Candidate->PrimaryStatValue - CurrentPrimary;
+    Out.StrainDelta      = Candidate->StrainCost       - CurrentStrain;
+
+    // Union of both stat sets, not just the candidate's. A stat the equipped
+    // item has and the candidate lacks must surface as a loss — otherwise
+    // dropping a stat entirely would simply disappear from the comparison.
+    TMap<EGothicSecondaryStat, float> Deltas;
+
+    for (const FGothicStatRoll& Roll : Candidate->SecondaryStats)
+    {
+        Deltas.FindOrAdd(Roll.StatType) += Roll.Value;
+    }
+
+    if (Current)
+    {
+        for (const FGothicStatRoll& Roll : Current->SecondaryStats)
+        {
+            Deltas.FindOrAdd(Roll.StatType) -= Roll.Value;
+        }
+    }
+
+    for (const TPair<EGothicSecondaryStat, float>& Pair : Deltas)
+    {
+        FGothicStatRoll Delta;
+        Delta.StatType = Pair.Key;
+        Delta.Value    = Pair.Value;
+        Out.SecondaryDeltas.Add(Delta);
+    }
+
+    return Out;
+}
+
+TArray<EGothicEquipSlot> UGothicInventoryWidget::GetAllEquipSlots()
+{
+    return {
+        EGothicEquipSlot::Sidearm,  EGothicEquipSlot::Piece,    EGothicEquipSlot::Rig,
+        EGothicEquipSlot::Head,     EGothicEquipSlot::Neck,     EGothicEquipSlot::Chest,
+        EGothicEquipSlot::Back,     EGothicEquipSlot::LeftArm,  EGothicEquipSlot::RightArm,
+        EGothicEquipSlot::Wrist,    EGothicEquipSlot::LeftLeg,  EGothicEquipSlot::RightLeg,
+        EGothicEquipSlot::Feet
+    };
+}
+
+FText UGothicInventoryWidget::GetEquipSlotDisplayName(EGothicEquipSlot EquipSlot)
+{
+    switch (EquipSlot)
+    {
+        case EGothicEquipSlot::Sidearm:  return NSLOCTEXT("Gothic", "Slot_Sidearm",  "Sidearm");
+        case EGothicEquipSlot::Piece:    return NSLOCTEXT("Gothic", "Slot_Piece",    "Piece");
+        case EGothicEquipSlot::Rig:      return NSLOCTEXT("Gothic", "Slot_Rig",      "Rig");
+        case EGothicEquipSlot::Head:     return NSLOCTEXT("Gothic", "Slot_Head",     "Head");
+        case EGothicEquipSlot::Neck:     return NSLOCTEXT("Gothic", "Slot_Neck",     "Neck");
+        case EGothicEquipSlot::Chest:    return NSLOCTEXT("Gothic", "Slot_Chest",    "Chest");
+        case EGothicEquipSlot::Back:     return NSLOCTEXT("Gothic", "Slot_Back",     "Back");
+        case EGothicEquipSlot::LeftArm:  return NSLOCTEXT("Gothic", "Slot_LeftArm",  "Left Arm");
+        case EGothicEquipSlot::RightArm: return NSLOCTEXT("Gothic", "Slot_RightArm", "Right Arm");
+        case EGothicEquipSlot::Wrist:    return NSLOCTEXT("Gothic", "Slot_Wrist",    "Wrist");
+        case EGothicEquipSlot::LeftLeg:  return NSLOCTEXT("Gothic", "Slot_LeftLeg",  "Left Leg");
+        case EGothicEquipSlot::RightLeg: return NSLOCTEXT("Gothic", "Slot_RightLeg", "Right Leg");
+        case EGothicEquipSlot::Feet:     return NSLOCTEXT("Gothic", "Slot_Feet",     "Feet");
+    }
+    return NSLOCTEXT("Gothic", "Slot_Unknown", "Unknown");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

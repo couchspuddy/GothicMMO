@@ -5,6 +5,7 @@
 #include "GameplayEffectExtension.h"
 #include "GameFramework/Character.h"
 #include "AI/GothicCombatStateComponent.h"
+#include "AI/GothicVitalPointComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
@@ -21,6 +22,15 @@ UGothicAttributeSet::UGothicAttributeSet()
     InitAttackPower(10.f);
     InitDefense(5.f);
     InitIncomingDamage(0.f);
+
+    // Secondary stats all start neutral — gear is strictly additive on top.
+    InitMovementSpeed(0.f);
+    InitEvasionChance(0.f);
+    InitAbilityHaste(0.f);
+    InitVitalPointRadius(0.f);
+    InitSteadfastRate(0.f);
+    InitHealingReceived(0.f);
+    InitReloadSpeed(0.f);
     InitSuperMeter(0.f);
     InitMaxSuperMeter(100.f);
     InitSelah(0.f);
@@ -38,6 +48,13 @@ void UGothicAttributeSet::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, MaxEther,     COND_None, REPNOTIFY_Always);
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, AttackPower,  COND_None, REPNOTIFY_Always);
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, Defense,      COND_None, REPNOTIFY_Always);
+    DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, MovementSpeed,    COND_None, REPNOTIFY_Always);
+    DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, EvasionChance,    COND_None, REPNOTIFY_Always);
+    DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, AbilityHaste,     COND_None, REPNOTIFY_Always);
+    DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, VitalPointRadius, COND_None, REPNOTIFY_Always);
+    DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, SteadfastRate,    COND_None, REPNOTIFY_Always);
+    DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, HealingReceived,  COND_None, REPNOTIFY_Always);
+    DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, ReloadSpeed,      COND_None, REPNOTIFY_Always);
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, SuperMeter,    COND_None, REPNOTIFY_Always);
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, MaxSuperMeter, COND_None, REPNOTIFY_Always);
     DOREPLIFETIME_CONDITION_NOTIFY(UGothicAttributeSet, Selah, COND_None, REPNOTIFY_Always);
@@ -99,6 +116,17 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
 
     if (RawDamage > 0.f)
     {
+        // Evasion is rolled here rather than at the damage source: this runs on
+        // the server only (IncomingDamage is never replicated), so the roll is
+        // authoritative and a predicting client cannot influence it.
+        const float Evasion = GetEvasionChance();
+        if (Evasion > 0.f && FMath::FRandRange(0.f, 100.f) < Evasion)
+        {
+            // Evaded — no health change, and deliberately no combat-state
+            // notification, since nothing landed.
+            return;
+        }
+
         const float FinalDamage = FMath::Max(1.f, RawDamage - GetDefense());
         const float NewHealth = FMath::Clamp(GetHealth() - FinalDamage, 0.f, GetMaxHealth());
         SetHealth(NewHealth);
@@ -110,6 +138,16 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
                 TargetActor->FindComponentByClass<UGothicCombatStateComponent>())
             {
                 TargetCombatState->NotifyCombatAction();
+            }
+
+            // Feed the vital point's damage accumulator so it shifts once enough
+            // damage has landed — the other half of its shift trigger alongside
+            // the timer. NotifyDamageTaken had no caller before this, so the
+            // damage-based shift never fired.
+            if (UGothicVitalPointComponent* TargetVital =
+                TargetActor->FindComponentByClass<UGothicVitalPointComponent>())
+            {
+                TargetVital->NotifyDamageTaken(FinalDamage);
             }
         }
 
@@ -193,6 +231,41 @@ void UGothicAttributeSet::OnRep_AttackPower(const FGameplayAttributeData& OldAtt
 void UGothicAttributeSet::OnRep_Defense(const FGameplayAttributeData& OldDefense)
 {
     GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, Defense, OldDefense);
+}
+
+void UGothicAttributeSet::OnRep_MovementSpeed(const FGameplayAttributeData& OldMovementSpeed)
+{
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, MovementSpeed, OldMovementSpeed);
+}
+
+void UGothicAttributeSet::OnRep_EvasionChance(const FGameplayAttributeData& OldEvasionChance)
+{
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, EvasionChance, OldEvasionChance);
+}
+
+void UGothicAttributeSet::OnRep_AbilityHaste(const FGameplayAttributeData& OldAbilityHaste)
+{
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, AbilityHaste, OldAbilityHaste);
+}
+
+void UGothicAttributeSet::OnRep_VitalPointRadius(const FGameplayAttributeData& OldVitalPointRadius)
+{
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, VitalPointRadius, OldVitalPointRadius);
+}
+
+void UGothicAttributeSet::OnRep_SteadfastRate(const FGameplayAttributeData& OldSteadfastRate)
+{
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, SteadfastRate, OldSteadfastRate);
+}
+
+void UGothicAttributeSet::OnRep_HealingReceived(const FGameplayAttributeData& OldHealingReceived)
+{
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, HealingReceived, OldHealingReceived);
+}
+
+void UGothicAttributeSet::OnRep_ReloadSpeed(const FGameplayAttributeData& OldReloadSpeed)
+{
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, ReloadSpeed, OldReloadSpeed);
 }
 void UGothicAttributeSet::OnRep_SuperMeter(const FGameplayAttributeData& OldSuperMeter)
 {

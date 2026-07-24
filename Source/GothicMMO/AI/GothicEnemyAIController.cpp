@@ -75,6 +75,15 @@ void AGothicEnemyAIController::SetBlackboardTarget(AActor* NewTarget)
     Blackboard->SetValueAsBool(GothicBBKeys::bIsInCombat,      true);
     Blackboard->SetValueAsBool(GothicBBKeys::bCanSeeTarget,    true);
 
+    // Lock focus onto the target. This is the piece that makes an enemy face the
+    // player: with the pawn on bUseControllerDesiredRotation, focus drives the
+    // control rotation, so the enemy keeps facing the target while it strafes,
+    // repositions, and approaches instead of turning to face its own movement.
+    // Gameplay priority outranks the path-following focal point, so movement can
+    // never steal the facing. Nothing set focus before — the root cause of a boss
+    // that constantly showed you its back.
+    SetFocus(NewTarget, EAIFocusPriority::Gameplay);
+
     // Roll a new stagger delay each time combat starts
     const float Delay = FMath::FRandRange(StaggerDelayRange.X, StaggerDelayRange.Y);
     Blackboard->SetValueAsFloat(GothicBBKeys::StaggerDelay, Delay);
@@ -91,6 +100,10 @@ void AGothicEnemyAIController::ClearCombatTarget()
     Blackboard->ClearValue(GothicBBKeys::TargetActor);
     Blackboard->SetValueAsBool(GothicBBKeys::bIsInCombat,   false);
     Blackboard->SetValueAsBool(GothicBBKeys::bCanSeeTarget, false);
+
+    // Release the facing lock so the enemy can look where it walks again (patrol,
+    // return-to-home) once it's out of combat.
+    ClearFocus(EAIFocusPriority::Gameplay);
 
     // Restore full speed when leaving combat
     if (ACharacter* Char = Cast<ACharacter>(GetPawn()))

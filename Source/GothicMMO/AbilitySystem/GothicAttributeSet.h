@@ -136,6 +136,60 @@ UPROPERTY(BlueprintReadOnly, Category = "Steadfast", ReplicatedUsing = OnRep_Ste
     FGameplayAttributeData IncomingDamage;
     ATTRIBUTE_ACCESSORS(UGothicAttributeSet, IncomingDamage)
 
+    // =========================================================================
+    // SECONDARY STATS — rolled on gear, applied through GE_EquipmentStats
+    //
+    // One attribute per EGothicSecondaryStat entry. FlatDamage is deliberately
+    // absent: it maps onto AttackPower above rather than duplicating it.
+    //
+    // All default to the neutral value for their consumer, so a character
+    // wearing nothing behaves exactly as before gear existed.
+    // =========================================================================
+
+    /** Additive cm/s on MaxWalkSpeed. Read by AGothicPlayerCharacter. */
+    UPROPERTY(BlueprintReadOnly, Category = "Secondary", ReplicatedUsing = OnRep_MovementSpeed)
+    FGameplayAttributeData MovementSpeed;
+    ATTRIBUTE_ACCESSORS(UGothicAttributeSet, MovementSpeed)
+
+    /** Percent chance (0-100) to negate an incoming hit entirely. */
+    UPROPERTY(BlueprintReadOnly, Category = "Secondary", ReplicatedUsing = OnRep_EvasionChance)
+    FGameplayAttributeData EvasionChance;
+    ATTRIBUTE_ACCESSORS(UGothicAttributeSet, EvasionChance)
+
+    /** Percent cooldown reduction. Only scales cooldowns driven by a
+     *  Data.Cooldown SetByCaller — today that is GA_Fire alone. */
+    UPROPERTY(BlueprintReadOnly, Category = "Secondary", ReplicatedUsing = OnRep_AbilityHaste)
+    FGameplayAttributeData AbilityHaste;
+    ATTRIBUTE_ACCESSORS(UGothicAttributeSet, AbilityHaste)
+
+    /** Additive cm on the shooter's effective vital point radius. */
+    UPROPERTY(BlueprintReadOnly, Category = "Secondary", ReplicatedUsing = OnRep_VitalPointRadius)
+    FGameplayAttributeData VitalPointRadius;
+    ATTRIBUTE_ACCESSORS(UGothicAttributeSet, VitalPointRadius)
+
+    /** Additive Steadfast per second on top of the component's fill rate. */
+    UPROPERTY(BlueprintReadOnly, Category = "Secondary", ReplicatedUsing = OnRep_SteadfastRate)
+    FGameplayAttributeData SteadfastRate;
+    ATTRIBUTE_ACCESSORS(UGothicAttributeSet, SteadfastRate)
+
+    /**
+     * INERT. Percent bonus to healing received. Nothing in the project heals —
+     * no ability, no effect, nothing raises Health except respawn. The attribute
+     * exists so gear can roll and display it; give it a consumer when healing does.
+     */
+    UPROPERTY(BlueprintReadOnly, Category = "Secondary", ReplicatedUsing = OnRep_HealingReceived)
+    FGameplayAttributeData HealingReceived;
+    ATTRIBUTE_ACCESSORS(UGothicAttributeSet, HealingReceived)
+
+    /**
+     * INERT. Percent faster reload. ReloadActiveWeapon moves reserve into the
+     * magazine in a single call with no duration, so there is nothing to scale.
+     * Becomes live the moment reload gains a montage or timer.
+     */
+    UPROPERTY(BlueprintReadOnly, Category = "Secondary", ReplicatedUsing = OnRep_ReloadSpeed)
+    FGameplayAttributeData ReloadSpeed;
+    ATTRIBUTE_ACCESSORS(UGothicAttributeSet, ReloadSpeed)
+
 protected:
     // -------------------------------------------------------------------------
     // OnRep callbacks — required for GAS client-side prediction to work correctly
@@ -178,4 +232,26 @@ protected:
     
     UFUNCTION()
     virtual void OnRep_Selah(const FGameplayAttributeData& OldSelah);
+
+    // Secondary stats
+    UFUNCTION()
+    virtual void OnRep_MovementSpeed(const FGameplayAttributeData& OldMovementSpeed);
+
+    UFUNCTION()
+    virtual void OnRep_EvasionChance(const FGameplayAttributeData& OldEvasionChance);
+
+    UFUNCTION()
+    virtual void OnRep_AbilityHaste(const FGameplayAttributeData& OldAbilityHaste);
+
+    UFUNCTION()
+    virtual void OnRep_VitalPointRadius(const FGameplayAttributeData& OldVitalPointRadius);
+
+    UFUNCTION()
+    virtual void OnRep_SteadfastRate(const FGameplayAttributeData& OldSteadfastRate);
+
+    UFUNCTION()
+    virtual void OnRep_HealingReceived(const FGameplayAttributeData& OldHealingReceived);
+
+    UFUNCTION()
+    virtual void OnRep_ReloadSpeed(const FGameplayAttributeData& OldReloadSpeed);
 };

@@ -26,6 +26,7 @@
 #include "AbilitySystemBlueprintLibrary.h"
 #include "Items/GothicInventoryComponent.h"
 #include "Items/GothicItemDefinition.h"
+#include "AbilitySystem/GA_TheLovedandTheLost.h"
 
 AGothicPlayerCharacter::AGothicPlayerCharacter()
 {
@@ -426,12 +427,30 @@ void AGothicPlayerCharacter::OnLook(const FInputActionValue& Value)
 
 void AGothicPlayerCharacter::OnSprintStarted()
 {
-    GetCharacterMovement()->MaxWalkSpeed = SprintSpeed;
+    bIsSprinting = true;
+    RefreshMovementSpeed();
 }
 
 void AGothicPlayerCharacter::OnSprintStopped()
 {
-    GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+    bIsSprinting = false;
+    RefreshMovementSpeed();
+}
+
+void AGothicPlayerCharacter::RefreshMovementSpeed()
+{
+    const float Base = bIsSprinting ? SprintSpeed : WalkSpeed;
+
+    // MovementSpeed is an additive cm/s bonus from gear. Recomputed rather than
+    // accumulated, so repeated equips cannot stack the bonus onto itself.
+    float Bonus = 0.f;
+    if (AbilitySystemComponent)
+    {
+        Bonus = AbilitySystemComponent->GetNumericAttribute(
+            UGothicAttributeSet::GetMovementSpeedAttribute());
+    }
+
+    GetCharacterMovement()->MaxWalkSpeed = FMath::Max(1.f, Base + Bonus);
 }
 
 void AGothicPlayerCharacter::TriggerSelahMoment()
@@ -682,6 +701,47 @@ const UGothicWeaponData* AGothicPlayerCharacter::GetActiveWeaponData() const
     return nullptr;
 }
 
+int32 AGothicPlayerCharacter::GetActiveGearPower() const
+{
+    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex))
+    {
+        return WeaponSlots[ActiveWeaponIndex].GearPower;
+    }
+    return 0;
+}
+
+const UGA_TheLovedAndTheLost* AGothicPlayerCharacter::FindLovedAndLost() const
+{
+    if (!AbilitySystemComponent)
+    {
+        return nullptr;
+    }
+
+    // The passive is granted once and runs InstancedPerActor, so its single
+    // primary instance holds the live ramp state.
+    for (const FGameplayAbilitySpec& Spec : AbilitySystemComponent->GetActivatableAbilities())
+    {
+        if (const UGA_TheLovedAndTheLost* Ramp =
+                Cast<UGA_TheLovedAndTheLost>(Spec.GetPrimaryInstance()))
+        {
+            return Ramp;
+        }
+    }
+    return nullptr;
+}
+
+float AGothicPlayerCharacter::GetLovedAndLostRamp() const
+{
+    const UGA_TheLovedAndTheLost* Ramp = FindLovedAndLost();
+    return Ramp ? Ramp->GetRampAlpha() : 0.f;
+}
+
+bool AGothicPlayerCharacter::IsLovedAndLostActive() const
+{
+    const UGA_TheLovedAndTheLost* Ramp = FindLovedAndLost();
+    return Ramp && Ramp->IsRampActive();
+}
+
 void AGothicPlayerCharacter::ApplyRecoilKick()
 {
     APlayerController* PC = Cast<APlayerController>(GetController());
@@ -834,10 +894,15 @@ int32 AGothicPlayerCharacter::EquipSlotToWeaponIndex(EGothicEquipSlot Slot)
 
 void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGothicItemInstance& Item)
 {
+    // Any equip can change the MovementSpeed secondary, and attribute changes do
+    // not reach CharacterMovement on their own — armour included, so this runs
+    // before the weapon-slot early-out below.
+    RefreshMovementSpeed();
+
     const int32 WeaponIndex = EquipSlotToWeaponIndex(Slot);
     if (WeaponIndex < 0)
     {
-        // Not a weapon slot — armor equip, nothing to do here
+        // Not a weapon slot — armor equip, nothing further here
         return;
     }
 
@@ -850,8 +915,11 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
     if (Item.Definition && Item.Definition->IsWeapon())
     {
         WeaponSlots[WeaponIndex].WeaponData = Item.Definition->WeaponData;
+        // Carry the rolled copy's Gear Power across. Without this the slot keeps
+        // only the shared archetype asset, and every copy of a Revolver deals
+        // identical damage regardless of what it rolled.
+        WeaponSlots[WeaponIndex].GearPower = Item.GearPower;
         WeaponSlots[WeaponIndex].InitFromData();
-
     }
     else
     {
@@ -859,7 +927,7 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
         WeaponSlots[WeaponIndex].WeaponData = nullptr;
         WeaponSlots[WeaponIndex].CurrentMagazine = 0;
         WeaponSlots[WeaponIndex].CurrentReserve = 0;
-
+        WeaponSlots[WeaponIndex].GearPower = 0;
     }
 
     // Equipping into the active slot swaps the weapon out from under any in-progress
