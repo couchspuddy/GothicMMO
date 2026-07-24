@@ -97,7 +97,16 @@ public:
 
     UPROPERTY(BlueprintReadOnly, Category = "Gothic|HUD|Ammo")
     int32 CachedMaxReserveAmmo = 18;
-    
+
+    /**
+     * Drives the cooldown overlay for an ability slot. Called every frame by
+     * AGothicHUD::UpdateAbilityCooldown. Looks the bars up by name (CooldownBar_0/1/2)
+     * so it doesn't collide with the Blueprint's own widget variables. The BP
+     * OnAbilityCooldownChanged event remains available for extra flourishes.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
+    void SetAbilityCooldownDisplay(EGothicAbilitySlot AbilitySlot, float Remaining, float Total);
+
 protected:
     virtual void NativeConstruct() override;
 

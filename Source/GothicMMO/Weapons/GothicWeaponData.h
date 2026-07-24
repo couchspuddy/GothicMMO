@@ -68,13 +68,40 @@ public:
 
     // ── Fire Rate & Range ────────────────────────────────────────────────
 
-    /** Cooldown GE applied per shot. Controls fire rate. */
+    /**
+     * Fire rate in rounds per minute. This is the authoring value — GA_Fire converts
+     * it to seconds and feeds the cooldown GE's duration through the Data.Cooldown
+     * SetByCaller, so every weapon shares one cooldown asset.
+     * 60 = one shot a second, 600 = ten.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire", meta = (ClampMin = 1, UIMin = 30, UIMax = 900))
+    float RoundsPerMinute = 171.f;
+
+    /**
+     * Optional per-weapon cooldown GE. Leave null and the weapon uses GA_Fire's own
+     * cooldown effect with the duration driven by RoundsPerMinute — which is what
+     * every ordinary weapon wants. Set it only for a weapon whose cooldown needs
+     * different tags or stacking (charge-up, burst), and note that whatever you
+     * assign must still take its duration from the Data.Cooldown SetByCaller.
+     */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
     TSubclassOf<UGameplayEffect> CooldownEffect;
 
     /** Hitscan range in cm. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
     float TraceRange = 5000.f;
+
+    /** Seconds between shots. Zero or negative RPM yields no cooldown rather than a divide by zero. */
+    UFUNCTION(BlueprintPure, Category = "Weapon|Fire")
+    float GetFireInterval() const { return RoundsPerMinute > 0.f ? 60.f / RoundsPerMinute : 0.f; }
+
+    /** Body-shot DPS, ignoring reloads and magazine limits. Balance reference, not a runtime value. */
+    UFUNCTION(BlueprintPure, Category = "Weapon|Fire")
+    float GetSustainedDPS() const { return Damage * RoundsPerMinute / 60.f; }
+
+    /** DPS assuming every shot lands on a vital point. The ceiling half of the balance range. */
+    UFUNCTION(BlueprintPure, Category = "Weapon|Fire")
+    float GetVitalDPS() const { return GetSustainedDPS() * VitalDamageMultiplier; }
 
     // ── Ammo ─────────────────────────────────────────────────────────────
 

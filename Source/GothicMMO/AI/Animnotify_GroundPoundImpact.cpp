@@ -1,4 +1,4 @@
-﻿// AnimNotify_GroundPoundImpact.cpp
+// AnimNotify_GroundPoundImpact.cpp
 
 #include "AI/AnimNotify_GroundPoundImpact.h"
 #include "AbilitySystemBlueprintLibrary.h"
@@ -81,6 +81,4 @@ void UAnimNotify_GroundPoundImpact::Notify(
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("GroundPoundImpact: Radius %.0f | Damage %.0f | Hit %d players"),
-        ImpactRadius, ImpactDamage, PlayersHit);
 }

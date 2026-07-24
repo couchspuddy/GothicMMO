@@ -1,4 +1,4 @@
-﻿// GA_Reckoning.cpp
+// GA_Reckoning.cpp
 
 #include "AbilitySystem/GA_Reckoning.h"
 #include "AbilitySystemComponent.h"
@@ -38,7 +38,6 @@ void UGA_Reckoning::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
     if (Spec.IsValid())
     {
         ActiveReckoningHandle = CachedASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
-        UE_LOG(LogTemp, Log, TEXT("GA_Reckoning: State applied — duration %.1f"), BaseDuration);
     }
 
     RemainingDuration = BaseDuration;
@@ -74,8 +73,6 @@ void UGA_Reckoning::ExtendReckoningDuration(float ExtensionAmount)
         RemainingDuration = NewRemaining;
         RestartDurationTimer();
 
-        UE_LOG(LogTemp, Log, TEXT("GA_Reckoning: Duration extended by %.1f — new remaining %.1f"),
-            ExtensionAmount, NewRemaining);
     }
 }
 
@@ -99,7 +96,6 @@ void UGA_Reckoning::EndAbility(const FGameplayAbilitySpecHandle Handle,
     if (CachedASC && ActiveReckoningHandle.IsValid())
     {
         CachedASC->RemoveActiveGameplayEffect(ActiveReckoningHandle);
-        UE_LOG(LogTemp, Log, TEXT("GA_Reckoning: State removed, ability ended"));
     }
 
     Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);

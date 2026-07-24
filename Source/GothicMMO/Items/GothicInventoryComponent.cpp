@@ -1,4 +1,4 @@
-﻿// GothicInventoryComponent.cpp
+// GothicInventoryComponent.cpp
 
 #include "Items/GothicInventoryComponent.h"
 #include "Items/GothicItemDefinition.h"
@@ -37,12 +37,6 @@ bool UGothicInventoryComponent::AddItem(const FGothicItemInstance& Item)
     Items.Add(Item);
     OnItemAdded.Broadcast(Item);
 
-    UE_LOG(LogTemp, Log, TEXT("Inventory: Added %s (Rarity %d, GearPower %d, Stars %d/%d)"),
-        Item.Definition ? *Item.Definition->ItemID.ToString() : TEXT("Unknown"),
-        Item.Definition ? (int32)Item.Definition->Rarity : -1,
-        Item.GearPower,
-        Item.CurrentStars,
-        Item.StarCeiling);
 
     // Auto-equip if the slot is empty — saves a manual equip step during gameplay
     if (Item.Definition && !EquippedItems.Contains(Item.Definition->EquipSlot))
@@ -146,8 +140,6 @@ bool UGothicInventoryComponent::EquipItem(const FGuid& InstanceID)
     RecalculateStrain();
     OnItemEquipped.Broadcast(Slot, ItemCopy);
 
-    UE_LOG(LogTemp, Log, TEXT("Inventory: Equipped %s in slot %d"),
-        *ItemCopy.Definition->ItemID.ToString(), (int32)Slot);
 
     return true;
 }
@@ -167,8 +159,6 @@ bool UGothicInventoryComponent::UnequipSlot(EGothicEquipSlot Slot)
     Items.Add(Unequipped);
     RecalculateStrain();
 
-    UE_LOG(LogTemp, Log, TEXT("Inventory: Unequipped slot %d — %s returned to inventory"),
-        (int32)Slot, *Unequipped.Definition->ItemID.ToString());
 
     return true;
 }
@@ -226,8 +216,6 @@ bool UGothicInventoryComponent::DismantleItem(const FGuid& InstanceID)
     {
         // Mundane → Silver
         Silver += Def->DismantleSilver;
-        UE_LOG(LogTemp, Log, TEXT("Inventory: Dismantled %s → +%d Silver (total: %d)"),
-            *Def->ItemID.ToString(), Def->DismantleSilver, Silver);
     }
     else
     {
@@ -240,8 +228,6 @@ bool UGothicInventoryComponent::DismantleItem(const FGuid& InstanceID)
                     ASC->GetSet<UGothicAttributeSet>()))
             {
                 Attrs->SetSelah(Attrs->GetSelah() + Def->DismantleSelah);
-                UE_LOG(LogTemp, Log, TEXT("Inventory: Dismantled %s → +%.1f Selah"),
-                    *Def->ItemID.ToString(), Def->DismantleSelah);
             }
         }
     }
@@ -309,8 +295,6 @@ bool UGothicInventoryComponent::RerollSecondaries(const FGuid& InstanceID, float
 
     Item->bImbued = true; // Any Selah interaction locks the item
 
-    UE_LOG(LogTemp, Log, TEXT("Binder: Re-rolled secondaries on %s — cost %.1f Selah"),
-        *Def->ItemID.ToString(), SelahCost);
 
     return true;
 }
@@ -350,8 +334,6 @@ bool UGothicInventoryComponent::ImbueStar(const FGuid& InstanceID, float SelahCo
     Item->CurrentStars++;
     Item->bImbued = true;
 
-    UE_LOG(LogTemp, Log, TEXT("Binder: Imbued %s to %d/%d stars — cost %.1f Selah"),
-        *Item->Definition->ItemID.ToString(), Item->CurrentStars, Item->StarCeiling, SelahCost);
 
     return true;
 }
@@ -454,7 +436,6 @@ void UGothicInventoryComponent::DebugSpawnTestItems()
         5, EGothicPrimaryStat::Clarity, FVector2D(20.f, 35.f),
         40.f, 0, 10.f, ArmorSecondaries, 4);
 
-    UE_LOG(LogTemp, Log, TEXT("DebugSpawnTestItems: Spawned 10 test items across all rarities"));
 }
 
 // =============================================================================
@@ -512,10 +493,6 @@ void UGothicInventoryComponent::ApplyEquipmentStats(EGothicEquipSlot Slot, const
     FActiveGameplayEffectHandle Handle = ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
     ActiveStatEffects.Add(Slot, Handle);
 
-    UE_LOG(LogTemp, Log, TEXT("EquipStats: Applied %s stats — %s +%.1f"),
-        *Item.Definition->ItemID.ToString(),
-        *UEnum::GetValueAsString(Item.Definition->PrimaryStatType),
-        PrimaryValue);
 }
 
 void UGothicInventoryComponent::RemoveEquipmentStats(EGothicEquipSlot Slot)
@@ -528,7 +505,6 @@ void UGothicInventoryComponent::RemoveEquipmentStats(EGothicEquipSlot Slot)
         if (ASC && Handle->IsValid())
         {
             ASC->RemoveActiveGameplayEffect(*Handle);
-            UE_LOG(LogTemp, Log, TEXT("EquipStats: Removed stats for slot %d"), (int32)Slot);
         }
 
         ActiveStatEffects.Remove(Slot);

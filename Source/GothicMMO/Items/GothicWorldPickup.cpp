@@ -1,4 +1,4 @@
-﻿// GothicWorldPickup.cpp
+// GothicWorldPickup.cpp
 
 #include "Items/GothicWorldPickup.h"
 #include "Items/GothicInventoryComponent.h"
@@ -53,9 +53,6 @@ void AGothicWorldPickup::InitializePickup(const FGothicItemInstance& InItem)
 
     if (HeldItem.Definition)
     {
-        UE_LOG(LogTemp, Log, TEXT("WorldPickup: Initialized with %s (Rarity %d)"),
-            *HeldItem.Definition->ItemID.ToString(),
-            (int32)HeldItem.Definition->Rarity);
 
         // Set mesh color based on rarity
         if (PickupMesh)
@@ -134,9 +131,6 @@ bool AGothicWorldPickup::TryCollect(AActor* Collector)
     if (Inventory->AddItem(HeldItem))
     {
         bCollected = true;
-        UE_LOG(LogTemp, Log, TEXT("WorldPickup: %s collected %s"),
-            *Collector->GetName(),
-            *HeldItem.Definition->ItemID.ToString());
         Destroy();
         return true;
     }
@@ -169,8 +163,6 @@ void AGothicWorldPickup::DespawnPickup()
 {
     if (!bCollected)
     {
-        UE_LOG(LogTemp, Log, TEXT("WorldPickup: %s despawned uncollected"),
-            HeldItem.Definition ? *HeldItem.Definition->ItemID.ToString() : TEXT("Unknown"));
         Destroy();
     }
 }

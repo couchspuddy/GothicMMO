@@ -1,4 +1,4 @@
-﻿// GothicRotundaPillar.cpp
+// GothicRotundaPillar.cpp
 
 #include "AI/GothicRotundaPillar.h"
 #include "Components/StaticMeshComponent.h"
@@ -46,8 +46,6 @@ bool AGothicRotundaPillar::ApplyPillarDamage(float DamageAmount)
 
     CurrentHealth = FMath::Max(0.f, CurrentHealth - DamageAmount);
 
-    UE_LOG(LogTemp, Log, TEXT("Pillar %s took %.1f damage | HP: %.1f / %.1f"),
-        *GetName(), DamageAmount, CurrentHealth, MaxHealth);
 
     if (CurrentHealth <= 0.f)
     {
@@ -91,7 +89,6 @@ void AGothicRotundaPillar::TransitionToState(EPillarState NewState)
 
 void AGothicRotundaPillar::BeginCeilingCollapse()
 {
-    UE_LOG(LogTemp, Log, TEXT("Pillar %s: Beginning ceiling collapse"), *GetName());
 
     if (PillarMesh)
     {
@@ -111,7 +108,6 @@ void AGothicRotundaPillar::BeginCeilingCollapse()
 
 void AGothicRotundaPillar::FinishCeilingCollapse()
 {
-    UE_LOG(LogTemp, Log, TEXT("Pillar %s: Collapse complete"), *GetName());
 
     CollapseDamageVolume->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
@@ -162,8 +158,6 @@ void AGothicRotundaPillar::ApplyCollapseDamageToPlayersInZone()
                 CollapseDamage);
             TargetASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
 
-            UE_LOG(LogTemp, Log, TEXT("Pillar %s: Collapse dealt %.1f to %s"),
-                *GetName(), CollapseDamage, *Actor->GetName());
         }
     }
 }

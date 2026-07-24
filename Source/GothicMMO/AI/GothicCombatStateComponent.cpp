@@ -1,4 +1,4 @@
-﻿// GothicCombatStateComponent.cpp
+// GothicCombatStateComponent.cpp
 
 #include "AI/GothicCombatStateComponent.h"
 #include "AbilitySystemComponent.h"
@@ -53,7 +53,6 @@ void UGothicCombatStateComponent::EnterCombat()
 	if (CachedASC && InCombatTag.IsValid())
 	{
 		CachedASC->AddLooseGameplayTag(InCombatTag);
-		UE_LOG(LogTemp, Log, TEXT("CombatState: %s entered combat"), *GetOwner()->GetName());
 	}
 }
 
@@ -64,7 +63,6 @@ void UGothicCombatStateComponent::OnExitGraceExpired()
 	if (CachedASC && InCombatTag.IsValid())
 	{
 		CachedASC->RemoveLooseGameplayTag(InCombatTag);
-		UE_LOG(LogTemp, Log, TEXT("CombatState: %s left combat"), *GetOwner()->GetName());
 	}
 }
 

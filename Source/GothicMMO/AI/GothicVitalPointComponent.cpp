@@ -1,4 +1,4 @@
-﻿// GothicVitalPointComponent.cpp
+// GothicVitalPointComponent.cpp
 
 #include "AI/GothicVitalPointComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -136,8 +136,6 @@ void UGothicVitalPointComponent::NotifyDamageTaken(float DamageAmount)
 
     AccumulatedDamage += DamageAmount;
 
-    UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s accumulated %.1f / %.1f damage"),
-        *GetOwner()->GetName(), AccumulatedDamage, ShiftThreshold);
 
     if (AccumulatedDamage >= ShiftThreshold)
     {
@@ -165,8 +163,6 @@ void UGothicVitalPointComponent::ShiftVitalPoint()
 
     const FVector NewLocation = ComputeWorldLocation(ActiveVitalIndex);
 
-    UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s shifted to index %d (next: %d) — location %s"),
-        *GetOwner()->GetName(), ActiveVitalIndex, NextVitalIndex, *NewLocation.ToString());
 
     // Broadcast so The Read ability and any other listeners know
     OnVitalPointShifted.Broadcast(ActiveVitalIndex, NewLocation);
@@ -259,8 +255,6 @@ void UGothicVitalPointComponent::OnShiftTimerFired()
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s timer-triggered shift"),
-        *GetOwner()->GetName());
 
     ShiftVitalPoint();
 }
@@ -276,8 +270,6 @@ void UGothicVitalPointComponent::OnRep_ActiveVitalIndex()
     // The client-side shimmer follows the replicated index.
     UpdateShimmerAttachment();
 
-    UE_LOG(LogTemp, Log, TEXT("VitalPoint: Client received shift — index %d"),
-        ActiveVitalIndex);
 }
 
 void UGothicVitalPointComponent::FreezeVitalPoint(int32 LockIndex)
@@ -295,8 +287,6 @@ void UGothicVitalPointComponent::FreezeVitalPoint(int32 LockIndex)
 
         const FVector NewLocation = ComputeWorldLocation(ActiveVitalIndex);
 
-        UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s locked to index %d — location %s"),
-            *GetOwner()->GetName(), ActiveVitalIndex, *NewLocation.ToString());
 
         // Same pattern as ShiftVitalPoint: ActiveVitalIndex replicates and OnRep
         // covers clients, but the server has to broadcast for itself or The Read
@@ -319,8 +309,6 @@ void UGothicVitalPointComponent::FreezeVitalPoint(int32 LockIndex)
         GetWorld()->GetTimerManager().ClearTimer(ShiftTimerHandle);
     }
 
-    UE_LOG(LogTemp, Log, TEXT("VitalPoint: %s frozen at index %d"),
-        *GetOwner()->GetName(), ActiveVitalIndex);
 }
 
 // ── Shimmer ───────────────────────────────────────────────────────────────────
@@ -431,8 +419,6 @@ void UGothicVitalPointComponent::CreateVitalMaterials()
     {
         CachedMesh->SetOverlayMaterial(OverlayDMI);
 
-        UE_LOG(LogTemp, Log, TEXT("VitalPoint: Overlay material applied on %s"),
-            *GetOwner()->GetName());
 
         // Initialize — vital is live, Read defaults to off-world
         UpdateVitalMaterialPosition();

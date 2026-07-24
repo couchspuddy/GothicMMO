@@ -1,4 +1,4 @@
-﻿// GA_BestialLucidWallPound.cpp
+// GA_BestialLucidWallPound.cpp
 
 #include "AbilitySystem/GA_BestialLucidWallPound.h"
 #include "Kismet/KismetSystemLibrary.h"
@@ -64,8 +64,6 @@ void UGA_BestialLucidWallPound::ActivateAbility(
 
         if (NearestWall)
         {
-            UE_LOG(LogTemp, Log, TEXT("WallPound: %s triggering collapse on %s"),
-                *Avatar->GetName(), *NearestWall->GetName());
 
             // Blueprint on the wall actor owns what "collapsing" actually
             // looks like — VFX, destructible swap, rubble spawn. This

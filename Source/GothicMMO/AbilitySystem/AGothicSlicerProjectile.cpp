@@ -63,7 +63,6 @@ void AGothicSlicerProjectile::OnHit(UPrimitiveComponent* HitComp, AActor* OtherA
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("GA_Slicer Projectile: Hit %s"), *OtherActor->GetName());
 
     OnSlicerHit.Broadcast(OtherActor, Hit.ImpactPoint);
 

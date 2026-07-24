@@ -23,15 +23,12 @@ void AGothicGameMode::PostLogin(APlayerController* NewPlayer)
 {
     Super::PostLogin(NewPlayer);
 
-    UE_LOG(LogTemp, Log, TEXT("GothicGameMode: Player joined. Active players: %d"),
-        GetNumPlayers());
 }
 
 void AGothicGameMode::Logout(AController* Exiting)
 {
     Super::Logout(Exiting);
 
-    UE_LOG(LogTemp, Log, TEXT("GothicGameMode: Player left."));
     // TODO: Save player progression data here.
 }
 
@@ -73,7 +70,6 @@ void AGothicGameMode::RequestRespawn(AController* DeadController)
     RespawnDelegate.BindUObject(this, &AGothicGameMode::RespawnPlayer, DeadController);
     GetWorldTimerManager().SetTimer(RespawnTimer, RespawnDelegate, RespawnDelay, false);
 
-    UE_LOG(LogTemp, Log, TEXT("GothicGameMode: Respawning player in %.1f seconds."), RespawnDelay);
 }
 
 void AGothicGameMode::RespawnPlayer(AController* Controller)
@@ -93,11 +89,5 @@ void AGothicGameMode::RespawnPlayer(AController* Controller)
     if (NewPawn && GS && !GS->CheckpointLocation.IsZero())
     {
         NewPawn->SetActorLocation(GS->CheckpointLocation);
-        UE_LOG(LogTemp, Log, TEXT("GothicGameMode: Respawned at checkpoint %s"),
-            *GS->CheckpointLocation.ToString());
-    }
-    else
-    {
-        UE_LOG(LogTemp, Log, TEXT("GothicGameMode: No checkpoint set — respawned at PlayerStart"));
     }
 }

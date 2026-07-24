@@ -1,4 +1,4 @@
-﻿// GothicItemDefinition.cpp
+// GothicItemDefinition.cpp
 
 #include "Items/GothicItemDefinition.h"
 
@@ -43,14 +43,6 @@ FGothicItemInstance UGothicItemDefinition::RollInstance() const
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("RollInstance: %s | Rarity=%d | Tier=%d | Stars=%d/%d | Primary=%.1f | Secondaries=%d"),
-		*ItemID.ToString(),
-		(int32)Rarity,
-		GearTier,
-		Instance.CurrentStars,
-		Instance.StarCeiling,
-		Instance.PrimaryStatValue,
-		Instance.SecondaryStats.Num());
 
 	return Instance;
 }

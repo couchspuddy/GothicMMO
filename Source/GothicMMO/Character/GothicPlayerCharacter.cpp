@@ -9,6 +9,7 @@
 #include "Game/GothicPlayerState.h"
 #include "UI/GothicHUD.h"
 #include "AI/GothicSteadfastComponent.h"
+#include "AI/GothicCombatStateComponent.h"
 #include "UI/GothicHUDWidget.h"
 #include "UI/GothicInventoryWidget.h"
 #include "Camera/CameraComponent.h"
@@ -28,7 +29,6 @@
 
 AGothicPlayerCharacter::AGothicPlayerCharacter()
 {
-    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Constructor called"));
 
     PrimaryActorTick.bCanEverTick = true;
 
@@ -47,23 +47,24 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     GetCharacterMovement()->MaxWalkSpeed              = 500.f;  // Overwritten by WalkSpeed in BeginPlay
     GetCharacterMovement()->JumpZVelocity             = 700.f;
 
-    // Weapon mesh — attached to camera, swapped per active weapon
+    // Weapon mesh — socketed to the right-hand grip so it follows the character's
+    // animations (reload, fire, idle sway) instead of being locked to the camera.
+    // HandGrip_R is authored on SKM_Manny_Simple's hand_r bone; per-weapon grip
+    // alignment comes from WeaponData MeshOffset/Rotation/Scale in RefreshWeaponVisuals.
     WeaponMeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("WeaponMesh"));
-    WeaponMeshComponent->SetupAttachment(FirstPersonCamera);
+    WeaponMeshComponent->SetupAttachment(GetMesh(), TEXT("HandGrip_R"));
     WeaponMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     WeaponMeshComponent->SetOnlyOwnerSee(true);  // Only the local player sees their own weapon
 
     // Create the input handler component
     InputHandler = CreateDefaultSubobject<UGothicInputHandlerComponent>(TEXT("InputHandler"));
 
-    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Constructor complete"));
 }
 
 void AGothicPlayerCharacter::BeginPlay()
 {
     Super::BeginPlay();
 
-    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: BeginPlay called"));
 
     if (APlayerController* PC = Cast<APlayerController>(GetController()))
     {
@@ -73,7 +74,6 @@ void AGothicPlayerCharacter::BeginPlay()
             if (DefaultMappingContext)
             {
                 Subsystem->AddMappingContext(DefaultMappingContext, 0);
-                UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Default mapping context added"));
             }
             else
             {
@@ -99,9 +99,18 @@ void AGothicPlayerCharacter::BeginPlay()
             WeaponMeshComponent->SetRelativeRotation(StartWeapon->MeshRotation);
             WeaponMeshComponent->SetRelativeScale3D(StartWeapon->MeshScale);
 
-            UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Starting weapon — %s"),
-                *StartWeapon->WeaponName.ToString());
         }
+    }
+
+    // Force the hand-socket attachment at runtime. The Blueprint serialized an
+    // attachment of WeaponMesh to the camera, which overrides the constructor's
+    // SetupAttachment — so re-attach explicitly here to guarantee the weapon
+    // follows the character's hand animation. Per-weapon grip alignment still
+    // comes from WeaponData MeshOffset/Rotation/Scale (kept as relative transform).
+    if (WeaponMeshComponent && GetMesh())
+    {
+        WeaponMeshComponent->AttachToComponent(
+            GetMesh(), FAttachmentTransformRules::KeepRelativeTransform, TEXT("HandGrip_R"));
     }
 
     // Delay HUD polling until widget is fully constructed
@@ -112,36 +121,40 @@ void AGothicPlayerCharacter::BeginPlay()
         APlayerController* PC = GetWorld()->GetFirstPlayerController();
         AGothicHUD* GothicHUD = PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
 
-        UE_LOG(LogTemp, Log, TEXT("HUD Timer fired | PC: %s | GothicHUD: %s | Widget: %s"),
-            PC ? TEXT("Valid") : TEXT("NULL"),
-            GothicHUD ? TEXT("Valid") : TEXT("NULL"),
-            GothicHUD && GothicHUD->GetHUDWidget() ? TEXT("Valid") : TEXT("NULL"));
 
         bHUDReady = true;
 
         // First ammo readout — nothing has fired or reloaded yet, so without this
         // the magazine display stays blank until the player's first shot.
         PushAmmoToHUD();
+
+        // Apply the active weapon's crosshair on spawn. The HUD boots on Melee by
+        // default and the starting weapon is equipped before the HUD widget exists,
+        // so without this the crosshair stays Melee until the first weapon swap.
+        if (GothicHUD && WeaponSlots.IsValidIndex(ActiveWeaponIndex))
+        {
+            if (const UGothicWeaponData* ActiveWeapon = WeaponSlots[ActiveWeaponIndex].WeaponData)
+            {
+                GothicHUD->SetCrosshairType(ActiveWeapon->CrosshairType);
+            }
+        }
     }, 0.1f, false);
 }
 
 void AGothicPlayerCharacter::PossessedBy(AController* NewController)
 {
-    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: PossessedBy called"));
     Super::PossessedBy(NewController);
     InitGASFromPlayerState();
 }
 
 void AGothicPlayerCharacter::OnRep_PlayerState()
 {
-    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: OnRep_PlayerState called"));
     Super::OnRep_PlayerState();
     InitGASFromPlayerState();
 }
 
 void AGothicPlayerCharacter::InitGASFromPlayerState()
 {
-    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: InitGASFromPlayerState called"));
 
     AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
     if (!PS)
@@ -153,9 +166,6 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     AbilitySystemComponent = PS->GetGothicASC();
     AttributeSet           = PS->GetGothicAttributeSet();
 
-    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: ASC: %s | AttributeSet: %s"),
-        AbilitySystemComponent ? TEXT("Valid") : TEXT("NULL"),
-        AttributeSet ? TEXT("Valid") : TEXT("NULL"));
 
     InitializeGAS();
 
@@ -166,8 +176,6 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         {
             if (AbilitySet)
             {
-                UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Granting ability set %s"),
-                    *AbilitySet->GetName());
                 AbilitySet->GiveToAbilitySystem(AbilitySystemComponent, this);
             }
         }
@@ -179,7 +187,6 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     {
         if (UEnhancedInputComponent* EIC = Cast<UEnhancedInputComponent>(InputComponent))
         {
-            UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Binding ability inputs via InputHandler"));
             InputHandler->SetupAbilityInputBindings(EIC, AbilitySystemComponent);
         }
         else
@@ -188,16 +195,43 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         }
     }
 
-    // Health attribute delegate
+    // HUD attribute delegates
     if (IsLocallyControlled() && AbilitySystemComponent)
     {
+        // Health delegate — drives the health bar fill and number.
+        AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+            UGothicAttributeSet::GetHealthAttribute()).AddLambda(
+            [this](const FOnAttributeChangeData& Data)
+            {
+                if (!IsLocallyControlled()) return;
+
+                APlayerController* PC = GetWorld()->GetFirstPlayerController();
+                if (!PC) return;
+
+                AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
+                if (GothicHUD && AttributeSet)
+                {
+                    GothicHUD->UpdateHealth(Data.NewValue, AttributeSet->GetMaxHealth());
+                }
+
+                // Taking damage is a combat action — enters/refreshes combat state
+                // so Steadfast fills even during purely defensive play.
+                if (Data.NewValue < Data.OldValue)
+                {
+                    if (UGothicCombatStateComponent* Combat = FindComponentByClass<UGothicCombatStateComponent>())
+                    {
+                        Combat->NotifyCombatAction();
+                    }
+                }
+            });
+
+        // Selah delegate
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
     UGothicAttributeSet::GetSelahAttribute()).AddLambda(
     [this](const FOnAttributeChangeData& Data)
     {
         if (!IsLocallyControlled()) return;
 
-        UE_LOG(LogTemp, Log, TEXT("Selah changed: %.0f"), Data.NewValue);
 
         APlayerController* PC = GetWorld()->GetFirstPlayerController();
         if (!PC) return;
@@ -226,7 +260,6 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
                 }
             });
 
-        UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Attribute delegates registered"));
     }
 
     // Bind to inventory equipment changes so weapon slots update when gear is equipped
@@ -237,7 +270,6 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         {
             Inventory->OnItemEquipped.AddDynamic(this, &AGothicPlayerCharacter::OnEquipmentChanged);
             bInventoryBound = true;
-            UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Inventory equipment delegate bound"));
 
             // Sync weapon slots with anything already equipped (e.g. after respawn)
             static const EGothicEquipSlot WeaponEquipSlots[] = {
@@ -253,8 +285,6 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
                     {
                         WeaponSlots[i].WeaponData = Equipped->Definition->WeaponData;
                         WeaponSlots[i].InitFromData();
-                        UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Synced weapon slot %d — %s"),
-                            i, *Equipped->Definition->WeaponData->WeaponName.ToString());
                     }
                 }
             }
@@ -267,7 +297,6 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
 {
     Super::SetupPlayerInputComponent(PlayerInputComponent);
 
-    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: SetupPlayerInputComponent called"));
 
     UEnhancedInputComponent* EIC = Cast<UEnhancedInputComponent>(PlayerInputComponent);
     if (!EIC)
@@ -289,9 +318,16 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
         EIC->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
     }
 
-    // Non-GAS combat inputs — direct bindings
-    if (FireAction)
-        EIC->BindAction(FireAction, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnFire);
+    // Neither Fire nor Melee is bound here. Both route through
+    // DA_GothicInputConfig — IA_Fire as Input.Ability.PrimaryFire -> GA_Fire,
+    // IA_Melee as Input.Ability.Melee -> GA_HuntersStrike.
+    //
+    // Their predecessors (OnFire here, OnMelee on BP_GothicPlayerCharacter's
+    // event graph) each ran *in addition* to the ability on every input: an
+    // ECC_Pawn capsule trace applying a flat PistolDamage/MeleeDamage with no
+    // authority check, no ammo cost, no cooldown and no vital-point resolution.
+    // Because the trace hit the capsule rather than the mesh, they also dealt
+    // damage on shots the ability itself counted as a miss. Both removed.
 
     if (SprintAction)
     {
@@ -332,12 +368,7 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
     // ASC may not be ready here — bindings are set up again in InitGASFromPlayerState
     if (InputHandler && AbilitySystemComponent)
     {
-        UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: ASC ready at SetupPlayerInputComponent — binding now"));
         InputHandler->SetupAbilityInputBindings(EIC, AbilitySystemComponent);
-    }
-    else
-    {
-        UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: ASC not ready at SetupPlayerInputComponent — deferred to InitGASFromPlayerState"));
     }
 }
 
@@ -393,111 +424,6 @@ void AGothicPlayerCharacter::OnLook(const FInputActionValue& Value)
     AddControllerPitchInput(LookVec.Y);
 }
 
-void AGothicPlayerCharacter::OnFire()
-{
-    UE_LOG(LogTemp, Log, TEXT("OnFire: Called"));
-
-    if (!FirstPersonCamera)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("OnFire: FirstPersonCamera is null"));
-        return;
-    }
-
-    const FVector Start = FirstPersonCamera->GetComponentLocation();
-    const FVector End   = Start + (FirstPersonCamera->GetForwardVector() * 5000.f);
-
-    FHitResult Hit;
-    FCollisionQueryParams Params;
-    Params.AddIgnoredActor(this);
-
-    bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Pawn, Params);
-
-    if (bHit && Hit.GetActor())
-    {
-        UE_LOG(LogTemp, Log, TEXT("OnFire: Hit %s"), *Hit.GetActor()->GetName());
-
-        UAbilitySystemComponent* TargetASC =
-            UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Hit.GetActor());
-
-        if (TargetASC && DamageEffectClass)
-        {
-            FGameplayEffectContextHandle Context =
-                AbilitySystemComponent->MakeEffectContext();
-            FGameplayEffectSpecHandle Spec =
-                AbilitySystemComponent->MakeOutgoingSpec(DamageEffectClass, 1.f, Context);
-
-            if (Spec.IsValid())
-            {
-                Spec.Data->SetSetByCallerMagnitude(
-                    FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
-                    PistolDamage);
-
-                AbilitySystemComponent->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
-                UE_LOG(LogTemp, Log, TEXT("OnFire: Damage applied to %s"), *Hit.GetActor()->GetName());
-            }
-        }
-        else
-        {
-            UE_LOG(LogTemp, Log, TEXT("OnFire: Hit %s but no ASC or no DamageEffectClass"),
-                *Hit.GetActor()->GetName());
-        }
-    }
-    else
-    {
-        UE_LOG(LogTemp, Log, TEXT("OnFire: No hit"));
-    }
-}
-
-void AGothicPlayerCharacter::OnMelee()
-{
-    UE_LOG(LogTemp, Log, TEXT("OnMelee: Called"));
-
-    if (!FirstPersonCamera)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("OnMelee: FirstPersonCamera is null"));
-        return;
-    }
-
-    const FVector Start = FirstPersonCamera->GetComponentLocation();
-    const FVector End   = Start + (FirstPersonCamera->GetForwardVector() * 150.f);
-
-    FHitResult Hit;
-    FCollisionQueryParams Params;
-    Params.AddIgnoredActor(this);
-
-    bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Pawn, Params);
-
-    if (bHit && Hit.GetActor())
-    {
-        UE_LOG(LogTemp, Log, TEXT("OnMelee: Hit %s"), *Hit.GetActor()->GetName());
-
-        UAbilitySystemComponent* TargetASC =
-            UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Hit.GetActor());
-
-        if (TargetASC && DamageEffectClass)
-        {
-            FGameplayEffectContextHandle Context =
-                AbilitySystemComponent->MakeEffectContext();
-            FGameplayEffectSpecHandle Spec =
-                AbilitySystemComponent->MakeOutgoingSpec(DamageEffectClass, 1.f, Context);
-
-            if (Spec.IsValid())
-            {
-                Spec.Data->SetSetByCallerMagnitude(
-                    FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
-                    MeleeDamage);
-
-                AbilitySystemComponent->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
-                UE_LOG(LogTemp, Log, TEXT("OnMelee: Damage applied to %s"), *Hit.GetActor()->GetName());
-            }
-        }
-    }
-    else
-    {
-        UE_LOG(LogTemp, Log, TEXT("OnMelee: No hit"));
-    }
-}
-
 void AGothicPlayerCharacter::OnSprintStarted()
 {
     GetCharacterMovement()->MaxWalkSpeed = SprintSpeed;
@@ -510,8 +436,6 @@ void AGothicPlayerCharacter::OnSprintStopped()
 
 void AGothicPlayerCharacter::TriggerSelahMoment()
 {
-    UE_LOG(LogTemp, Log, TEXT("TriggerSelahMoment: Selah moment triggered on %s"),
-        *GetName());
 
     // Blueprint handles the visual and audio — call the event
     OnSelahMoment();
@@ -546,8 +470,6 @@ void AGothicPlayerCharacter::ConsumeRound()
     {
         Slot.CurrentMagazine--;
 
-        UE_LOG(LogTemp, Log, TEXT("ConsumeRound: %d remaining in magazine"),
-            Slot.CurrentMagazine);
 
         PushAmmoToHUD();
     }
@@ -614,8 +536,6 @@ bool AGothicPlayerCharacter::ReloadActiveWeapon()
     Slot.CurrentMagazine += Loaded;
     Slot.CurrentReserve  -= Loaded;
 
-    UE_LOG(LogTemp, Log, TEXT("Reload: loaded %d — Mag %d/%d | Reserve %d"),
-        Loaded, Slot.CurrentMagazine, Slot.WeaponData->MagazineCapacity, Slot.CurrentReserve);
 
     PushAmmoToHUD();
     OnReloadPerformed();
@@ -678,8 +598,6 @@ bool AGothicPlayerCharacter::ConvertSteadfastToReserve()
     const int32 Rounds = FMath::Min(FMath::FloorToInt(Granted), ReserveSpace);
     Slot.CurrentReserve += Rounds;
 
-    UE_LOG(LogTemp, Log, TEXT("Steadfast conversion: %d charges (%.1f) → %d rounds | Reserve %d/%d"),
-        ChargeCost, Cost, Rounds, Slot.CurrentReserve, Slot.WeaponData->MaxReserveAmmo);
 
     PushAmmoToHUD();
     OnSteadfastConverted(Rounds);
@@ -695,6 +613,7 @@ void AGothicPlayerCharacter::OnReloadPressed()
     }
 
     bSteadfastConversionFired = false;
+    bSteadfastHoldThresholdReached = false;
 
     GetWorldTimerManager().SetTimer(
         SteadfastHoldTimerHandle,
@@ -706,13 +625,15 @@ void AGothicPlayerCharacter::OnReloadPressed()
 
 void AGothicPlayerCharacter::OnReloadReleased()
 {
-    const bool bWasConverting = bSteadfastConversionFired;
+    const bool bWasHeld = bSteadfastHoldThresholdReached;
 
     EndSteadfastHold();
+    bSteadfastHoldThresholdReached = false;
 
     // Released before the threshold — this was a tap, so do a normal reload.
-    // Past the threshold the payoff was already given mid-hold; releasing adds nothing.
-    if (!bWasConverting)
+    // Past the threshold the payoff was already given mid-hold (or refused because
+    // there was nothing to convert); either way releasing must not reload.
+    if (!bWasHeld)
     {
         ReloadActiveWeapon();
     }
@@ -720,20 +641,17 @@ void AGothicPlayerCharacter::OnReloadReleased()
 
 void AGothicPlayerCharacter::HandleSteadfastHoldTick()
 {
-    const bool bFirst = !bSteadfastConversionFired;
-    bSteadfastConversionFired = true;
+    bSteadfastHoldThresholdReached = true;
 
     // Conversion is granted here, mid-hold — never deferred to release.
     if (!ConvertSteadfastToReserve())
     {
         // Nothing left to convert, or nowhere to put it. Stop rather than spin.
-        if (bFirst)
-        {
-            UE_LOG(LogTemp, Log, TEXT("Steadfast conversion: nothing to convert"));
-        }
         EndSteadfastHold();
         return;
     }
+
+    bSteadfastConversionFired = true;
 
     // Still held — queue the next conversion.
     GetWorldTimerManager().SetTimer(
@@ -815,12 +733,6 @@ void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
     RefreshWeaponVisuals(NewIndex);
     PushAmmoToHUD();
 
-    UE_LOG(LogTemp, Log, TEXT("SwapWeapon: Switched to slot %d — %s | Mag: %d/%d | Reserve: %d"),
-        NewIndex,
-        *NewWeapon->WeaponName.ToString(),
-        WeaponSlots[NewIndex].CurrentMagazine,
-        NewWeapon->MagazineCapacity,
-        WeaponSlots[NewIndex].CurrentReserve);
 
     // Blueprint hook for swap animation / audio
     OnWeaponSwapped(NewIndex, NewWeapon);
@@ -863,7 +775,6 @@ void AGothicPlayerCharacter::ToggleInventory()
             GothicHUD->SetCrosshairVisible(true);
         }
 
-        UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Inventory closed"));
         return;
     }
 
@@ -908,7 +819,6 @@ void AGothicPlayerCharacter::ToggleInventory()
         GothicHUD->SetCrosshairVisible(false);
     }
 
-    UE_LOG(LogTemp, Log, TEXT("GothicPlayerCharacter: Inventory opened"));
 }
 
 int32 AGothicPlayerCharacter::EquipSlotToWeaponIndex(EGothicEquipSlot Slot)
@@ -942,11 +852,6 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
         WeaponSlots[WeaponIndex].WeaponData = Item.Definition->WeaponData;
         WeaponSlots[WeaponIndex].InitFromData();
 
-        UE_LOG(LogTemp, Log, TEXT("OnEquipmentChanged: Slot %d updated — %s | Mag: %d | Reserve: %d"),
-            WeaponIndex,
-            *Item.Definition->WeaponData->WeaponName.ToString(),
-            WeaponSlots[WeaponIndex].CurrentMagazine,
-            WeaponSlots[WeaponIndex].CurrentReserve);
     }
     else
     {
@@ -955,7 +860,6 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
         WeaponSlots[WeaponIndex].CurrentMagazine = 0;
         WeaponSlots[WeaponIndex].CurrentReserve = 0;
 
-        UE_LOG(LogTemp, Log, TEXT("OnEquipmentChanged: Slot %d cleared"), WeaponIndex);
     }
 
     // Equipping into the active slot swaps the weapon out from under any in-progress

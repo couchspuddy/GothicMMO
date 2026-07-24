@@ -58,7 +58,21 @@ public:
         const FGameplayAbilityActorInfo* ActorInfo,
         const FGameplayAbilityActivationInfo ActivationInfo,
         const FGameplayEventData* TriggerEventData) override;
-    
+
+    /**
+     * Applies the cooldown with its duration taken from the active weapon's rounds
+     * per minute, via the Data.Cooldown SetByCaller. The base implementation applies
+     * a fixed-duration GE, which meant every weapon fired at the same rate no matter
+     * what its data asset said.
+     *
+     * The cooldown GE stays the gate rather than a timer on the pawn: GA_Fire is
+     * LocalPredicted, and it is the Cooldown.PrimaryFire tag that keeps the client's
+     * predicted rejection and the server's ruling in agreement.
+     */
+    virtual void ApplyCooldown(
+        const FGameplayAbilitySpecHandle Handle,
+        const FGameplayAbilityActorInfo* ActorInfo,
+        const FGameplayAbilityActivationInfo ActivationInfo) const override;
 
 
 protected:
@@ -88,6 +102,13 @@ protected:
     /** Hitscan range in cm. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire")
     float TraceRange = 5000.f;
+
+    /**
+     * Fire rate used when the pawn has no weapon data to read — same fallback role
+     * as Damage and TraceRange above. A weapon with a data asset always wins.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire", meta = (ClampMin = 1))
+    float FallbackRoundsPerMinute = 171.f;
 
     /**
      * Server-only. Traces on ECC_Weapon (the mesh, not the capsule), resolves the

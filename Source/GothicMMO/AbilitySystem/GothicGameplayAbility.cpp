@@ -71,8 +71,6 @@ bool UGothicGameplayAbility::PlayOptionalMontage()
     EventTask->EventReceived.AddDynamic(this, &UGothicGameplayAbility::OnMontageHitWindow);
     EventTask->ReadyForActivation();
 
-    UE_LOG(LogTemp, Log, TEXT("%s: Montage started — %s"),
-        *GetName(), *MontageToPlay->GetName());
 
     return true;
 }

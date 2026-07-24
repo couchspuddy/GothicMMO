@@ -1,4 +1,4 @@
-﻿// BTTask_BossCry.cpp
+// BTTask_BossCry.cpp
 
 #include "AI/BTTask_BossCry.h"
 #include "AI/GothicBossArenaManager.h"
@@ -107,12 +107,9 @@ EBTNodeResult::Type UBTTask_BossCry::ExecuteTask(
             BossASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), PlayerASC);
             PlayersStaggered++;
 
-            UE_LOG(LogTemp, Log, TEXT("BossCry: Staggered %s"), *Player->GetName());
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("BossCry: Complete | %d players staggered | Pillar damage: %.0f"),
-        PlayersStaggered, CryPillarDamage);
 
     return EBTNodeResult::Succeeded;
 }

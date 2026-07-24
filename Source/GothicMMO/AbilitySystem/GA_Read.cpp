@@ -1,4 +1,4 @@
-﻿// GA_Read.cpp
+// GA_Read.cpp
 
 #include "AbilitySystem//GA_Read.h"
 #include "AI/GothicVitalPointComponent.h"
@@ -25,7 +25,6 @@ void UGA_Read::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 
     if (!TrackedVitalPoint)
     {
-        UE_LOG(LogTemp, Log, TEXT("GA_Read: No valid target found — cancelling"));
         CancelAbility(Handle, ActorInfo, ActivationInfo, true);
         return;
     }
@@ -45,9 +44,6 @@ void UGA_Read::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
     TrackedVitalPoint->OnVitalPointShifted.RemoveDynamic(this, &UGA_Read::OnVitalPointShifted);
     TrackedVitalPoint->OnVitalPointShifted.AddDynamic(this, &UGA_Read::OnVitalPointShifted);
 
-    UE_LOG(LogTemp, Log, TEXT("GA_Read: Activated — tracking %s, next vital at %s"),
-        *TrackedVitalPoint->GetOwner()->GetName(),
-        *NextLocation.ToString());
 
     // Start duration timer
     GetWorld()->GetTimerManager().SetTimer(
@@ -80,7 +76,6 @@ void UGA_Read::EndAbility(const FGameplayAbilitySpecHandle Handle,
 
     TrackedVitalPoint = nullptr;
 
-    UE_LOG(LogTemp, Log, TEXT("GA_Read: Ended"));
 
     Super::EndAbility(Handle, ActorInfo, ActivationInfo,
         bReplicateEndAbility, bWasCancelled);
@@ -118,13 +113,10 @@ void UGA_Read::OnVitalPointShifted(int32 NewIndex, FVector NewWorldLocation)
     const FVector NextLocation = TrackedVitalPoint->GetNextVitalWorldLocation();
     TrackedVitalPoint->SetReadHighlight(NextLocation);
 
-    UE_LOG(LogTemp, Log, TEXT("GA_Read: Vital shifted — Read highlight moved to %s"),
-        *NextLocation.ToString());
 }
 
 void UGA_Read::OnReadExpired()
 {
-    UE_LOG(LogTemp, Log, TEXT("GA_Read: Duration expired"));
 
     const FGameplayAbilitySpecHandle Handle = GetCurrentAbilitySpecHandle();
     const FGameplayAbilityActorInfo* ActorInfo = GetCurrentActorInfo();

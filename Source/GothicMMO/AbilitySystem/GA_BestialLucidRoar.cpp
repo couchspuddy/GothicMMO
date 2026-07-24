@@ -1,4 +1,4 @@
-﻿// GA_BestialLucidRoar.cpp
+// GA_BestialLucidRoar.cpp
 
 #include "AbilitySystem/GA_BestialLucidRoar.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
@@ -87,6 +87,4 @@ void UGA_BestialLucidRoar::PerformRoarStun()
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("Roar: %s stunned %d player(s) within %.0f"),
-        *Avatar->GetName(), PlayersHit, StunRadius);
 }

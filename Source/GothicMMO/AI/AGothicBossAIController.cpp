@@ -1,4 +1,4 @@
-﻿// GothicBossAIController.cpp
+// GothicBossAIController.cpp
 
 #include "AI/AGothicBossAIController.h"
 #include "BehaviorTree/BlackboardComponent.h"
@@ -13,12 +13,6 @@ void AGothicBossAIController::OnPossess(APawn* InPawn)
 		Blackboard->SetValueAsInt(PhaseBlackboardKey, CurrentPhase);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("BossAI [%s]: BB valid=%d, Key=%s, KeyID=%d, Phase=%d"),
-		InPawn ? *InPawn->GetName() : TEXT("NoPawn"),
-		Blackboard != nullptr,
-		*PhaseBlackboardKey.ToString(),
-		Blackboard ? (int32)Blackboard->GetKeyID(PhaseBlackboardKey) : -1,
-		CurrentPhase);
 }
 AGothicBossAIController::AGothicBossAIController()
 {
@@ -33,8 +27,6 @@ void AGothicBossAIController::OnPhaseAdvance()
 		Blackboard->SetValueAsInt(PhaseBlackboardKey, CurrentPhase);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("%s: Boss phase advanced to %d"),
-		GetPawn() ? *GetPawn()->GetName() : TEXT("Unknown"), CurrentPhase);
 
 	OnBossPhaseChanged.Broadcast(CurrentPhase);
 }

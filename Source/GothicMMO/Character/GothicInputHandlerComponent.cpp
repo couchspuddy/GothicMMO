@@ -1,4 +1,4 @@
-﻿// GothicInputHandlerComponent.cpp
+// GothicInputHandlerComponent.cpp
 
 #include "Character/GothicInputHandlerComponent.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
@@ -13,7 +13,6 @@ UGothicInputHandlerComponent::UGothicInputHandlerComponent()
 {
     PrimaryComponentTick.bCanEverTick = false;
 
-    UE_LOG(LogTemp, Log, TEXT("GothicInputHandlerComponent: Constructed"));
 }
 
 void UGothicInputHandlerComponent::SetupAbilityInputBindings(
@@ -38,8 +37,6 @@ void UGothicInputHandlerComponent::SetupAbilityInputBindings(
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("GothicInputHandlerComponent: Setting up %d ability input bindings"),
-        InputConfig->AbilityInputActions.Num());
 
     // Clear previous bindings if any
     for (uint32 Handle : AbilityBindingHandles)
@@ -85,13 +82,8 @@ void UGothicInputHandlerComponent::SetupAbilityInputBindings(
         AbilityBindingHandles.Add(PressHandle);
         AbilityBindingHandles.Add(ReleaseHandle);
 
-        UE_LOG(LogTemp, Log, TEXT("GothicInputHandlerComponent: Bound %s → %s"),
-            *ActionEntry.InputAction->GetName(),
-            *ActionEntry.InputTag.ToString());
     }
 
-    UE_LOG(LogTemp, Log, TEXT("GothicInputHandlerComponent: Binding complete — %d handles registered"),
-        AbilityBindingHandles.Num());
 }
 
 void UGothicInputHandlerComponent::SwapMappingContext(
@@ -125,14 +117,11 @@ void UGothicInputHandlerComponent::SwapMappingContext(
     if (OldContext)
     {
         Subsystem->RemoveMappingContext(OldContext);
-        UE_LOG(LogTemp, Log, TEXT("GothicInputHandlerComponent: Removed IMC %s"), *OldContext->GetName());
     }
 
     if (NewContext)
     {
         Subsystem->AddMappingContext(NewContext, Priority);
-        UE_LOG(LogTemp, Log, TEXT("GothicInputHandlerComponent: Added IMC %s at priority %d"),
-            *NewContext->GetName(), Priority);
     }
 }
 
@@ -145,8 +134,6 @@ void UGothicInputHandlerComponent::HandleAbilityInputPressed(FGameplayTag InputT
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("GothicInputHandlerComponent: Input pressed | Tag: %s"),
-        *InputTag.ToString());
 
     CachedASC->AbilityInputTagPressed(InputTag);
 }
@@ -160,8 +147,6 @@ void UGothicInputHandlerComponent::HandleAbilityInputReleased(FGameplayTag Input
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("GothicInputHandlerComponent: Input released | Tag: %s"),
-        *InputTag.ToString());
 
     CachedASC->AbilityInputTagReleased(InputTag);
 }

@@ -1,4 +1,4 @@
-﻿// GA_BestialLucidCry.cpp
+// GA_BestialLucidCry.cpp
 
 #include "AI/GA_BestialLucidCry.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
@@ -84,8 +84,6 @@ void UGA_BestialLucidCry::PerformCry()
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("Cry: %s stunned %d player(s) within %.0f"),
-        *Avatar->GetName(), PlayersHit, StunRadius);
 
     // ── Spawn Thralls ────────────────────────────────────────────────
 
@@ -119,8 +117,6 @@ void UGA_BestialLucidCry::SpawnCryThralls()
     int32 SlotsAvailable = MaxCryThralls - LivingThralls;
     if (SlotsAvailable <= 0)
     {
-        UE_LOG(LogTemp, Log, TEXT("Cry: Max Thralls already alive (%d/%d) — skipping spawn"),
-            LivingThralls, MaxCryThralls);
         return;
     }
 
@@ -173,12 +169,7 @@ void UGA_BestialLucidCry::SpawnCryThralls()
             SpawnedCryThralls.Add(NewEnemy);
             ++Spawned;
 
-            UE_LOG(LogTemp, Log, TEXT("Cry: Spawned %s at %s"),
-                *NewEnemy->GetName(),
-                *SpawnPoint->GetActorLocation().ToString());
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("Cry: Spawned %d Thrall(s) (%d/%d alive)"),
-        Spawned, LivingThralls + Spawned, MaxCryThralls);
 }

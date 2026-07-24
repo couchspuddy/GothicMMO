@@ -1,4 +1,4 @@
-﻿// GothicSelahPromptWidget.cpp
+// GothicSelahPromptWidget.cpp
 
 #include "UI/GothicSelahPromptWidget.h"
 #include "TimerManager.h"
@@ -15,8 +15,6 @@ void UGothicSelahPromptWidget::StartNameCycle(const TArray<FText>& Names)
     CurrentNameIndex = 0;
     bIsCycling = true;
 
-    UE_LOG(LogTemp, Log, TEXT("SelahPrompt: Starting name cycle — %d names, %.1fs per name"),
-        CachedNames.Num(), SecondsPerName);
 
     // Initial delay — let the silence land before the first name
     if (UWorld* World = GetWorld())
@@ -40,8 +38,6 @@ void UGothicSelahPromptWidget::RevealNextName()
 
     const FText& Name = CachedNames[CurrentNameIndex];
 
-    UE_LOG(LogTemp, Log, TEXT("SelahPrompt: Revealing name %d/%d — %s"),
-        CurrentNameIndex + 1, CachedNames.Num(), *Name.ToString());
 
     OnNameRevealed(Name, CurrentNameIndex, CachedNames.Num());
 
@@ -92,7 +88,6 @@ void UGothicSelahPromptWidget::SkipToEnd()
 {
     if (!bIsCycling) return;
 
-    UE_LOG(LogTemp, Log, TEXT("SelahPrompt: Skip requested — revealing remaining names"));
 
     if (UWorld* World = GetWorld())
     {
@@ -118,8 +113,6 @@ void UGothicSelahPromptWidget::CompleteCycle()
         World->GetTimerManager().ClearTimer(NameCycleTimer);
     }
 
-    UE_LOG(LogTemp, Log, TEXT("SelahPrompt: Name cycle complete — %d names shown"),
-        CachedNames.Num());
 
     OnSelahMomentComplete();
 }

@@ -154,11 +154,6 @@ void AGothicHUD::SetCrosshairVisible(bool bVisible)
 
 void AGothicHUD::UpdateHealth(float CurrentHealth, float MaxHealth)
 {
-    
-    GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Orange,
-        FString::Printf(TEXT("UpdateHealth called: %.1f / %.1f | Widget: %s"),
-            CurrentHealth, MaxHealth,
-            ActiveHUDWidget ? TEXT("Valid") : TEXT("NULL")));
     if (ActiveHUDWidget)
     {
         ActiveHUDWidget->CachedHealth    = CurrentHealth;
@@ -187,6 +182,9 @@ void AGothicHUD::UpdateAbilityCooldown(EGothicAbilitySlot SlotIndex, float Coold
 {
     if (ActiveHUDWidget)
     {
+        // Drive the cooldown overlay bars directly (C++ BindWidget), then fire the
+        // BP event for any additional layout-specific flourishes.
+        ActiveHUDWidget->SetAbilityCooldownDisplay(SlotIndex, CooldownRemaining, CooldownTotal);
         ActiveHUDWidget->OnAbilityCooldownChanged(SlotIndex, CooldownRemaining, CooldownTotal);
 
         // Notify when ability fully recharged
@@ -229,7 +227,6 @@ void AGothicHUD::CreateAndShowLayout(TSubclassOf<UGothicHUDWidget> WidgetClass)
 
 void AGothicHUD::UpdateSelah(float CurrentSelah)
 {
-    UE_LOG(LogTemp, Log, TEXT("GothicHUD: UpdateSelah called — %.0f"), CurrentSelah);
 
     if (ActiveHUDWidget)
     {
@@ -239,8 +236,6 @@ void AGothicHUD::UpdateSelah(float CurrentSelah)
 
 void AGothicHUD::CreateAndShowCrosshair(TSubclassOf<UGothicCrosshairWidget> CrosshairClass)
 {
-    UE_LOG(LogTemp, Log, TEXT("CreateAndShowCrosshair called - Class: %s"),
-        CrosshairClass ? *CrosshairClass->GetName() : TEXT("NULL"));
 
     if (!CrosshairClass)
     {
@@ -257,8 +252,6 @@ void AGothicHUD::CreateAndShowCrosshair(TSubclassOf<UGothicCrosshairWidget> Cros
     ActiveCrosshairWidget = CreateWidget<UGothicCrosshairWidget>(
         GetOwningPlayerController(), CrosshairClass);
 
-    UE_LOG(LogTemp, Log, TEXT("Crosshair widget created: %s"),
-        ActiveCrosshairWidget ? TEXT("Success") : TEXT("Failed"));
 
     if (ActiveCrosshairWidget)
     {
@@ -299,8 +292,6 @@ void AGothicHUD::NotifyOwningPawnChanged(APawn* NewPawn)
         ActiveCrosshairWidget->OnOwningPawnChanged(NewPawn);
     }
 
-    UE_LOG(LogTemp, Log, TEXT("AGothicHUD: Notified widgets of owning pawn change — %s"),
-        NewPawn ? *NewPawn->GetName() : TEXT("NULL"));
 }
 
 void AGothicHUD::UpdateAmmo(int32 Magazine, int32 MagCapacity, int32 Reserve, int32 MaxReserve)
@@ -310,9 +301,6 @@ void AGothicHUD::UpdateAmmo(int32 Magazine, int32 MagCapacity, int32 Reserve, in
         return;
     }
     
-    UE_LOG(LogTemp, Log, TEXT("UpdateAmmo: Mag=%d/%d Reserve=%d/%d | Widget=%s"),
-    Magazine, MagCapacity, Reserve, MaxReserve,
-    ActiveHUDWidget ? *ActiveHUDWidget->GetClass()->GetName() : TEXT("NULL"));
 
     ActiveHUDWidget->CachedMagazineAmmo     = Magazine;
     ActiveHUDWidget->CachedMagazineCapacity = MagCapacity;
@@ -400,6 +388,56 @@ void AGothicHUD::DrawHUD()
     }
 
     DrawEnemyHealthBars();
+    DrawInteractPrompt();
+}
+
+void AGothicHUD::SetInteractPrompt(AActor* Interactable, const FText& PromptText)
+{
+    // Record who raised it so ClearInteractPrompt can reject a stale clear
+    // arriving from an interactable the player has already left.
+    InteractPromptText  = PromptText;
+    InteractPromptOwner = Interactable;
+}
+
+void AGothicHUD::ClearInteractPrompt(AActor* Requester)
+{
+    // Only the actor that raised the prompt may clear it. Without this, walking
+    // from one interactable straight into another blanks the new prompt, because
+    // the second actor's BeginOverlap fires before the first actor's EndOverlap.
+    if (Requester && InteractPromptOwner.IsValid() && InteractPromptOwner.Get() != Requester)
+    {
+        return;
+    }
+
+    InteractPromptText = FText::GetEmpty();
+    InteractPromptOwner = nullptr;
+}
+
+void AGothicHUD::DrawInteractPrompt()
+{
+    if (!Canvas || InteractPromptText.IsEmpty())
+    {
+        return;
+    }
+
+    const UFont* DrawFont = GEngine->GetLargeFont();
+
+    const FString Composed = InteractKeyHint.IsEmpty()
+        ? InteractPromptText.ToString()
+        : FString::Printf(TEXT("[%s]   %s"), *InteractKeyHint, *InteractPromptText.ToString());
+
+    FCanvasTextItem TextItem(
+        FVector2D(Canvas->SizeX * 0.5f, Canvas->SizeY * 0.5f + InteractPromptOffsetY),
+        FText::FromString(Composed),
+        DrawFont,
+        InteractPromptColor.ToFColor(true));
+
+    TextItem.bCentreX     = true;
+    TextItem.bOutlined    = true;
+    TextItem.OutlineColor = FLinearColor(0.f, 0.f, 0.f, 0.85f);
+    TextItem.Scale        = FVector2D(InteractPromptScale, InteractPromptScale);
+
+    Canvas->DrawItem(TextItem);
 }
 
 void AGothicHUD::RegisterEnemyHealthBar(AGothicEnemyBase* Enemy)

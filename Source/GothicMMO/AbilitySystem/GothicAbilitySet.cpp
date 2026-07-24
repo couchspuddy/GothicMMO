@@ -1,4 +1,4 @@
-﻿// GothicAbilitySet.cpp
+// GothicAbilitySet.cpp
 
 #include "AbilitySystem/GothicAbilitySet.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
@@ -20,12 +20,6 @@ void UGothicAbilitySet::GiveToAbilitySystem(
         UE_LOG(LogTemp, Warning, TEXT("GothicAbilitySet: GiveToAbilitySystem called without authority — skipping"));
         return;
     }
-
-    UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: Granting %d abilities to %s"),
-        GrantedAbilities.Num(),
-        ASC->GetOwnerActor() ? *ASC->GetOwnerActor()->GetName() : TEXT("Unknown"));
-    
-    
 
     // Grant abilities
     for (const FGothicAbilitySetEntry& Entry : GrantedAbilities)
@@ -60,8 +54,6 @@ void UGothicAbilitySet::GiveToAbilitySystem(
 
         if (bAlreadyGranted)
         {
-            UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: %s already granted — skipping duplicate"),
-                *Entry.AbilityClass->GetName());
             continue;
         }
         // ---- END guard ----
@@ -79,16 +71,10 @@ void UGothicAbilitySet::GiveToAbilitySystem(
         // Register in the slot map for cooldown polling and HUD
         ASC->RegisterAbilitySlot(Entry.AbilitySlot, Handle);
 
-        UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: Granted %s | Tag: %s | Slot: %d"),
-            *Entry.AbilityClass->GetName(),
-            *Entry.InputTag.ToString(),
-            (int32)Entry.AbilitySlot);
         
         if (Entry.bActivateOnGranted)   // <-- new
         {
             const bool bActivated = ASC->TryActivateAbility(Handle);
-            UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: %s activate-on-grant %s"),
-                *Entry.AbilityClass->GetName(), bActivated ? TEXT("succeeded") : TEXT("FAILED"));
         }
     }
 
@@ -131,8 +117,6 @@ void UGothicAbilitySet::GiveToAbilitySystem(
 
             if (ASC->GetActiveEffects(Query).Num() > 0)
             {
-                UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: %s already active — skipping duplicate apply"),
-                    *EffectClass->GetName());
                 continue;
             }
         }
@@ -146,7 +130,6 @@ void UGothicAbilitySet::GiveToAbilitySystem(
         if (SpecHandle.IsValid())
         {
             ASC->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data.Get());
-            UE_LOG(LogTemp, Log, TEXT("GothicAbilitySet: Applied effect %s"), *EffectClass->GetName());
         }
     }
 }

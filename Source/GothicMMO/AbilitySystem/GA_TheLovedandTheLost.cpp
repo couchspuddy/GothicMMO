@@ -1,4 +1,4 @@
-﻿// GA_TheLovedAndTheLost.cpp
+// GA_TheLovedAndTheLost.cpp
 
 #include "AbilitySystem/GA_TheLovedAndTheLost.h"
 #include "AbilitySystemComponent.h"
@@ -37,8 +37,6 @@ void UGA_TheLovedAndTheLost::ActivateAbility(const FGameplayAbilitySpecHandle Ha
         StartRamping();
     }
 
-    UE_LOG(LogTemp, Log, TEXT("GA_TheLovedAndTheLost: Passive active, listening for %s"),
-        *InCombatTag.ToString());
 }
 
 void UGA_TheLovedAndTheLost::OnCombatTagChanged(const FGameplayTag Tag, int32 NewCount)
@@ -80,7 +78,6 @@ void UGA_TheLovedAndTheLost::StartRamping()
         RampTickHandle, this, &UGA_TheLovedAndTheLost::TickRamp,
         RampTickInterval, true);
 
-    UE_LOG(LogTemp, Log, TEXT("GA_TheLovedAndTheLost: Entered combat, ramp starting"));
 }
 
 void UGA_TheLovedAndTheLost::TickRamp()
@@ -126,7 +123,6 @@ void UGA_TheLovedAndTheLost::StopRamping()
 
     CurrentRampTime = 0.f;
 
-    UE_LOG(LogTemp, Log, TEXT("GA_TheLovedAndTheLost: Left combat, ramp reset"));
 }
 
 void UGA_TheLovedAndTheLost::EndAbility(const FGameplayAbilitySpecHandle Handle,

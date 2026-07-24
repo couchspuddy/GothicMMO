@@ -1,4 +1,4 @@
-﻿// GA_Lunge.cpp
+// GA_Lunge.cpp
 
 #include "AbilitySystem/GA_Lunge.h"
 #include "AbilitySystemComponent.h"
@@ -51,8 +51,6 @@ void UGA_Lunge::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 
     StartLungeMovement(Character, Direction);
 
-    UE_LOG(LogTemp, Log, TEXT("GA_Lunge: Activated, direction %s, distance %.1f"),
-        *Direction.ToString(), LungeDistance);
 }
 
 FVector UGA_Lunge::GetLungeDirection(ACharacter* Character) const

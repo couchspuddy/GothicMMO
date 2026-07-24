@@ -79,8 +79,6 @@ void AGothicEnemyAIController::SetBlackboardTarget(AActor* NewTarget)
     const float Delay = FMath::FRandRange(StaggerDelayRange.X, StaggerDelayRange.Y);
     Blackboard->SetValueAsFloat(GothicBBKeys::StaggerDelay, Delay);
 
-    UE_LOG(LogTemp, Log, TEXT("%s: Combat target set to %s | StaggerDelay: %.2fs"),
-        *GetPawn()->GetName(), *NewTarget->GetName(), Delay);
 }
 
 void AGothicEnemyAIController::ClearCombatTarget()
@@ -138,7 +136,6 @@ void AGothicEnemyAIController::CheckLeash()
 
         if (DistFromOrigin > LeashRange)
         {
-            UE_LOG(LogTemp, Log, TEXT("%s: Leash broken - returning to patrol origin."), *OwnerPawn->GetName());
             ClearCombatTarget();
             MoveToLocation(PatrolOrigin, 50.f);
         }
@@ -169,7 +166,5 @@ void AGothicEnemyAIController::EnterRegroupPause(float Duration)
             }
         }, Duration, false);
 
-        UE_LOG(LogTemp, Log, TEXT("%s: Regroup pause %.1fs"),
-            *GetName(), Duration);
     }
 }

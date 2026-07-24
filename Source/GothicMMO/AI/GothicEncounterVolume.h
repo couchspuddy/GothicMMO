@@ -1,4 +1,4 @@
-﻿// GothicEncounterVolume.h
+// GothicEncounterVolume.h
 // Placed per-encounter in the level. Holds hand-picked references to that
 // encounter's enemies (matching the deliberate placement described in the
 // Eagle's Landing Encounters doc — not auto-discovered). Tracks deaths,
@@ -17,8 +17,6 @@ class UGameplayEffect;
 class AGothicEnemySpawnPoint;
 class UBoxComponent;
 class AGothicPlayerCharacter;
-
-
 
 UCLASS()
 class GOTHICMMO_API AGothicEncounterVolume : public AActor

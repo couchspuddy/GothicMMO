@@ -1,4 +1,4 @@
-﻿// GothicBossAIController_BestialLucid.cpp
+// GothicBossAIController_BestialLucid.cpp
 
 #include "AI/AGothicBossAIController_BestialLucid.h"
 #include "AI/GothicVitalPointComponent.h"
@@ -25,8 +25,6 @@ void AGothicBossAIController_BestialLucid::OnPossess(APawn* InPawn)
         CachedVitalPointComponent->OnVitalPointShifted.AddDynamic(
             this, &AGothicBossAIController_BestialLucid::HandleVitalPointShifted);
 
-        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Bound to vital point shifts on %s"),
-            *InPawn->GetName());
     }
     else
     {
@@ -41,8 +39,6 @@ void AGothicBossAIController_BestialLucid::OnPossess(APawn* InPawn)
             UGothicAttributeSet::GetHealthAttribute())
             .AddUObject(this, &AGothicBossAIController_BestialLucid::HandleHealthChanged);
 
-        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Bound to health changes on %s -- transition at %.0f%%"),
-            *InPawn->GetName(), Phase2HealthThreshold * 100.f);
     }
     else
     {
@@ -99,8 +95,6 @@ void AGothicBossAIController_BestialLucid::HandleHealthChanged(const FOnAttribut
     const float Fraction = Data.NewValue / MaxHealth;
     if (Fraction <= Phase2HealthThreshold)
     {
-        UE_LOG(LogTemp, Log, TEXT("BestialLucid AI: Health %.1f/%.1f (%.0f%%) crossed %.0f%% -- starting transition"),
-            Data.NewValue, MaxHealth, Fraction * 100.f, Phase2HealthThreshold * 100.f);
 
         bTransitionTriggered = true;
 

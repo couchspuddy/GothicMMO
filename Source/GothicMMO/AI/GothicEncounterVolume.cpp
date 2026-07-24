@@ -1,4 +1,4 @@
-﻿// GothicEncounterVolume.cpp
+// GothicEncounterVolume.cpp
 
 #include "AI/GothicEncounterVolume.h"
 #include "AI/GothicEnemyBase.h"
@@ -100,8 +100,6 @@ void AGothicEncounterVolume::HandleTriggerBeginOverlap(
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: %s entered — aggroed %d/%d enemies"),
-        *GetName(), *Player->GetName(), AggroedCount, EncounterEnemies.Num());
 }
 
 // AGothicEncounterVolume.cpp — replace HandleEnemyDied's completion block
@@ -115,8 +113,6 @@ void AGothicEncounterVolume::HandleEnemyDied(AGothicEnemyBase* DeadEnemy)
     RemainingEnemyCount = FMath::Max(0, RemainingEnemyCount - 1);
     LastEnemyToDie = DeadEnemy;
 
-    UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: %s died — %d remaining"),
-        *GetName(), DeadEnemy ? *DeadEnemy->GetName() : TEXT("Unknown"), RemainingEnemyCount);
 
     if (RemainingEnemyCount <= 0)
     {
@@ -148,8 +144,6 @@ void AGothicEncounterVolume::HandleEnemyDied(AGothicEnemyBase* DeadEnemy)
             GS->SetSelahNames(Names);
 
             GS->SetActivePromptCorpse(LastEnemyToDie);
-            UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: Complete — prompt on %s, cached %.1f Selah"),
-                *GetName(), LastEnemyToDie ? *LastEnemyToDie->GetName() : TEXT("Unknown"), CachedTotalSelah);
         }
     }
     OnEncounterMemberDied.Broadcast(DeadEnemy);
@@ -197,8 +191,6 @@ void AGothicEncounterVolume::CompleteCollection()
             }
         }
 
-        UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: Spawned wave of %d on first collection attempt"),
-            *GetName(), SpawnedWave.Num());
 
         AddWaveToEncounter(SpawnedWave); // retracts the prompt too
         return; // no reward yet — Wave 2 has to fall first
@@ -265,15 +257,11 @@ void AGothicEncounterVolume::AddWaveToEncounter(const TArray<AGothicEnemyBase*>&
 
     RemainingEnemyCount += AddedCount;
 
-    UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: Added wave of %d — %d now remaining"),
-        *GetName(), AddedCount, RemainingEnemyCount);
 
     AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr;
     if (GS && LastEnemyToDie && GS->GetActivePromptCorpse() == LastEnemyToDie)
     {
         GS->SetSelahNames(TArray<FText>());
         GS->SetActivePromptCorpse(nullptr);
-        UE_LOG(LogTemp, Log, TEXT("AGothicEncounterVolume %s: Prompt retracted — new wave arrived"),
-            *GetName());
     }
 }

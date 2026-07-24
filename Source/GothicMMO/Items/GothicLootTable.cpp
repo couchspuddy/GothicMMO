@@ -1,4 +1,4 @@
-﻿// GothicLootTable.cpp
+// GothicLootTable.cpp
 
 #include "Items/GothicLootTable.h"
 #include "Items/GothicItemDefinition.h"
@@ -44,9 +44,6 @@ bool UGothicLootTable::RollDrop(FGothicItemInstance& OutInstance) const
 		if (Roll < 0)
 		{
 			OutInstance = Entry.ItemDefinition->RollInstance();
-			UE_LOG(LogTemp, Log, TEXT("LootTable: Dropped %s (Rarity %d)"),
-				*Entry.ItemDefinition->ItemID.ToString(),
-				(int32)Entry.ItemDefinition->Rarity);
 			return true;
 		}
 	}

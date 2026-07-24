@@ -63,8 +63,6 @@ void UGothicAttributeSet::PreAttributeChange(const FGameplayAttribute& Attribute
     }
     else if (Attribute == GetSuperMeterAttribute())
     {
-        UE_LOG(LogTemp, Log, TEXT("SuperMeter PreAttributeChange: NewValue=%.1f MaxSuperMeter=%.1f"), 
-            NewValue, GetMaxSuperMeter());
         NewValue = FMath::Clamp(NewValue, 0.f, GetMaxSuperMeter());
     }
     else if (Attribute == GetSelahAttribute())
@@ -104,10 +102,6 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
         const float FinalDamage = FMath::Max(1.f, RawDamage - GetDefense());
         const float NewHealth = FMath::Clamp(GetHealth() - FinalDamage, 0.f, GetMaxHealth());
         SetHealth(NewHealth);
-
-        GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan,
-            FString::Printf(TEXT("%s Health: %.1f / %.1f"),
-            *GetOwningActor()->GetName(), NewHealth, GetMaxHealth()));
 
         // Notify combat state on both target (received damage) and source (dealt damage)
         if (TargetActor)

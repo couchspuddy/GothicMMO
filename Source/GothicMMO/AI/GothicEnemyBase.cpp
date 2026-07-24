@@ -78,8 +78,6 @@ void AGothicEnemyBase::BeginPlay()
             FAttachmentTransformRules::SnapToTargetNotIncludingScale,
             HitboxAttachBone);
 
-        UE_LOG(LogTemp, Log, TEXT("%s: Hitbox attached to bone '%s'"),
-            *GetName(), *HitboxAttachBone.ToString());
     }
 
     if (PerceptionComponent)
@@ -143,8 +141,6 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
 {
     Super::OnDeath_Implementation(Killer);
 
-    UE_LOG(LogTemp, Log, TEXT("GothicEnemyBase: %s died — running Selah proximity check"),
-        *GetName());
 
     // Force-disable hitbox so a dying enemy can't damage players mid-death anim
     if (MeleeHitbox)
@@ -182,8 +178,6 @@ void AGothicEnemyBase::AwardSelahToNearbyEmbers()
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Checking %.0f unit radius around %s"),
-        SelahAwardRadius, *GetName());
 
     TArray<AActor*> NearbyActors;
     UGameplayStatics::GetAllActorsOfClass(
@@ -197,12 +191,9 @@ void AGothicEnemyBase::AwardSelahToNearbyEmbers()
     {
         float Distance = FVector::Dist(GetActorLocation(), Actor->GetActorLocation());
 
-        UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Player %s is %.0f units away"),
-            *Actor->GetName(), Distance);
 
         if (Distance > SelahAwardRadius)
         {
-            UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Too far — no Selah"));
             continue;
         }
 
@@ -238,8 +229,6 @@ void AGothicEnemyBase::AwardSelahToNearbyEmbers()
 
             PlayerASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
 
-            UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Awarded %.1f Selah to %s"),
-                SelahAwardAmount, *Actor->GetName());
 
             PlayersAwarded++;
 
@@ -251,8 +240,6 @@ void AGothicEnemyBase::AwardSelahToNearbyEmbers()
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Awarded Selah to %d players"),
-        PlayersAwarded);
 }
 
 void AGothicEnemyBase::DestroyCorpse()
@@ -270,7 +257,6 @@ void AGothicEnemyBase::SpawnLootDrop()
     FGothicItemInstance RolledItem;
     if (!LootTable->RollDrop(RolledItem))
     {
-        UE_LOG(LogTemp, Log, TEXT("%s: Loot roll — nothing dropped"), *GetName());
         return;
     }
 
@@ -285,9 +271,6 @@ void AGothicEnemyBase::SpawnLootDrop()
     if (Pickup)
     {
         Pickup->InitializePickup(RolledItem);
-        UE_LOG(LogTemp, Log, TEXT("%s: Spawned loot pickup — %s"),
-            *GetName(),
-            RolledItem.Definition ? *RolledItem.Definition->ItemID.ToString() : TEXT("Unknown"));
     }
 }
 
@@ -295,9 +278,18 @@ void AGothicEnemyBase::MulticastOnHit_Implementation(
     FVector HitLocation, bool bVitalHit, float DamageAmount)
 {
     // This runs on every client (and the server). Drive visual/audio feedback here.
-    // The anim instance's OnHitFeedback is the intended consumer — if it's wired up,
-    // forward to it. Otherwise log so it's visible during testing.
 
-    UE_LOG(LogTemp, Log, TEXT("%s: MulticastOnHit | Loc=%s | Vital=%d | Dmg=%.1f"),
-        *GetName(), *HitLocation.ToString(), bVitalHit ? 1 : 0, DamageAmount);
+    // The hit react. PlayHitReact does the direction math and picks the matching
+    // directional montage, so every enemy sharing UGothicEnemyAnimInstance reacts
+    // without per-Blueprint wiring. Nothing called this before, which is why the
+    // montages on ABP_Enemy never played no matter what was assigned to them.
+    if (USkeletalMeshComponent* MeshComp = GetMesh())
+    {
+        if (UGothicEnemyAnimInstance* EnemyAnim =
+                Cast<UGothicEnemyAnimInstance>(MeshComp->GetAnimInstance()))
+        {
+            EnemyAnim->PlayHitReact(HitLocation);
+        }
+    }
+
 }

@@ -1,4 +1,4 @@
-﻿// GA_Fire.cpp
+// GA_Fire.cpp
 
 #include "AbilitySystem/GA_Fire.h"
 
@@ -102,13 +102,45 @@ void UGA_Fire::ActivateAbility(
     EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 }
 
+void UGA_Fire::ApplyCooldown(
+    const FGameplayAbilitySpecHandle Handle,
+    const FGameplayAbilityActorInfo* ActorInfo,
+    const FGameplayAbilityActivationInfo ActivationInfo) const
+{
+    const AGothicPlayerCharacter* Char =
+        ActorInfo ? Cast<AGothicPlayerCharacter>(ActorInfo->AvatarActor.Get()) : nullptr;
+    const UGothicWeaponData* WeaponData = Char ? Char->GetActiveWeaponData() : nullptr;
+
+    // A weapon may bring its own cooldown GE; almost none will. Either way the
+    // duration comes from the SetByCaller below, not from the asset.
+    TSubclassOf<UGameplayEffect> CooldownGE = WeaponData && WeaponData->CooldownEffect
+        ? WeaponData->CooldownEffect : CooldownGameplayEffectClass;
+
+    if (!CooldownGE)
+    {
+        return;
+    }
+
+    FGameplayEffectSpecHandle Spec = MakeOutgoingGameplayEffectSpec(CooldownGE, GetAbilityLevel());
+    if (!Spec.IsValid())
+    {
+        return;
+    }
+
+    const float FireInterval = WeaponData
+        ? WeaponData->GetFireInterval()
+        : (FallbackRoundsPerMinute > 0.f ? 60.f / FallbackRoundsPerMinute : 0.f);
+
+    Spec.Data->SetSetByCallerMagnitude(
+        FGameplayTag::RequestGameplayTag(FName("Data.Cooldown")), FireInterval);
+
+    ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, Spec);
+}
+
 void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 {
     UCameraComponent* Camera = Char->FindComponentByClass<UCameraComponent>();
     UWorld* World = Char->GetWorld();
-
-    UE_LOG(LogTemp, Warning, TEXT("GA_Fire: PerformFireTrace entered | Camera=%s World=%d"),
-        *GetNameSafe(Camera), World ? 1 : 0);
 
     if (!Camera || !World)
     {
@@ -131,15 +163,6 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     Params.AddIgnoredActor(Char);
 
     const bool bHit = World->LineTraceSingleByChannel(Hit, Start, End, ECC_Weapon, Params);
-
-    UE_LOG(LogTemp, Warning, TEXT("GA_Fire trace: Channel=%d bHit=%d Actor=%s Comp=%s Bone=%s"),
-        (int32)ECC_Weapon, bHit ? 1 : 0,
-        *GetNameSafe(Hit.GetActor()), *GetNameSafe(Hit.GetComponent()), *Hit.BoneName.ToString());
-
-#if WITH_EDITOR
-    DrawDebugLine(World, Start, bHit ? Hit.ImpactPoint : End,
-        bHit ? FColor::Green : FColor::Red, false, 3.f, 0, 2.f);
-#endif
 
     if (!bHit || !Hit.GetActor())
     {
@@ -193,6 +216,4 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         HitEnemy->MulticastOnHit(Hit.ImpactPoint, bIsVitalHit, FinalDamage);
     }
 
-    UE_LOG(LogTemp, Log, TEXT("GA_Fire: Hit=%s | Bone=%s | Vital=%d | Dmg=%.1f"),
-        *Hit.GetActor()->GetName(), *Hit.BoneName.ToString(), bIsVitalHit ? 1 : 0, FinalDamage);
 }

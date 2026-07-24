@@ -1,4 +1,4 @@
-﻿// GothicMeleeHitboxComponent.cpp
+// GothicMeleeHitboxComponent.cpp
 
 #include "AI/GothicMeleeHitboxComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
@@ -41,8 +41,6 @@ void UGothicMeleeHitboxComponent::EnableHitbox()
     AlreadyHitThisSwing.Empty();
     SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 
-    UE_LOG(LogTemp, Log, TEXT("%s: Hitbox ENABLED"),
-        GetOwner() ? *GetOwner()->GetName() : TEXT("Unknown"));
 }
 
 void UGothicMeleeHitboxComponent::DisableHitbox()
@@ -50,9 +48,6 @@ void UGothicMeleeHitboxComponent::DisableHitbox()
     bHitboxActive = false;
     SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
-    UE_LOG(LogTemp, Log, TEXT("%s: Hitbox DISABLED | Hit %d actors this swing"),
-        GetOwner() ? *GetOwner()->GetName() : TEXT("Unknown"),
-        AlreadyHitThisSwing.Num());
 }
 
 void UGothicMeleeHitboxComponent::OnHitboxOverlap(
@@ -125,9 +120,5 @@ void UGothicMeleeHitboxComponent::OnHitboxOverlap(
 
         AlreadyHitThisSwing.Add(OtherActor);
 
-        UE_LOG(LogTemp, Log, TEXT("%s: Hitbox dealt %.1f damage to %s"),
-            GetOwner() ? *GetOwner()->GetName() : TEXT("Unknown"),
-            BaseDamage,
-            *OtherActor->GetName());
     }
 }

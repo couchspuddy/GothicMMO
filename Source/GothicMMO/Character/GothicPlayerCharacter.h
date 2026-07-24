@@ -43,13 +43,6 @@ public:
     virtual void OnRep_PlayerState() override;
     virtual void Tick(float DeltaTime) override;
 
-    // BlueprintCallable so Blueprint Event Graph can invoke these directly
-    UFUNCTION(BlueprintCallable, Category = "Combat")
-    void OnFire();
-
-    UFUNCTION(BlueprintCallable, Category = "Combat")
-    void OnMelee();
-    
     UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
     void TriggerSelahMoment();
     
@@ -104,7 +97,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
     bool ConvertSteadfastToReserve();
 
-    /** True while the reload key is held past the conversion threshold. */
+    /** True while a hold is actively converting Steadfast — drives looping hold VFX/audio. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
     bool IsConvertingSteadfast() const { return bSteadfastConversionFired; }
 
@@ -343,8 +336,16 @@ private:
     /** Drives both the initial threshold delay and the repeat interval. */
     FTimerHandle SteadfastHoldTimerHandle;
 
-    /** True once the hold crossed the threshold — suppresses the tap reload on release. */
+    /** True while conversions are actually running — gates OnSteadfastConversionEnded. */
     bool bSteadfastConversionFired = false;
+
+    /**
+     * True once the key was held past the threshold, and only cleared on the next
+     * press. Suppresses the tap reload on release even when the hold converted
+     * nothing (no Steadfast, full reserve) or was abandoned by a weapon swap —
+     * a hold is a hold, and must never pay out as a tap.
+     */
+    bool bSteadfastHoldThresholdReached = false;
 
     /** The live inventory screen. Null while closed — doubles as the open/closed flag. */
     UPROPERTY()

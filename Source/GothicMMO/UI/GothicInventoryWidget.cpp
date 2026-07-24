@@ -1,4 +1,4 @@
-﻿// GothicInventoryWidget.cpp
+// GothicInventoryWidget.cpp
 
 #include "UI/GothicInventoryWidget.h"
 #include "Items/GothicInventoryComponent.h"
@@ -25,7 +25,6 @@ void UGothicInventoryWidget::InitializeFromInventory(UGothicInventoryComponent* 
     OnEquipmentRefreshed();
     OnStrainRefreshed();
 
-    UE_LOG(LogTemp, Log, TEXT("InventoryWidget: Initialized with %d items"), CachedInventory->GetItemCount());
 }
 
 void UGothicInventoryWidget::NativeDestruct()

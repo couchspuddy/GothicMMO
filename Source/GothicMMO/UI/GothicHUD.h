@@ -110,8 +110,56 @@ public:
     /** Register an enemy to show a HUD-drawn health bar. Called from MulticastOnHit. */
     void RegisterEnemyHealthBar(AGothicEnemyBase* Enemy);
 
+    // -------------------------------------------------------------------------
+    // Interaction prompt — contextual, never persistent.
+    // Called from interactable Blueprints on begin/end overlap. Deliberately a
+    // canvas draw rather than a widget: it matches the damage-number and enemy
+    // health-bar path already here, and needs no per-interactable widget state.
+    // Sits just below the reticle — contextual, so it does not violate the HUD
+    // Doctrine's rule that nothing persistent may occupy Zone 3.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Show an interaction prompt. Pass self as Interactable and the result of
+     * the BPI_Interactable GetInteractText call as PromptText.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD|Interact")
+    void SetInteractPrompt(AActor* Interactable, const FText& PromptText);
+
+    /**
+     * Clear the prompt, but only if the caller is the actor that set it.
+     * Guards the overlap race: walking from A straight into B fires B's Begin
+     * before A's End, and an unguarded clear would blank B's prompt.
+     * Pass nullptr to clear unconditionally.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD|Interact")
+    void ClearInteractPrompt(AActor* Requester);
+
     virtual void DrawHUD() override;
 protected:
+    void DrawInteractPrompt();
+
+    /** Active prompt text. Empty means nothing is drawn. */
+    FText InteractPromptText;
+
+    /** Actor that owns the active prompt — see ClearInteractPrompt. */
+    UPROPERTY()
+    TWeakObjectPtr<AActor> InteractPromptOwner;
+
+    /** Key hint rendered before the prompt text. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|Interact")
+    FString InteractKeyHint = TEXT("E");
+
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|Interact")
+    FLinearColor InteractPromptColor = FLinearColor(0.96f, 0.90f, 0.72f, 1.f);
+
+    /** Pixels below screen centre. Keeps the prompt clear of the reticle. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|Interact")
+    float InteractPromptOffsetY = 96.f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|Interact")
+    float InteractPromptScale = 1.15f;
+
     // -------------------------------------------------------------------------
     // Widget classes — assign in BP_GothicHUD
     // -------------------------------------------------------------------------

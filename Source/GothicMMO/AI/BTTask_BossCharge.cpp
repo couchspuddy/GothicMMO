@@ -1,4 +1,4 @@
-﻿// BTTask_BossCharge.cpp
+// BTTask_BossCharge.cpp
 
 #include "AI/BTTask_BossCharge.h"
 #include "AI/GothicEnemyAIController.h"
@@ -67,8 +67,6 @@ EBTNodeResult::Type UBTTask_BossCharge::ExecuteTask(
     // Face the charge direction
     BossChar->SetActorRotation(Memory->ChargeDirection.Rotation());
 
-    UE_LOG(LogTemp, Log, TEXT("BossCharge: Started | Direction: %s | Speed: %.0f"),
-        *Memory->ChargeDirection.ToString(), ChargeSpeed);
 
     return EBTNodeResult::InProgress;
 }
@@ -110,8 +108,6 @@ void UBTTask_BossCharge::TickTask(
 
             if (DistToPillar <= PillarImpactRadius)
             {
-                UE_LOG(LogTemp, Log, TEXT("BossCharge: Pillar impact! Dealing %.1f damage"),
-                    PillarImpactDamage);
 
                 NearestPillar->ApplyPillarDamage(PillarImpactDamage);
                 Memory->bImpacted = true;
@@ -131,8 +127,6 @@ void UBTTask_BossCharge::TickTask(
         if (BossChar->GetWorld()->LineTraceSingleByChannel(
             WallHit, TraceStart, TraceEnd, ECC_WorldStatic, Params))
         {
-            UE_LOG(LogTemp, Log, TEXT("BossCharge: Wall impact! Hit %s"),
-                WallHit.GetActor() ? *WallHit.GetActor()->GetName() : TEXT("BSP"));
 
             Memory->bImpacted = true;
         }
@@ -154,15 +148,12 @@ void UBTTask_BossCharge::TickTask(
         BossChar->GetWorldTimerManager().SetTimer(
             StaggerTimer, StaggerDelegate, StaggerDuration, false);
 
-        UE_LOG(LogTemp, Log, TEXT("BossCharge: Staggering for %.1fs (punish window)"),
-            StaggerDuration);
         return;
     }
 
     // Check max distance
     if (Memory->DistanceTraveled >= MaxChargeDistance)
     {
-        UE_LOG(LogTemp, Log, TEXT("BossCharge: Max distance reached — recovery"));
 
         BossChar->GetCharacterMovement()->StopMovementImmediately();
         BossChar->GetCharacterMovement()->MaxWalkSpeed = Memory->DefaultWalkSpeed;

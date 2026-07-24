@@ -29,8 +29,6 @@ enum class EGothicAbilitySlot : uint8
     PrimaryFire   UMETA(DisplayName = "Primary Fire"),
 };
 
-
-
 UCLASS()
 class GOTHICMMO_API UGothicAbilitySystemComponent : public UAbilitySystemComponent
 {

@@ -1,4 +1,4 @@
-﻿// GA_Slicer.cpp
+// GA_Slicer.cpp
 
 #include "AbilitySystem/GA_Slicer.h"
 #include "AI/GothicEnemyBase.h"
@@ -60,8 +60,6 @@ void UGA_Slicer::ActivateAbility(
     SpawnParams.Instigator = Character;
     SpawnParams.SpawnCollisionHandlingOverride =
         ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-    
-
 
     SpawnedProjectile = GetWorld()->SpawnActor<AGothicSlicerProjectile>(
         ProjectileClass, SpawnLocation, SpawnRotation, SpawnParams);
@@ -72,7 +70,6 @@ void UGA_Slicer::ActivateAbility(
         SpawnedProjectile->OnSlicerHit.AddDynamic(this, &UGA_Slicer::HandleSlicerHit);
         SpawnedProjectile->OnSlicerExpired.AddDynamic(this, &UGA_Slicer::HandleSlicerExpired);
 
-        UE_LOG(LogTemp, Log, TEXT("GA_Slicer: Projectile spawned"));
     }
     else
     {
@@ -103,7 +100,6 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
             if (StaggerSpec.IsValid())
             {
                 TargetASC->ApplyGameplayEffectSpecToSelf(*StaggerSpec.Data.Get());
-                UE_LOG(LogTemp, Log, TEXT("GA_Slicer: Stagger applied to %s"), *HitActor->GetName());
             }
         }
 
@@ -133,8 +129,6 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
                         HitEnemy->MulticastOnHit(HitActor->GetActorLocation(), false, SlicerDamage);
                     }
 
-                    UE_LOG(LogTemp, Log, TEXT("GA_Slicer: %.1f damage applied to %s"),
-                        SlicerDamage, *HitActor->GetName());
                 }
             }
             else

@@ -187,10 +187,6 @@ protected:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Combat")
     FName HitboxAttachBone = FName("hand_r");
-    
-
-    
-
 
 private:
     UPROPERTY()

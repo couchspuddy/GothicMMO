@@ -1,4 +1,4 @@
-﻿// GA_NotAtAll.cpp
+// GA_NotAtAll.cpp
 
 #include "AbilitySystem/GA_NotAtAll.h"
 #include "AbilitySystem/GA_Reckoning.h"
@@ -35,8 +35,6 @@ void UGA_NotAtAll::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
         .FindOrAdd(KillEventTag)
         .AddUObject(this, &UGA_NotAtAll::OnKillConfirmed);
 
-    UE_LOG(LogTemp, Log, TEXT("GA_NotAtAll: Passive active, listening for %s"),
-        *KillEventTag.ToString());
 }
 
 void UGA_NotAtAll::OnKillConfirmed(const FGameplayEventData* Payload)
@@ -52,8 +50,6 @@ void UGA_NotAtAll::OnKillConfirmed(const FGameplayEventData* Payload)
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("GA_NotAtAll: Kill confirmed on %s — checking nearby enemies"),
-        *KilledActor->GetName());
 
     ApplyStunToNearbyEnemies(KilledActor);
 }
@@ -109,8 +105,6 @@ void UGA_NotAtAll::ApplyStunToNearbyEnemies(AActor* KilledActor)
             {
                 CandidateASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
 
-                UE_LOG(LogTemp, Log, TEXT("GA_NotAtAll: Stunned %s (chance was %.2f)"),
-                    *Candidate->GetName(), StunChance);
             }
 
             // If this candidate was already stunned AND Reckoning is active,
@@ -140,8 +134,6 @@ bool UGA_NotAtAll::TryExtendActiveReckoning(float ExtensionAmount)
             if (UGA_Reckoning* Reckoning = Cast<UGA_Reckoning>(Spec.GetPrimaryInstance()))
             {
                 Reckoning->ExtendReckoningDuration(ExtensionAmount);
-                UE_LOG(LogTemp, Log, TEXT("GA_NotAtAll: Extended Reckoning by %.1f via stunned elimination"),
-                    ExtensionAmount);
                 return true;
             }
         }

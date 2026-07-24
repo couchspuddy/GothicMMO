@@ -1,4 +1,4 @@
-﻿// GothicPackSubsystem.cpp
+// GothicPackSubsystem.cpp
 
 #include "AI/GothicPackSubsystem.h"
 #include "AI/GothicEnemyBase.h"
@@ -18,8 +18,6 @@ void UGothicPackSubsystem::RegisterMember(FName PackID, AGothicEnemyBase* Member
     if (!Members.Contains(Member))
     {
         Members.Add(Member);
-        UE_LOG(LogTemp, Log, TEXT("PackSubsystem[%s]: registered %s (%d members)"),
-            *PackID.ToString(), *GetNameSafe(Member), Members.Num());
     }
 }
 
@@ -96,6 +94,4 @@ void UGothicPackSubsystem::NotifyMemberDeath(FName PackID, AGothicEnemyBase* Dea
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("PackSubsystem[%s]: member lost, %d survivors regrouping"),
-        *PackID.ToString(), Notified);
 }

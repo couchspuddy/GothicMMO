@@ -1,4 +1,4 @@
-﻿// GothicBossArenaManager.cpp
+// GothicBossArenaManager.cpp
 
 #include "AI/GothicBossArenaManager.h"
 #include "AI/GothicRotundaPillar.h"
@@ -26,7 +26,6 @@ void AGothicBossArenaManager::BeginPlay()
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("BossArenaManager: Tracking %d pillars"), Pillars.Num());
 }
 
 int32 AGothicBossArenaManager::GetPillarsRemaining() const
@@ -67,8 +66,6 @@ void AGothicBossArenaManager::ApplyCryDamage(float DamagePerPillar)
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("BossArenaManager: Cry damaged %d pillars (%.1f each) | %d remaining"),
-        PillarsDamaged, DamagePerPillar, GetPillarsRemaining());
 }
 
 AGothicRotundaPillar* AGothicBossArenaManager::GetNearestSurvivingPillar(FVector FromLocation) const
@@ -96,6 +93,4 @@ void AGothicBossArenaManager::OnPillarDestroyed(AGothicRotundaPillar* Pillar)
     const int32 Remaining = GetPillarsRemaining();
     const float Aggression = GetAggressionMultiplier();
 
-    UE_LOG(LogTemp, Log, TEXT("BossArenaManager: Pillar destroyed! %d remaining | Aggression: %.2f"),
-        Remaining, Aggression);
 }

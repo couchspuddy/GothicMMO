@@ -1,4 +1,4 @@
-﻿// GothicSteadfastComponent.cpp
+// GothicSteadfastComponent.cpp
 
 #include "AI/GothicSteadfastComponent.h"
 #include "AbilitySystemComponent.h"
@@ -87,15 +87,11 @@ float UGothicSteadfastComponent::TryConvertSteadfast(float SteadfastCost, float 
 
     if (CurrentSteadfast < SteadfastCost)
     {
-        UE_LOG(LogTemp, Log, TEXT("GothicSteadfastComponent: Insufficient Steadfast (%.1f / %.1f needed)"),
-            CurrentSteadfast, SteadfastCost);
         return 0.f;
     }
 
     AttributeSet->SetSteadfast(CurrentSteadfast - SteadfastCost);
 
-    UE_LOG(LogTemp, Log, TEXT("GothicSteadfastComponent: Converted %.1f Steadfast for %.1f ammo"),
-        SteadfastCost, AmmoGranted);
 
     return AmmoGranted;
 }
