@@ -143,8 +143,7 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
 {
     Super::OnDeath_Implementation(Killer);
 
-    UE_LOG(LogTemp, Log, TEXT("GothicEnemyBase: %s died — running Selah proximity check"),
-        *GetName());
+    UE_LOG(LogTemp, Log, TEXT("GothicEnemyBase: %s died"), *GetName());
 
     // Force-disable hitbox so a dying enemy can't damage players mid-death anim
     if (MeleeHitbox)
@@ -152,7 +151,11 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
         MeleeHitbox->DisableHitbox();
     }
 
-    AwardSelahToNearbyEmbers();
+    // Notify the owning encounter volume so it can track roster deaths, advance the
+    // checkpoint, and raise the Selah collection prompt. Selah is awarded once, on
+    // encounter completion (AGothicEncounterVolume::CompleteCollection) — a per-kill
+    // award here would double-pay every player.
+    OnEnemyDied.Broadcast(this);
     SpawnLootDrop();
 
     if (HealthBarWidget)
@@ -172,87 +175,6 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
         &AGothicEnemyBase::DestroyCorpse,
         CorpseLifetime,
         false);
-}
-
-void AGothicEnemyBase::AwardSelahToNearbyEmbers()
-{
-    if (!GetWorld())
-    {
-        UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: No world"));
-        return;
-    }
-
-    UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Checking %.0f unit radius around %s"),
-        SelahAwardRadius, *GetName());
-
-    TArray<AActor*> NearbyActors;
-    UGameplayStatics::GetAllActorsOfClass(
-        GetWorld(),
-        AGothicPlayerCharacter::StaticClass(),
-        NearbyActors);
-
-    int32 PlayersAwarded = 0;
-
-    for (AActor* Actor : NearbyActors)
-    {
-        float Distance = FVector::Dist(GetActorLocation(), Actor->GetActorLocation());
-
-        UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Player %s is %.0f units away"),
-            *Actor->GetName(), Distance);
-
-        if (Distance > SelahAwardRadius)
-        {
-            UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Too far — no Selah"));
-            continue;
-        }
-
-        UGothicAbilitySystemComponent* PlayerASC =
-            Cast<UGothicAbilitySystemComponent>(
-                UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Actor));
-
-        if (!PlayerASC)
-        {
-            UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: No ASC on player %s"),
-                *Actor->GetName());
-            continue;
-        }
-
-        if (!SelahGainEffect)
-        {
-            UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: SelahGainEffect not assigned on %s"),
-                *GetName());
-            continue;
-        }
-
-        FGameplayEffectContextHandle Context = PlayerASC->MakeEffectContext();
-        Context.AddSourceObject(this);
-
-        FGameplayEffectSpecHandle Spec = PlayerASC->MakeOutgoingSpec(
-            SelahGainEffect, 1.f, Context);
-
-        if (Spec.IsValid())
-        {
-            Spec.Data->SetSetByCallerMagnitude(
-                FGameplayTag::RequestGameplayTag(FName("Data.Selah")),
-                SelahAwardAmount);
-
-            PlayerASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
-
-            UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Awarded %.1f Selah to %s"),
-                SelahAwardAmount, *Actor->GetName());
-
-            PlayersAwarded++;
-
-            AGothicPlayerCharacter* PlayerChar = Cast<AGothicPlayerCharacter>(Actor);
-            if (PlayerChar)
-            {
-                PlayerChar->TriggerSelahMoment();
-            }
-        }
-    }
-
-    UE_LOG(LogTemp, Log, TEXT("AwardSelahToNearbyEmbers: Awarded Selah to %d players"),
-        PlayersAwarded);
 }
 
 void AGothicEnemyBase::DestroyCorpse()

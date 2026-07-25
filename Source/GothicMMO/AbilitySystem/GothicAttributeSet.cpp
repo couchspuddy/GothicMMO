@@ -105,10 +105,6 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
         const float NewHealth = FMath::Clamp(GetHealth() - FinalDamage, 0.f, GetMaxHealth());
         SetHealth(NewHealth);
 
-        GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan,
-            FString::Printf(TEXT("%s Health: %.1f / %.1f"),
-            *GetOwningActor()->GetName(), NewHealth, GetMaxHealth()));
-
         // Notify combat state on both target (received damage) and source (dealt damage)
         if (TargetActor)
         {

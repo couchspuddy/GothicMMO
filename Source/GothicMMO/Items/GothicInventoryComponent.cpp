@@ -131,6 +131,11 @@ bool UGothicInventoryComponent::EquipItem(const FGuid& InstanceID)
         return false;
     }
 
+    // Copy the instance out of the Items array BEFORE mutating it. UnequipSlot()
+    // calls Items.Add(), which can reallocate the array and leave `Item` (a pointer
+    // into Items) dangling — reading *Item afterward would be a use-after-free.
+    FGothicItemInstance ItemCopy = *Item;
+
     // Unequip current item in that slot first
     if (EquippedItems.Contains(Slot))
     {
@@ -138,7 +143,6 @@ bool UGothicInventoryComponent::EquipItem(const FGuid& InstanceID)
     }
 
     // Move from inventory to equipped
-    FGothicItemInstance ItemCopy = *Item;
     RemoveItem(InstanceID);
     EquippedItems.Add(Slot, ItemCopy);
     ApplyEquipmentStats(Slot, ItemCopy);

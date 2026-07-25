@@ -205,6 +205,5 @@ private:
 
     /** Delayed destruction after death animation plays out. */
     void DestroyCorpse();
-    void AwardSelahToNearbyEmbers();
     void SpawnLootDrop();
 };

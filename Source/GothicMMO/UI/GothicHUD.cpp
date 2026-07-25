@@ -154,11 +154,6 @@ void AGothicHUD::SetCrosshairVisible(bool bVisible)
 
 void AGothicHUD::UpdateHealth(float CurrentHealth, float MaxHealth)
 {
-    
-    GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Orange,
-        FString::Printf(TEXT("UpdateHealth called: %.1f / %.1f | Widget: %s"),
-            CurrentHealth, MaxHealth,
-            ActiveHUDWidget ? TEXT("Valid") : TEXT("NULL")));
     if (ActiveHUDWidget)
     {
         ActiveHUDWidget->CachedHealth    = CurrentHealth;
