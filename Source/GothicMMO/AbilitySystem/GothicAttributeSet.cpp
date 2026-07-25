@@ -88,6 +88,42 @@ void UGothicAttributeSet::PreAttributeChange(const FGameplayAttribute& Attribute
     }
 }
 
+void UGothicAttributeSet::PostAttributeChange(const FGameplayAttribute& Attribute,
+                                              float OldValue, float NewValue)
+{
+    Super::PostAttributeChange(Attribute, OldValue, NewValue);
+
+    // Scale the current pool with its ceiling so the FRACTION is preserved.
+    //
+    // The ordering that makes this necessary: GE_InitStats_Player sets Health and
+    // MaxHealth to 200, then GE_EquipmentStats adds gear MaxHealth on top. Health
+    // was left behind, so the player spawned at 200/235.4 and every +MaxHealth
+    // item made the wearer proportionally more wounded than before equipping it.
+    //
+    // Guarded on OldValue > 0 because the very first assignment comes from the
+    // constructor defaults (0 -> 100), where there is no meaningful ratio to keep.
+    // SetHealth re-enters PreAttributeChange, which clamps to the NEW MaxHealth.
+    if (OldValue <= 0.f || FMath::IsNearlyEqual(OldValue, NewValue))
+    {
+        return;
+    }
+
+    const float Ratio = NewValue / OldValue;
+
+    if (Attribute == GetMaxHealthAttribute())
+    {
+        SetHealth(GetHealth() * Ratio);
+    }
+    else if (Attribute == GetMaxStaminaAttribute())
+    {
+        SetStamina(GetStamina() * Ratio);
+    }
+    else if (Attribute == GetMaxEtherAttribute())
+    {
+        SetEther(GetEther() * Ratio);
+    }
+}
+
 void UGothicAttributeSet::OnRep_Selah(const FGameplayAttributeData& OldSelah)
 {
     GAMEPLAYATTRIBUTE_REPNOTIFY(UGothicAttributeSet, Selah, OldSelah);

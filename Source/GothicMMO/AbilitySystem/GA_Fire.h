@@ -104,21 +104,14 @@ protected:
     float TraceRange = 5000.f;
 
     /**
-     * Gear Power that scales damage by exactly 1.0. UGothicItemDefinition
-     * defines GearPower as GearTier * 100, so 100 is a Tier 1 drop — meaning a
-     * Tier 1 weapon deals the damage its archetype asset actually says, and the
-     * numbers in WEAPON_ARCHETYPES.md stay readable as authored.
+     * Aggregate Gear Power that scales damage by exactly 1.0. UGothicItemDefinition
+     * defines a piece's GearPower as GearTier * 100, so an average of 100 across
+     * equipped gear is a full Tier 1 loadout — meaning a Tier 1 kit deals the
+     * damage its archetype asset actually says, and the numbers in
+     * WEAPON_ARCHETYPES.md stay readable as authored.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Scaling", meta = (ClampMin = 1))
     float BaselineGearPower = 100.f;
-
-    /**
-     * AttackPower that scales damage by exactly 1.0. Matches the attribute's
-     * own init value in UGothicAttributeSet, so a character wearing nothing
-     * scales by 1.0 and gear is strictly additive on top.
-     */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Scaling", meta = (ClampMin = 1))
-    float BaselineAttackPower = 10.f;
 
     /**
      * Extra vital-damage multiplier applied while the State.Read tag is active,

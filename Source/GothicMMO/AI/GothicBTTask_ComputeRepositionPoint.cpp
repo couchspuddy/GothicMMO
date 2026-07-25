@@ -12,6 +12,9 @@ UGothicBTTask_ComputeRepositionPoint::UGothicBTTask_ComputeRepositionPoint()
 {
     NodeName = TEXT("Gothic Compute Reposition Point");
 
+    // Needed so the menace hold can tick its timer down while InProgress.
+    bNotifyTick = true;
+
     TargetActorKey.AddObjectFilter(this,
         GET_MEMBER_NAME_CHECKED(UGothicBTTask_ComputeRepositionPoint, TargetActorKey),
         AActor::StaticClass());
@@ -64,6 +67,23 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
     const FVector ToPawn = (Pawn->GetActorLocation() - Target->GetActorLocation()).GetSafeNormal2D();
     const float CurrentBearing = FMath::Atan2(ToPawn.Y, ToPawn.X);
 
+    FGothicRepositionMemory* Memory = reinterpret_cast<FGothicRepositionMemory*>(NodeMemory);
+    Memory->bHolding    = false;
+    Memory->HoldElapsed = 0.f;
+
+    // Roll the menacing hold. On a hold, point the paired Move To at where she
+    // already stands (a no-op walk) and stay InProgress so she plants and stares
+    // the player down for HoldDuration instead of strafing off. The focus lock
+    // on the controller keeps her facing the target the whole beat.
+    if (HoldChance > 0.f && FMath::FRand() < HoldChance)
+    {
+        BB->SetValue<UBlackboardKeyType_Vector>(
+            OutputPointKey.GetSelectedKeyID(), Pawn->GetActorLocation());
+
+        Memory->bHolding = true;
+        return EBTNodeResult::InProgress;
+    }
+
     // Random offset within the configured band, random left/right.
     const float OffsetDeg = FMath::FRandRange(MinAngleOffset, MaxAngleOffset)
         * (FMath::RandBool() ? 1.f : -1.f);
@@ -76,6 +96,23 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
     BB->SetValue<UBlackboardKeyType_Vector>(OutputPointKey.GetSelectedKeyID(), ComputedPoint);
 
     return EBTNodeResult::Succeeded;
+}
+
+void UGothicBTTask_ComputeRepositionPoint::TickTask(
+    UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory, float DeltaSeconds)
+{
+    FGothicRepositionMemory* Memory = reinterpret_cast<FGothicRepositionMemory*>(NodeMemory);
+    if (!Memory->bHolding)
+    {
+        return;
+    }
+
+    Memory->HoldElapsed += DeltaSeconds;
+    if (Memory->HoldElapsed >= HoldDuration)
+    {
+        Memory->bHolding = false;
+        FinishLatentTask(OwnerComp, EBTNodeResult::Succeeded);
+    }
 }
 
 FString UGothicBTTask_ComputeRepositionPoint::GetStaticDescription() const

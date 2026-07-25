@@ -1,0 +1,76 @@
+// GA_FeralBreakout.h
+// The Feral Retained's Part 1 -> Part 2 break-out.
+//
+// Fires once, when AGothicFeralRetainedController detects her health crossing
+// the break-out threshold in the arena. She crashes down among the waiting
+// feral thralls, buffs them, calls in a reinforcement wave, and turns the whole
+// pack onto the player. This does NOT violate the mini-boss doc's "no adds, pure
+// 1v1" rule — that rule governs Part 1 (the upstairs duel). This is the beat
+// AFTER the duel, downstairs, where the isolation deliberately ends.
+//
+// Shaped after GA_BestialLucidCry: montage hit-window (or instant fallback) ->
+// PerformBreakout -> SphereOverlap-buff nearby enemies + tag-discovered spawn
+// wave, all folded into the owning AGothicEncounterVolume so the arena completes
+// and pays Selah through the existing path.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "AbilitySystem/GothicGameplayAbility.h"
+#include "GA_FeralBreakout.generated.h"
+
+class AGothicEnemyBase;
+
+UCLASS()
+class GOTHICMMO_API UGA_FeralBreakout : public UGothicGameplayAbility
+{
+    GENERATED_BODY()
+
+public:
+    UGA_FeralBreakout();
+
+    virtual void ActivateAbility(
+        const FGameplayAbilitySpecHandle Handle,
+        const FGameplayAbilityActorInfo* ActorInfo,
+        const FGameplayAbilityActivationInfo ActivationInfo,
+        const FGameplayEventData* TriggerEventData) override;
+
+protected:
+    /** Radius around her in which already-placed feral thralls are rallied. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Breakout")
+    float RallyRadius = 1800.f;
+
+    /**
+     * The buff applied to every rallied thrall (and every reinforcement).
+     * Assign GE_FeralRally — grants State.Feral.Rallied and an AttackPower boost.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Breakout")
+    TSubclassOf<UGameplayEffect> RallyBuffEffect;
+
+    /** Actor tag on AGothicEnemySpawnPoint actors used for the reinforcement wave. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Breakout")
+    FName RallySpawnTag = FName("FeralRally");
+
+    /** Maximum reinforcements spawned by the break-out. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Breakout")
+    int32 MaxWaveThralls = 4;
+
+    /** Actor tag on a target placed on the arena floor. On break-out she leaps
+     *  (teleports, for now) there — down from her upstairs Part 1 perch into the
+     *  arena. NAME_None skips the leap and she rallies in place. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Breakout")
+    FName LeapTargetTag = FName("FeralLeapTarget");
+
+    // Base class montage callback — fires PerformBreakout at the hit window.
+    virtual void OnMontageHitWindow(FGameplayEventData Payload) override;
+
+private:
+    /** Buff + aggro one enemy. Null-safe. */
+    void RallyEnemy(AGothicEnemyBase* Enemy, AActor* AggroTarget);
+
+    /** Spawns the reinforcement wave from tagged points; fills OutWave. */
+    void SpawnRallyWave(AActor* AggroTarget, TArray<AGothicEnemyBase*>& OutWave);
+
+    /** The whole payload — rally nearby, spawn the wave, fold into the encounter. */
+    void PerformBreakout();
+};

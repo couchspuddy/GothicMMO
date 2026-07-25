@@ -11,6 +11,8 @@
 #include "GothicGameState.generated.h"
 
 class AGothicEnemyBase;
+class AGothicEncounterVolume;
+class UGothicSelahCollectBarWidget;
 
 UCLASS()
 class GOTHICMMO_API AGothicGameState : public AGameStateBase
@@ -32,22 +34,64 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Selah")
 	void OnEncounterPromptCollected();
 
-	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-	
 	/**
- * Server-side setter for the shared prompt. ALWAYS use this — never assign
- * ActivePromptCorpse directly.
- *
- * OnRep fires only on clients receiving replicated data. It never fires on the
- * authority that authored the change, and never at all in standalone PIE where
- * no replication occurs. Direct assignment therefore fires the prompt events on
- * remote clients only — and on nobody in standalone. This calls OnRep by hand so
- * the authority sees its own change like everyone else.
- */
-	UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
-	void SetActivePromptCorpse(AGothicEnemyBase* NewPromptCorpse);
+	 * Fired on every client when the reward lands and the Selah moment begins —
+	 * the name reveal belongs HERE, not on OnEncounterPromptActivated.
+	 *
+	 * That mistake is why the Accursed names used to cycle the instant the last
+	 * enemy fell and then vanish the moment you pressed interact: the prompt
+	 * event means "collection is available", not "you have collected". SelahNames
+	 * is still populated when this fires (FinalizeCollection deliberately no
+	 * longer clears it) so Blueprint can drive the cycle from it.
+	 */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Selah")
+	void OnSelahMomentStarted();
 
-	/** Read-only access — assignment must go through SetActivePromptCorpse. */
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	/**
+	 * Server-side. Adds an ENCOUNTER (the persistent area) to the set offering a
+	 * Selah "meditation" prompt — corpses despawn and would drop the prompt with
+	 * them. The corpse is optional data for the name reveal.
+	 *
+	 * This is a SET, not a single slot. It used to be one pointer, and with
+	 * overlapping encounter volumes the most recent completion silently evicted
+	 * the previous one: clearing a second encounter stole the first's prompt, so
+	 * collecting near the first ran CompleteCollection against the wrong volume —
+	 * which is how the Feral Retained's interrupt wave went missing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+	void AddEncounterPrompt(AGothicEncounterVolume* Encounter, AGothicEnemyBase* PromptCorpse);
+
+	/** Removes one encounter's meditation prompt. Others stay up. */
+	UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+	void ClearEncounterPrompt(AGothicEncounterVolume* Encounter);
+
+	/** Drops every pending prompt. */
+	UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+	void ClearAllEncounterPrompts();
+
+	/**
+	 * The nearest pending encounter whose own MeditationRange covers WorldLocation,
+	 * or null. Range is per-encounter, so a big arena and a small ambush can sit
+	 * side by side without one swallowing the other.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Gothic|Selah")
+	AGothicEncounterVolume* GetPromptEncounterFor(const FVector& WorldLocation) const;
+
+	/** True if any encounter is awaiting collection. */
+	UFUNCTION(BlueprintPure, Category = "Gothic|Selah")
+	bool HasPendingPrompt() const { return PendingPromptEncounters.Num() > 0; }
+
+	/** True if this specific encounter is awaiting collection. Replaces the old
+	 *  "am I the single active prompt?" identity check. */
+	UFUNCTION(BlueprintPure, Category = "Gothic|Selah")
+	bool IsPromptPending(AGothicEncounterVolume* Encounter) const
+	{
+		return Encounter && PendingPromptEncounters.Contains(Encounter);
+	}
+
+	/** Optional corpse tied to the prompt, for the name reveal. May be null/despawned. */
 	UFUNCTION(BlueprintPure, Category = "Gothic|Selah")
 	AGothicEnemyBase* GetActivePromptCorpse() const { return ActivePromptCorpse; }
 
@@ -66,11 +110,47 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
 	int32 MaxSelahNames = 6;
 
+	/**
+	 * Server-only. Drives the shared collection fill-bar. Phase: 0 = none,
+	 * 1 = collecting (fill over Duration), 2 = interrupted (break), 3 = completed
+	 * (snap full). Replicates so every client's bar matches, and fires locally on
+	 * the authority too so standalone PIE sees it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+	void SetSelahCollectPhase(uint8 NewPhase, float Duration);
+
 protected:
-	/** The corpse currently showing an active, uncollected shared Selah prompt. Null = no active prompt. */
-	UPROPERTY(ReplicatedUsing = OnRep_ActivePromptCorpse, BlueprintReadOnly, Category = "Gothic|Selah")
+	/** Every encounter currently awaiting collection — the persistent anchors that
+	 *  drive OnEncounterPromptActivated/Collected. Empty = no prompt anywhere. */
+	UPROPERTY(ReplicatedUsing = OnRep_ActivePrompt, BlueprintReadOnly, Category = "Gothic|Selah")
+	TArray<TObjectPtr<AGothicEncounterVolume>> PendingPromptEncounters;
+
+	/** Corpse from the most recent activation, passed to OnEncounterPromptActivated
+	 *  for the name reveal. May despawn while prompts stay up. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gothic|Selah")
 	TObjectPtr<AGothicEnemyBase> ActivePromptCorpse;
-	
+
+	/** Prompt count at the last OnRep, so the handler can tell an add from a removal
+	 *  without replicating a separate flag. */
+	int32 LastBroadcastPromptCount = 0;
+
 	UFUNCTION()
-	void OnRep_ActivePromptCorpse();
+	void OnRep_ActivePrompt();
+
+	// ── Selah collection fill-bar ────────────────────────────────────────
+	UPROPERTY(ReplicatedUsing = OnRep_SelahCollect, BlueprintReadOnly, Category = "Gothic|Selah")
+	uint8 SelahCollectPhase = 0;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gothic|Selah")
+	float SelahCollectDuration = 0.f;
+
+	UFUNCTION()
+	void OnRep_SelahCollect();
+
+	/** The collect-bar widget class. Assign WBP_SelahCollectBar in BP_GothicGameState. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
+	TSubclassOf<UGothicSelahCollectBarWidget> CollectBarWidgetClass;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UGothicSelahCollectBarWidget> CollectBarWidget;
 };

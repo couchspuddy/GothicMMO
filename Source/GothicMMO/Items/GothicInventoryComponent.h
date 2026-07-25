@@ -68,6 +68,37 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
     bool IsSlotEquipped(EGothicEquipSlot Slot) const;
 
+    /**
+     * Average Gear Power across equipped (non-empty) slots — the overall power
+     * level. Raises the damage floor in GA_Fire and is the intended hook for
+     * gating which activities the player can enter. 0 with nothing equipped.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
+    int32 GetAggregateGearPower() const;
+
+    /**
+     * Total of one archetype-damage secondary line summed across every equipped
+     * item, as a percent. GA_Fire applies (1 + this/100) but only for the
+     * archetype currently equipped, so a Revolver line does nothing while a
+     * Rifle is out.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
+    float GetArchetypeDamageBonus(EGothicSecondaryStat DamageStat) const;
+
+    /**
+     * Item definitions the player begins with, rolled and auto-equipped into
+     * their slots the first time the inventory initializes. This is the starting
+     * kit — a basic piece in every armor slot so a tester walks in geared, then
+     * swaps in drops to feel the difference. Server-authoritative and one-shot
+     * (survives respawn without re-granting). Configure on the PlayerState BP.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Inventory")
+    TArray<TObjectPtr<UGothicItemDefinition>> StartingItemDefs;
+
+    /** Rolls, adds, and equips each StartingItemDef once, on authority. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
+    void GrantStartingItems();
+
     // ── Resonance Strain ─────────────────────────────────────────────────
 
     /** Fixed Resonance cap. Never rises. All pressure on the item side. */
@@ -147,6 +178,9 @@ protected:
     /** Currently equipped items, keyed by slot. */
     UPROPERTY(BlueprintReadOnly, Category = "Gothic|Inventory")
     TMap<EGothicEquipSlot, FGothicItemInstance> EquippedItems;
+
+    /** Guards GrantStartingItems so the kit is granted once, not every respawn. */
+    bool bStartingItemsGranted = false;
 
     /** The GameplayEffect used to apply equipment stat bonuses. Assign GE_EquipmentStats in BP. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Inventory")

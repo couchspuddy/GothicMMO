@@ -125,6 +125,18 @@ protected:
     UPROPERTY(EditAnywhere, Category = "Selection")
     float MinMovementCommitDuration = 1.5f;
 
+    /**
+     * Delay before the one-shot AssetTag validation runs. Matches CombatSync.
+     * Must stay above zero: validating on the frame the branch becomes relevant
+     * reads the pawn before BeginPlay has granted its StartupAbilities, and
+     * every entry reports as missing.
+     */
+    UPROPERTY(EditAnywhere, Category = "Selection")
+    float ValidationGraceSeconds = 1.f;
+
+    /** Runs once per branch activation, ValidationGraceSeconds after it becomes relevant. */
+    void ValidateConfiguration(UBehaviorTreeComponent& OwnerComp) const;
+
 private:
     /**
      * Computes eligible entries' final scores, rolls a weighted pick, and

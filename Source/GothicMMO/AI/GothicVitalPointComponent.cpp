@@ -314,11 +314,28 @@ void UGothicVitalPointComponent::SpawnShimmer()
 {
     if (!VitalShimmerSystem)
     {
-        // Loud on purpose — an unassigned shimmer reproduces the exact
-        // "hidden damage multiplier" defect this exists to close.
-        UE_LOG(LogTemp, Warning,
-            TEXT("VitalPoint: %s has vital points but no VitalShimmerSystem assigned — the vital is invisible to players"),
-            *GetOwner()->GetName());
+        // The shimmer is the SECOND of two independent tells. VitalOverlayMaterial
+        // is the first, and it alone is enough: CreateVitalMaterials drives the
+        // overlay DMI's vital-position parameter every time the point moves, so
+        // the amber marker already shows players where to aim.
+        //
+        // Only escalate when BOTH are missing — that is the real "hidden damage
+        // multiplier" defect this guard exists to catch. Warning on the shimmer
+        // alone claimed the vital was invisible when it wasn't, which cost a
+        // debugging session chasing a mechanic that was working.
+        if (!VitalOverlayMaterial)
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("VitalPoint: %s has vital points but NEITHER VitalOverlayMaterial nor VitalShimmerSystem "
+                     "is assigned — the vital is genuinely invisible to players"),
+                *GetOwner()->GetName());
+        }
+        else
+        {
+            UE_LOG(LogTemp, Verbose,
+                TEXT("VitalPoint: %s has no VitalShimmerSystem; falling back to the overlay material alone"),
+                *GetOwner()->GetName());
+        }
         return;
     }
 

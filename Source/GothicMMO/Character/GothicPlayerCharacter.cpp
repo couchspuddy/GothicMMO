@@ -1,4 +1,4 @@
-// GothicPlayerCharacter.cpp
+﻿// GothicPlayerCharacter.cpp
 
 #include "Character/GothicPlayerCharacter.h"
 #include "Character/GothicInputHandlerComponent.h"
@@ -7,6 +7,10 @@
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "Game/GothicPlayerState.h"
+#include "Game/GothicGameMode.h"
+#include "Game/GothicGameState.h"
+#include "GameFramework/PlayerStart.h"
+#include "Kismet/GameplayStatics.h"
 #include "UI/GothicHUD.h"
 #include "AI/GothicSteadfastComponent.h"
 #include "AI/GothicCombatStateComponent.h"
@@ -25,8 +29,14 @@
 #include "Engine/World.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "Items/GothicInventoryComponent.h"
+#include "Game/GothicGameState.h"
+#include "AI/GothicEnemyBase.h"
+#include "AI/GothicEncounterVolume.h"
+#include "UI/GothicHUD.h"
+#include "GameFramework/PlayerController.h"
 #include "Items/GothicItemDefinition.h"
 #include "AbilitySystem/GA_TheLovedandTheLost.h"
+#include "AbilitySystem/GA_NotAtAll.h"
 
 AGothicPlayerCharacter::AGothicPlayerCharacter()
 {
@@ -128,6 +138,17 @@ void AGothicPlayerCharacter::BeginPlay()
         // First ammo readout — nothing has fired or reloaded yet, so without this
         // the magazine display stays blank until the player's first shot.
         PushAmmoToHUD();
+
+        // First health readout, for the same reason and with a worse symptom.
+        // WBP_HUD_LayoutA's Construct hardcodes the bar to 100%, and UpdateHealth
+        // only fires on a health CHANGE — so a player who does not start at full
+        // health saw a full bar that snapped to the truth on the first hit,
+        // reading as one huge chunk of damage regardless of the amount. Push the
+        // real ratio once here so the bar starts honest.
+        if (GothicHUD && AttributeSet)
+        {
+            GothicHUD->UpdateHealth(AttributeSet->GetHealth(), AttributeSet->GetMaxHealth());
+        }
 
         // Apply the active weapon's crosshair on spawn. The HUD boots on Melee by
         // default and the starting weapon is equipped before the HUD widget exists,
@@ -290,6 +311,11 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
                 }
             }
             RefreshWeaponVisuals(ActiveWeaponIndex);
+
+            // Now that GAS and the inventory link are ready, hand the player
+            // their starting kit (once, on authority) so a tester walks in
+            // geared and can immediately swap drops in against it.
+            Inventory->GrantStartingItems();
         }
     }
 }
@@ -336,6 +362,10 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
         EIC->BindAction(SprintAction, ETriggerEvent::Completed, this, &AGothicPlayerCharacter::OnSprintStopped);
     }
 
+    // Interact — collect the shared Selah prompt when near the fallen corpse.
+    if (InteractAction)
+        EIC->BindAction(InteractAction, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnInteract);
+
     // Weapon slot swap — 1/2/3 keys
     if (WeaponSlot1Action)
         EIC->BindAction(WeaponSlot1Action, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnWeaponSlot1);
@@ -377,6 +407,21 @@ void AGothicPlayerCharacter::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
 
+    // Fell through the map. This is the reliable death-floor trigger: the
+    // engine's KillZ usually sits far below any real floor, so a player who
+    // clips through geometry falls forever and never reaches it. Catch them at
+    // a level-tunable height and respawn. Server-authoritative.
+    if (HasAuthority() && GetActorLocation().Z < FallRespawnZ)
+    {
+        TriggerFallRespawn();
+        return;
+    }
+
+    if (IsLocallyControlled())
+    {
+        UpdateSelahInteractPrompt();
+    }
+
     if (!IsLocallyControlled() || !AbilitySystemComponent || !bHUDReady) return;
 
     APlayerController* PC = GetWorld()->GetFirstPlayerController();
@@ -404,6 +449,19 @@ void AGothicPlayerCharacter::Tick(float DeltaTime)
 
 void AGothicPlayerCharacter::OnMove(const FInputActionValue& Value)
 {
+    // EnhancedInput keeps firing Move even under SetInputModeUIOnly, so opening
+    // an interact panel or the inventory wouldn't otherwise stop the player. The
+    // mouse cursor is only ever shown while a blocking UI is up in this project,
+    // so it's a reliable "in a menu" signal — gate movement on it here, once,
+    // instead of in every interactable.
+    if (const APlayerController* PC = Cast<APlayerController>(GetController()))
+    {
+        if (PC->bShowMouseCursor)
+        {
+            return;
+        }
+    }
+
     const FVector2D MoveVec = Value.Get<FVector2D>();
     if (Controller)
     {
@@ -435,6 +493,80 @@ void AGothicPlayerCharacter::OnSprintStopped()
 {
     bIsSprinting = false;
     RefreshMovementSpeed();
+}
+
+void AGothicPlayerCharacter::OnInteract()
+{
+    AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr;
+
+    // Nearest pending encounter that covers us — NOT "whichever completed last".
+    // With overlapping volumes the single-slot version handed us a prompt anchored
+    // to a different encounter entirely, and collecting ran against that one.
+    AGothicEncounterVolume* Enc = GS ? GS->GetPromptEncounterFor(GetActorLocation()) : nullptr;
+    if (!Enc)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Selah: interact pressed but no meditation prompt covers this spot (%d pending)"),
+            GS ? (GS->HasPendingPrompt() ? 1 : 0) : -1);
+        return;
+    }
+
+    UE_LOG(LogTemp, Verbose, TEXT("Selah: interact accepted at %.0fuu from %s"),
+        FVector::Dist(GetActorLocation(), Enc->GetActorLocation()), *Enc->GetName());
+    ServerCollectEncounterSelah(Enc);
+}
+
+void AGothicPlayerCharacter::ServerCollectEncounterSelah_Implementation(AGothicEncounterVolume* Enc)
+{
+    AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr;
+
+    // Trust nothing from the client: the encounter must still be offering a prompt.
+    if (!GS || !Enc || !GS->IsPromptPending(Enc))
+    {
+        return;
+    }
+
+    // Server-side range recheck (a little slack) so a client can't collect from afar.
+    if (FVector::Dist(GetActorLocation(), Enc->GetActorLocation()) > Enc->GetMeditationRange() * 1.25f)
+    {
+        return;
+    }
+
+    Enc->CompleteCollection();
+}
+
+void AGothicPlayerCharacter::UpdateSelahInteractPrompt()
+{
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    AGothicHUD* HUD = PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
+    if (!HUD)
+    {
+        return;
+    }
+
+    AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr;
+    AGothicEncounterVolume* Enc = GS ? GS->GetPromptEncounterFor(GetActorLocation()) : nullptr;
+
+    if (Enc)
+    {
+        // Yield to any other interactable that already owns the prompt slot.
+        //
+        // The HUD keeps ONE prompt with one owner, and this runs every tick over a
+        // radius the size of the whole arena. Asserting unconditionally meant
+        // "Meditate" overwrote the Contract Board's prompt every single frame, and
+        // the board's own ClearInteractPrompt was rejected because it wasn't the
+        // owner — every interactable inside a completed encounter went dead.
+        AActor* CurrentOwner = HUD->GetInteractPromptOwner();
+        if (!CurrentOwner || CurrentOwner == Enc)
+        {
+            HUD->SetInteractPrompt(Enc, FText::FromString(TEXT("Meditate")));
+            ShownSelahPromptCorpse = Enc;
+        }
+    }
+    else if (ShownSelahPromptCorpse.IsValid())
+    {
+        HUD->ClearInteractPrompt(ShownSelahPromptCorpse.Get());
+        ShownSelahPromptCorpse = nullptr;
+    }
 }
 
 void AGothicPlayerCharacter::RefreshMovementSpeed()
@@ -660,16 +792,23 @@ void AGothicPlayerCharacter::OnReloadReleased()
 
 void AGothicPlayerCharacter::HandleSteadfastHoldTick()
 {
-    bSteadfastHoldThresholdReached = true;
-
     // Conversion is granted here, mid-hold — never deferred to release.
     if (!ConvertSteadfastToReserve())
     {
         // Nothing left to convert, or nowhere to put it. Stop rather than spin.
+        //
+        // Deliberately leave bSteadfastHoldThresholdReached false: the flag's only
+        // job is to tell the release handler "the payoff was already given, don't
+        // also tap-reload". No conversion happened, so the release must still
+        // reload. Setting it unconditionally here made every press longer than
+        // SteadfastHoldThreshold a no-op — and because StartingReserveAmmo equals
+        // MaxReserveAmmo on every weapon, reserve begins full and this branch is
+        // exactly what a fresh player hits.
         EndSteadfastHold();
         return;
     }
 
+    bSteadfastHoldThresholdReached = true;
     bSteadfastConversionFired = true;
 
     // Still held — queue the next conversion.
@@ -710,6 +849,20 @@ int32 AGothicPlayerCharacter::GetActiveGearPower() const
     return 0;
 }
 
+int32 AGothicPlayerCharacter::GetAggregateGearPower() const
+{
+    const AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
+    const UGothicInventoryComponent* Inventory = PS ? PS->GetInventory() : nullptr;
+    return Inventory ? Inventory->GetAggregateGearPower() : 0;
+}
+
+float AGothicPlayerCharacter::GetArchetypeDamageBonusPct(EGothicWeaponArchetype Archetype) const
+{
+    const AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
+    const UGothicInventoryComponent* Inventory = PS ? PS->GetInventory() : nullptr;
+    return Inventory ? Inventory->GetArchetypeDamageBonus(GetArchetypeDamageStat(Archetype)) : 0.f;
+}
+
 const UGA_TheLovedAndTheLost* AGothicPlayerCharacter::FindLovedAndLost() const
 {
     if (!AbilitySystemComponent)
@@ -740,6 +893,91 @@ bool AGothicPlayerCharacter::IsLovedAndLostActive() const
 {
     const UGA_TheLovedAndTheLost* Ramp = FindLovedAndLost();
     return Ramp && Ramp->IsRampActive();
+}
+
+bool AGothicPlayerCharacter::IsReadActive() const
+{
+    return AbilitySystemComponent &&
+        AbilitySystemComponent->HasMatchingGameplayTag(
+            FGameplayTag::RequestGameplayTag(FName("State.Read")));
+}
+
+bool AGothicPlayerCharacter::IsReckoningActive() const
+{
+    return AbilitySystemComponent &&
+        AbilitySystemComponent->HasMatchingGameplayTag(
+            FGameplayTag::RequestGameplayTag(FName("State.Reckoning")));
+}
+
+bool AGothicPlayerCharacter::IsNotAtAllGranted() const
+{
+    if (!AbilitySystemComponent)
+    {
+        return false;
+    }
+
+    // Check the granted spec's ability class rather than a live instance — the
+    // passive counts as "granted" the moment it's on the ASC, whether or not its
+    // instance has spun up yet.
+    for (const FGameplayAbilitySpec& Spec : AbilitySystemComponent->GetActivatableAbilities())
+    {
+        if (Spec.Ability && Spec.Ability->IsA<UGA_NotAtAll>())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void AGothicPlayerCharacter::TriggerFallRespawn()
+{
+    // Authority only. A fall through the map is NOT a death — routing it through
+    // the game mode's RequestRespawn destroyed the pawn and left the controller
+    // with no view target for the full 10s respawn delay, which reads as the
+    // game freezing. Instead, just teleport the same pawn back onto solid ground
+    // instantly (last checkpoint, else a PlayerStart) and kill its velocity. No
+    // penalty, no delay, no dependency on the game mode being GothicGameMode.
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    FVector SafeLocation(0.f, 0.f, 500.f);
+
+    if (const AGothicGameState* GS =
+            GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr)
+    {
+        if (!GS->CheckpointLocation.IsZero())
+        {
+            SafeLocation = GS->CheckpointLocation;
+        }
+        else if (const AActor* Start =
+                     UGameplayStatics::GetActorOfClass(this, APlayerStart::StaticClass()))
+        {
+            SafeLocation = Start->GetActorLocation();
+        }
+    }
+
+    SafeLocation.Z += 100.f;  // clear the floor so we don't spawn embedded
+
+    SetActorLocation(SafeLocation, false, nullptr, ETeleportType::TeleportPhysics);
+    if (UCharacterMovementComponent* Move = GetCharacterMovement())
+    {
+        Move->StopMovementImmediately();
+    }
+}
+
+void AGothicPlayerCharacter::FellOutOfWorld(const UDamageType& DmgType)
+{
+    // Dropped below the world's KillZ — recover in place rather than the engine
+    // default (destroy the pawn, strand the controller).
+    if (HasAuthority())
+    {
+        TriggerFallRespawn();
+        return;
+    }
+
+    Super::FellOutOfWorld(DmgType);
 }
 
 void AGothicPlayerCharacter::ApplyRecoilKick()

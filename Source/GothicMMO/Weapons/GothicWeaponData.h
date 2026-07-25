@@ -16,6 +16,39 @@ class UGameplayEffect;
 class UNiagaraSystem;
 class UStaticMesh;
 
+/**
+ * The eleven weapon archetypes. Each weapon is exactly one, and armor's
+ * per-archetype damage lines (EGothicSecondaryStat::Damage_*) only apply while a
+ * weapon of the matching archetype is equipped. Order mirrors the Damage_*
+ * block in EGothicSecondaryStat so GetArchetypeDamageStat can map by ordinal.
+ */
+UENUM(BlueprintType)
+enum class EGothicWeaponArchetype : uint8
+{
+    Revolver         UMETA(DisplayName = "Revolver"),
+    RepeatingPistol  UMETA(DisplayName = "Repeating Pistol"),
+    Derringer        UMETA(DisplayName = "Derringer"),
+    LeverAction      UMETA(DisplayName = "Lever-Action Repeater"),
+    BoltAction       UMETA(DisplayName = "Bolt-Action Rifle"),
+    SawedOff         UMETA(DisplayName = "Sawed-Off"),
+    Carbine          UMETA(DisplayName = "Carbine"),
+    GatlingRig       UMETA(DisplayName = "Gatling Rig"),
+    BombThrower      UMETA(DisplayName = "Bomb Thrower"),
+    Breacher         UMETA(DisplayName = "Breacher"),
+    HeavyMelee       UMETA(DisplayName = "Heavy Melee"),
+};
+
+/**
+ * Maps a weapon archetype to the armor damage line that sharpens it. The two
+ * enums declare their eleven entries in the same order, so this is a straight
+ * ordinal cast — kept as a named function so the coupling is a single, findable
+ * point rather than an inline cast scattered across the damage math.
+ */
+FORCEINLINE EGothicSecondaryStat GetArchetypeDamageStat(EGothicWeaponArchetype Archetype)
+{
+    return static_cast<EGothicSecondaryStat>(static_cast<uint8>(Archetype));
+}
+
 UCLASS(BlueprintType)
 class GOTHICMMO_API UGothicWeaponData : public UPrimaryDataAsset
 {
@@ -40,9 +73,18 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Visual")
     TObjectPtr<UStaticMesh> WeaponMesh;
 
-    /** Offset from the camera attach point. Tune per weapon in the data asset. */
+    /**
+     * Offset from the HandGrip_R socket. Tune per weapon in the data asset.
+     *
+     * Defaults to zero because the socket is already positioned in the hand —
+     * a weapon needs an offset only if its pivot is off. The old default of
+     * (30, 15, -15) dated from when the mesh was attached to the CAMERA; once
+     * it moved to the hand socket that became a stale nudge that floated the
+     * gun forward and to the right. Six weapons were corrected by hand and
+     * five were left carrying it, which is why some sat wrong and some did not.
+     */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Visual")
-    FVector MeshOffset = FVector(30.f, 15.f, -15.f);
+    FVector MeshOffset = FVector::ZeroVector;
 
     /** Rotation offset — lets you orient each weapon model without editing the mesh. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Visual")
@@ -54,7 +96,14 @@ public:
 
     // ── Damage ───────────────────────────────────────────────────────────
 
-    /** Base damage per shot before vital multiplier. */
+    /** Which of the eleven archetypes this weapon is. Selects which armor
+     *  Damage_* line sharpens it. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Damage")
+    EGothicWeaponArchetype Archetype = EGothicWeaponArchetype::Revolver;
+
+    /** Base damage per shot before vital multiplier. This is the weapon's own
+     *  attack power — armor never scales it universally, only the matching
+     *  archetype line and the aggregate Gear Power floor touch it. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Damage")
     float Damage = 15.f;
 

@@ -1,4 +1,4 @@
-// GothicEnemyBase.cpp
+﻿// GothicEnemyBase.cpp
 
 #include "AI/GothicEnemyBase.h"
 
@@ -6,6 +6,7 @@
 #include "AI/GothicEnemyAIController.h"
 #include "AI/GothicMeleeHitboxComponent.h"
 #include "AI/GothicVitalPointComponent.h"
+#include "AI/GothicPackSubsystem.h"
 #include "UI/GothicHUD.h"
 #include "GameFramework/PlayerController.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
@@ -118,6 +119,18 @@ void AGothicEnemyBase::BeginPlay()
             this, &AGothicEnemyBase::OnPerceptionUpdated);
     }
 
+    // Level-placed enemies carry a serialized PackID and never pass through
+    // SetPackID, so register them here. Spawned enemies are stamped after spawn
+    // via SetPackID, which registers on its own — RegisterMember is idempotent,
+    // so an enemy that takes both paths is added once.
+    if (HasAuthority() && !PackID.IsNone())
+    {
+        if (UGothicPackSubsystem* Packs = GetWorld() ? GetWorld()->GetSubsystem<UGothicPackSubsystem>() : nullptr)
+        {
+            Packs->RegisterMember(PackID, this);
+        }
+    }
+
     if (AbilitySystemComponent && AttributeSet)
     {
         AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
@@ -159,6 +172,35 @@ void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
     }
 }
 
+void AGothicEnemyBase::SetPackID(FName NewPackID)
+{
+    if (PackID == NewPackID)
+    {
+        return;
+    }
+
+    // Registration is server-side state; clients never need the pack map.
+    if (!HasAuthority())
+    {
+        PackID = NewPackID;
+        return;
+    }
+
+    UGothicPackSubsystem* Packs = GetWorld() ? GetWorld()->GetSubsystem<UGothicPackSubsystem>() : nullptr;
+
+    if (Packs && !PackID.IsNone())
+    {
+        Packs->UnregisterMember(PackID, this);
+    }
+
+    PackID = NewPackID;
+
+    if (Packs && !PackID.IsNone())
+    {
+        Packs->RegisterMember(PackID, this);
+    }
+}
+
 void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget)
 {
     CombatTarget = NewTarget;
@@ -171,6 +213,16 @@ void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget)
 
 void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
 {
+    // Re-entry guard. Super also early-outs on State.Dead, but it returns void —
+    // so without this check the rest of this function still ran on a second call,
+    // dropping loot twice and (now) decrementing the encounter roster twice. Two
+    // damage instances landing in the same frame is enough to trigger it.
+    if (AbilitySystemComponent && AbilitySystemComponent->HasMatchingGameplayTag(
+            FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
+    {
+        return;
+    }
+
     Super::OnDeath_Implementation(Killer);
 
 
@@ -206,78 +258,30 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
         &AGothicEnemyBase::DestroyCorpse,
         CorpseLifetime,
         false);
-}
 
-void AGothicEnemyBase::AwardSelahToNearbyEmbers()
-{
-    if (!GetWorld())
+    // Roster notification — the encounter volume decrements RemainingEnemyCount
+    // here and raises the Selah prompt when the last member falls. This is the
+    // only broadcast site: without it HandleEnemyDied never ran, so the count
+    // never reached zero and the entire prompt → collect → award chain was dead.
+    //
+    // Server-only: the encounter is server-authoritative and its handler early-outs
+    // on clients anyway. The State.Dead guard at the top of this function keeps it
+    // to one broadcast per enemy.
+    if (HasAuthority())
     {
-        UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: No world"));
-        return;
-    }
+        OnEnemyDied.Broadcast(this);
 
-
-    TArray<AActor*> NearbyActors;
-    UGameplayStatics::GetAllActorsOfClass(
-        GetWorld(),
-        AGothicPlayerCharacter::StaticClass(),
-        NearbyActors);
-
-    int32 PlayersAwarded = 0;
-
-    for (AActor* Actor : NearbyActors)
-    {
-        float Distance = FVector::Dist(GetActorLocation(), Actor->GetActorLocation());
-
-
-        if (Distance > SelahAwardRadius)
+        // Pack reaction — survivors in the same PackID pause and play the guard
+        // pose. Like OnEnemyDied above, the subsystem documented this call site
+        // but nothing ever made the call, so no pack ever regrouped.
+        if (!PackID.IsNone())
         {
-            continue;
-        }
-
-        UGothicAbilitySystemComponent* PlayerASC =
-            Cast<UGothicAbilitySystemComponent>(
-                UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Actor));
-
-        if (!PlayerASC)
-        {
-            UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: No ASC on player %s"),
-                *Actor->GetName());
-            continue;
-        }
-
-        if (!SelahGainEffect)
-        {
-            UE_LOG(LogTemp, Warning, TEXT("AwardSelahToNearbyEmbers: SelahGainEffect not assigned on %s"),
-                *GetName());
-            continue;
-        }
-
-        FGameplayEffectContextHandle Context = PlayerASC->MakeEffectContext();
-        Context.AddSourceObject(this);
-
-        FGameplayEffectSpecHandle Spec = PlayerASC->MakeOutgoingSpec(
-            SelahGainEffect, 1.f, Context);
-
-        if (Spec.IsValid())
-        {
-            Spec.Data->SetSetByCallerMagnitude(
-                FGameplayTag::RequestGameplayTag(FName("Data.Selah")),
-                SelahAwardAmount);
-
-            PlayerASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
-
-
-            PlayersAwarded++;
-
-            AGothicPlayerCharacter* PlayerChar = Cast<AGothicPlayerCharacter>(Actor);
-            if (PlayerChar)
+            if (UGothicPackSubsystem* Packs = GetWorld() ? GetWorld()->GetSubsystem<UGothicPackSubsystem>() : nullptr)
             {
-                PlayerChar->TriggerSelahMoment();
+                Packs->NotifyMemberDeath(PackID, this);
             }
         }
     }
-
 }
 
 void AGothicEnemyBase::DestroyCorpse()

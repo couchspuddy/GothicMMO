@@ -20,6 +20,10 @@ namespace
     struct FGothicWeightedActionMemory
     {
         float LastDecisionTime = -1.f;
+
+        /** Deferred-validation state, same pattern as CombatSync. */
+        float TimeSinceRelevant = 0.f;
+        bool  bValidated        = false;
     };
 }
 
@@ -62,9 +66,26 @@ void UGothicBTService_WeightedActionSelect::OnBecomeRelevant(UBehaviorTreeCompon
 {
     Super::OnBecomeRelevant(OwnerComp, NodeMemory);
 
+    // Arm the deferred check rather than running it here — the other half of
+    // CombatSync's pattern, which this node was missing. Running the scan now
+    // reads the pawn before its BeginPlay has called GrantStartupAbilities, so
+    // every tag reports as missing: 18 enemies × one false error on the spawn
+    // frame, all within 4ms of the world coming up for play. The abilities were
+    // granted correctly the whole time.
+    if (FGothicWeightedActionMemory* Memory = CastInstanceNodeMemory<FGothicWeightedActionMemory>(NodeMemory))
+    {
+        Memory->TimeSinceRelevant = 0.f;
+        Memory->bValidated        = false;
+    }
+}
+
+void UGothicBTService_WeightedActionSelect::ValidateConfiguration(UBehaviorTreeComponent& OwnerComp) const
+{
     // Same validation philosophy as CombatSync: catch an AssetTag that
-    // matches nothing at startup, loudly, instead of a permanently-zero-weight
+    // matches nothing, loudly, instead of a permanently-zero-weight
     // entry nobody notices until the fight feels thinner than it should.
+    // Runs once, after the grace period, so what it reports is the settled
+    // state rather than a startup race.
     const AAIController* AIC = OwnerComp.GetAIOwner();
     APawn* Pawn = AIC ? AIC->GetPawn() : nullptr;
     UAbilitySystemComponent* ASC =
@@ -100,9 +121,10 @@ void UGothicBTService_WeightedActionSelect::OnBecomeRelevant(UBehaviorTreeCompon
         if (!bFound)
         {
             UE_LOG(LogTemp, Error,
-                TEXT("WeightedActionSelect[%s]: entry '%s' AssetTag '%s' matches no granted ability. "
+                TEXT("WeightedActionSelect[%s]: after %.1fs, entry '%s' AssetTag '%s' matches no granted ability. "
                      "Check AssetTags on the ability, not AbilityInputTag."),
-                *GetNameSafe(Pawn), *Entry.ActionID.ToString(), *Entry.AbilityTag.ToString());
+                *GetNameSafe(Pawn), ValidationGraceSeconds,
+                *Entry.ActionID.ToString(), *Entry.AbilityTag.ToString());
         }
     }
 }
@@ -152,6 +174,22 @@ void UGothicBTService_WeightedActionSelect::TickNode(UBehaviorTreeComponent& Own
     uint8* NodeMemory, float DeltaSeconds)
 {
     Super::TickNode(OwnerComp, NodeMemory, DeltaSeconds);
+
+    // One-shot config validation, once the grace period has passed and the
+    // pawn's StartupAbilities have actually been granted.
+    if (FGothicWeightedActionMemory* Memory = CastInstanceNodeMemory<FGothicWeightedActionMemory>(NodeMemory))
+    {
+        if (!Memory->bValidated)
+        {
+            Memory->TimeSinceRelevant += DeltaSeconds;
+            if (Memory->TimeSinceRelevant >= ValidationGraceSeconds)
+            {
+                Memory->bValidated = true;
+                ValidateConfiguration(OwnerComp);
+            }
+        }
+    }
+
     SelectAndWrite(OwnerComp, NodeMemory);
 }
 

@@ -1,4 +1,4 @@
-// GothicEnemyBase.h
+﻿// GothicEnemyBase.h
 // Base class for all enemy types (Thrall, Retained, Feral, etc.).
 // Unlike players, enemies host their own ASC directly — they don't persist.
 // The AI Controller drives behavior; the ASC handles damage/buffs/debuffs.
@@ -103,8 +103,11 @@ public:
     // Pack coordination — optional stamp for Thrall pack grouping.
     // -----------------------------------------------------------------
 
+    /** Moves this enemy between packs, keeping GothicPackSubsystem's registry in
+     *  step. Was an inline setter that only wrote the field — so the subsystem's
+     *  Packs map stayed permanently empty and no pack ever regrouped. */
     UFUNCTION(BlueprintCallable, Category = "Gothic|AI")
-    void SetPackID(FName NewPackID) { PackID = NewPackID; }
+    void SetPackID(FName NewPackID);
 
     UFUNCTION(BlueprintPure, Category = "Gothic|AI")
     FName GetPackID() const { return PackID; }
@@ -174,9 +177,10 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
     TObjectPtr<UGothicLootTable> LootTable;
 
-    /** Radius within which players receive Selah on this enemy's death. */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
-    float SelahAwardRadius = 500.f;
+    // SelahAwardRadius (500uu) and AwardSelahToNearbyEmbers() lived here. The
+    // per-kill award was replaced by encounter-based collection; the function had
+    // no callers and was not BlueprintCallable, so nothing could reach it. Both
+    // removed so the remaining Selah surface is the one that actually runs.
 
     /** Amount of Selah awarded to each nearby player on death. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
@@ -216,6 +220,5 @@ private:
 
     /** Delayed destruction after death animation plays out. */
     void DestroyCorpse();
-    void AwardSelahToNearbyEmbers();
     void SpawnLootDrop();
 };

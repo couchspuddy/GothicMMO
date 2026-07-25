@@ -193,33 +193,28 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         return;
     }
 
-    // Two independent scalars sit on top of the archetype's authored damage.
+    // Damage model — ITEMIZATION_AND_LOOT.md plus the Gear Power / Attack Power
+    // split. Three factors, and no universal armor-damage anywhere:
     //
-    //   Gear Power  — which *copy* of the weapon this is. Comes from the rolled
-    //                 FGothicItemInstance via the weapon slot. This is what makes
-    //                 a Pure Revolver hit harder than a Salvage one; before this
-    //                 the instance was discarded at the equip boundary and every
-    //                 copy of an archetype was identical.
-    //
-    //   AttackPower — how strong the *character* is. An existing attribute, fed
-    //                 by the Conviction primary stat through ApplyEquipmentStats,
-    //                 which until now had no reader anywhere in the project.
-    //
-    // Both are expressed relative to a baseline so that an unrolled weapon on the
-    // default loadout, and a character at starting AttackPower, both scale by 1.0
-    // and the archetype numbers in WEAPON_ARCHETYPES.md remain the honest values.
-    const float GearScalar = (BaselineGearPower > 0.f && Char->GetActiveGearPower() > 0)
-        ? static_cast<float>(Char->GetActiveGearPower()) / BaselineGearPower
+    //   Weapon base damage — EffectiveDamage. The weapon's own attack power, per
+    //                        archetype. Armor never scales this universally.
+    //   Gear Power floor   — the AGGREGATE power level across ALL equipped gear,
+    //                        not just this weapon. It raises the floor of every
+    //                        hit and is the intended activity gate. Relative to a
+    //                        baseline so a starting loadout scales by ~1.0.
+    //   Archetype bonus    — armor's per-archetype damage lines, and ONLY the one
+    //                        matching the equipped weapon's archetype. A Revolver
+    //                        line does nothing while a Rifle is out.
+    const int32 AggregateGearPower = Char->GetAggregateGearPower();
+    const float GearFloor = (BaselineGearPower > 0.f && AggregateGearPower > 0)
+        ? static_cast<float>(AggregateGearPower) / BaselineGearPower
         : 1.f;
 
-    const float RawAttackPower = SourceASC->GetNumericAttribute(
-        UGothicAttributeSet::GetAttackPowerAttribute());
+    const float ArchetypeBonusPct = WeaponData
+        ? Char->GetArchetypeDamageBonusPct(WeaponData->Archetype)
+        : 0.f;
 
-    const float AttackScalar = (BaselineAttackPower > 0.f && RawAttackPower > 0.f)
-        ? RawAttackPower / BaselineAttackPower
-        : 1.f;
-
-    float FinalDamage = EffectiveDamage * GearScalar * AttackScalar;
+    float FinalDamage = EffectiveDamage * GearFloor * (1.f + ArchetypeBonusPct / 100.f);
     bool bIsVitalHit = false;
 
     if (UGothicVitalPointComponent* VitalPoint =

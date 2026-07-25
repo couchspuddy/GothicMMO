@@ -36,6 +36,18 @@ public:
     // -------------------------------------------------------------------------
     virtual void PreAttributeChange(const FGameplayAttribute& Attribute, float& NewValue) override;
 
+    /**
+     * Keeps Health in proportion when MaxHealth moves.
+     *
+     * GE_EquipmentStats adds MaxHealth from gear AFTER GE_InitStats_Player has
+     * already set Health, so without this the player spawned at 200/235.4 — 85%
+     * — and every +MaxHealth item equipped mid-run silently made the wearer
+     * proportionally more wounded. Scaling by the ratio preserves the fraction
+     * the HUD actually displays.
+     */
+    virtual void PostAttributeChange(const FGameplayAttribute& Attribute,
+                                     float OldValue, float NewValue) override;
+
     // -------------------------------------------------------------------------
     // Called AFTER a gameplay effect changes an attribute (use for death, UI, etc.)
     // -------------------------------------------------------------------------
@@ -139,8 +151,12 @@ UPROPERTY(BlueprintReadOnly, Category = "Steadfast", ReplicatedUsing = OnRep_Ste
     // =========================================================================
     // SECONDARY STATS — rolled on gear, applied through GE_EquipmentStats
     //
-    // One attribute per EGothicSecondaryStat entry. FlatDamage is deliberately
-    // absent: it maps onto AttackPower above rather than duplicating it.
+    // One attribute per EGothicSecondaryStat entry that feeds a character stat.
+    // The eleven Damage_* archetype entries are deliberately absent here: they
+    // are conditional (only the equipped archetype counts) and read straight off
+    // the equipped items by GA_Fire, never baked into a standing attribute. There
+    // is intentionally no universal weapon-damage attribute — raw power is Gear
+    // Power, which is not a rollable stat.
     //
     // All default to the neutral value for their consumer, so a character
     // wearing nothing behaves exactly as before gear existed.

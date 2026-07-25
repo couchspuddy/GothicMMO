@@ -59,7 +59,24 @@ enum class EGothicPrimaryStat : uint8
 UENUM(BlueprintType)
 enum class EGothicSecondaryStat : uint8
 {
-    FlatDamage          UMETA(DisplayName = "Flat Damage"),
+    // Per-archetype weapon damage. These are the ONLY damage stats armor rolls —
+    // there is deliberately no universal "flat damage" line (raw power lives in
+    // Gear Power, not in a rollable stat). A damage line only does anything while
+    // its exact archetype is the equipped weapon; GA_Fire reads the active
+    // weapon's archetype and applies only the matching one. Order mirrors
+    // EGothicWeaponArchetype so the archetype→stat mapping stays legible.
+    Damage_Revolver         UMETA(DisplayName = "Revolver Damage"),
+    Damage_RepeatingPistol  UMETA(DisplayName = "Repeating Pistol Damage"),
+    Damage_Derringer        UMETA(DisplayName = "Derringer Damage"),
+    Damage_LeverAction      UMETA(DisplayName = "Lever-Action Damage"),
+    Damage_BoltAction       UMETA(DisplayName = "Bolt-Action Damage"),
+    Damage_SawedOff         UMETA(DisplayName = "Sawed-Off Damage"),
+    Damage_Carbine          UMETA(DisplayName = "Carbine Damage"),
+    Damage_GatlingRig       UMETA(DisplayName = "Gatling Rig Damage"),
+    Damage_BombThrower      UMETA(DisplayName = "Bomb Thrower Damage"),
+    Damage_Breacher         UMETA(DisplayName = "Breacher Damage"),
+    Damage_HeavyMelee       UMETA(DisplayName = "Heavy Melee Damage"),
+
     MovementSpeed       UMETA(DisplayName = "Movement Speed"),
     EvasionChance       UMETA(DisplayName = "Evasion Chance"),
     HealingReceived     UMETA(DisplayName = "Healing Received"),
@@ -79,7 +96,7 @@ struct FGothicStatRoll
     GENERATED_BODY()
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Item")
-    EGothicSecondaryStat StatType = EGothicSecondaryStat::FlatDamage;
+    EGothicSecondaryStat StatType = EGothicSecondaryStat::MovementSpeed;
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Item")
     float Value = 0.f;
@@ -92,7 +109,7 @@ struct FGothicSecondaryStatRange
     GENERATED_BODY()
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Item")
-    EGothicSecondaryStat StatType = EGothicSecondaryStat::FlatDamage;
+    EGothicSecondaryStat StatType = EGothicSecondaryStat::MovementSpeed;
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Item")
     float MinValue = 0.f;

@@ -337,6 +337,39 @@ bool UGothicInventoryComponent::ImbueStar(const FGuid& InstanceID, float SelahCo
     return true;
 }
 
+void UGothicInventoryComponent::GrantStartingItems()
+{
+    // Server-authoritative and one-shot. The PlayerState (and this component)
+    // survives death, so without the guard every respawn would re-grant a full
+    // kit on top of whatever the player has since equipped.
+    if (bStartingItemsGranted)
+    {
+        return;
+    }
+    if (GetOwner() && !GetOwner()->HasAuthority())
+    {
+        return;
+    }
+
+    bStartingItemsGranted = true;
+
+    for (const TObjectPtr<UGothicItemDefinition>& Def : StartingItemDefs)
+    {
+        if (!Def)
+        {
+            continue;
+        }
+
+        // Roll a real instance so the starting kit has rolled stats like any
+        // drop, then equip it straight into its slot.
+        FGothicItemInstance Instance = Def->RollInstance();
+        if (AddItem(Instance))
+        {
+            EquipItem(Instance.InstanceID);
+        }
+    }
+}
+
 // =============================================================================
 // Debug
 // =============================================================================
@@ -373,7 +406,8 @@ void UGothicInventoryComponent::DebugSpawnTestItems()
 
     // Common secondary stat pool
     TArray<FGothicSecondaryStatRange> ArmorSecondaries;
-    ArmorSecondaries.Add({ EGothicSecondaryStat::FlatDamage, 2.f, 8.f });
+    ArmorSecondaries.Add({ EGothicSecondaryStat::Damage_Revolver, 4.f, 15.f });
+    ArmorSecondaries.Add({ EGothicSecondaryStat::Damage_LeverAction, 4.f, 15.f });
     ArmorSecondaries.Add({ EGothicSecondaryStat::MovementSpeed, 1.f, 5.f });
     ArmorSecondaries.Add({ EGothicSecondaryStat::EvasionChance, 1.f, 4.f });
     ArmorSecondaries.Add({ EGothicSecondaryStat::HealingReceived, 2.f, 6.f });
@@ -468,57 +502,120 @@ void UGothicInventoryComponent::ApplyEquipmentStats(EGothicEquipSlot Slot, const
         return;
     }
 
-    // Map primary stat to the appropriate SetByCaller tag
-    float PrimaryValue = Item.PrimaryStatValue;
-    switch (Item.Definition->PrimaryStatType)
+    // Accumulate every contribution by tag first, then push one SetByCaller per
+    // tag. A primary and a secondary can legitimately target the same attribute
+    // (Clarity and a rolled Ability Haste line both feed Data.Stat.AbilityHaste),
+    // and SetSetByCallerMagnitude overwrites — so setting them one at a time
+    // would silently drop whichever came first. Summing first fixes that.
+    //
+    // Seeded with every tag GE_EquipmentStats declares a modifier for. A modifier
+    // whose SetByCaller was never set resolves to 0 and logs
+    // "GetMagnitude called ... when magnitude had not yet been set by caller" — one
+    // error per unrolled stat per equip, ~129 per playthrough, which buried the real
+    // errors in the log. Every op on that effect is AddBase, so an explicit 0 is the
+    // same no-op the engine already fell back to, minus the noise.
+    //
+    // Keep this list in sync with GE_EquipmentStats' Modifiers array.
+    TMap<FName, float> TagTotals;
+    for (const FName& StatTag : {
+            FName("Data.Stat.MaxHealth"),
+            FName("Data.Stat.MovementSpeed"),
+            FName("Data.Stat.EvasionChance"),
+            FName("Data.Stat.AbilityHaste"),
+            FName("Data.Stat.VitalPointRadius"),
+            FName("Data.Stat.SteadfastRate"),
+            FName("Data.Stat.HealingReceived"),
+            FName("Data.Stat.ReloadSpeed") })
     {
-        case EGothicPrimaryStat::Resolve:
-            Spec.Data->SetSetByCallerMagnitude(
-                FGameplayTag::RequestGameplayTag(FName("Data.Stat.MaxHealth")),
-                PrimaryValue);
-            break;
-        case EGothicPrimaryStat::Conviction:
-            Spec.Data->SetSetByCallerMagnitude(
-                FGameplayTag::RequestGameplayTag(FName("Data.Stat.AttackPower")),
-                PrimaryValue);
-            break;
-        case EGothicPrimaryStat::Clarity:
-            Spec.Data->SetSetByCallerMagnitude(
-                FGameplayTag::RequestGameplayTag(FName("Data.Stat.MaxEther")),
-                PrimaryValue);
-            break;
+        TagTotals.Add(StatTag, 0.f);
     }
 
-    // Secondary stats. Each rolled stat maps to its own SetByCaller tag on the
-    // same effect, so one GE carries the whole item rather than one per stat.
-    //
-    // GE_EquipmentStats must declare a modifier for every tag below, each with
-    // a SetByCaller magnitude. A tag with no matching modifier is silently
-    // ignored by GAS — no warning, no error — so a missing modifier looks
-    // exactly like a stat that rolled zero.
+    // Primary stat → its creed-mapped attribute (PROGRESSION_STATS_AND_BALANCE.md):
+    //   Resolve    → MaxHealth      (Endure — health pool scaling)
+    //   Clarity    → AbilityHaste   (Remember — ability cooldown rate)
+    //   Conviction → SteadfastRate  (Repay — Steadfast generation rate)
+    // First-pass single-effect mappings. Each stat governs more in the design
+    // (Resolve's mitigation curve, Clarity's crit/vital, Conviction's Selah
+    // yield, plus threshold breakpoints); those remain design-only for now.
+    FName PrimaryTag = NAME_None;
+    switch (Item.Definition->PrimaryStatType)
+    {
+        case EGothicPrimaryStat::Resolve:    PrimaryTag = FName("Data.Stat.MaxHealth");     break;
+        case EGothicPrimaryStat::Clarity:    PrimaryTag = FName("Data.Stat.AbilityHaste");  break;
+        case EGothicPrimaryStat::Conviction: PrimaryTag = FName("Data.Stat.SteadfastRate"); break;
+    }
+    if (!PrimaryTag.IsNone())
+    {
+        TagTotals.FindOrAdd(PrimaryTag) += Item.PrimaryStatValue;
+    }
+
+    // Secondary stats. Each rolled stat maps to its SetByCaller tag; archetype
+    // damage lines return NAME_None and are skipped (they're read at fire time,
+    // not baked into an attribute). GE_EquipmentStats must declare a modifier
+    // for every tag used here.
     for (const FGothicStatRoll& Roll : Item.SecondaryStats)
     {
         const FName TagName = SecondaryStatToSetByCallerTag(Roll.StatType);
-        if (TagName.IsNone())
+        if (!TagName.IsNone())
         {
-            continue;
+            TagTotals.FindOrAdd(TagName) += Roll.Value;
         }
+    }
 
+    for (const TPair<FName, float>& Pair : TagTotals)
+    {
         Spec.Data->SetSetByCallerMagnitude(
-            FGameplayTag::RequestGameplayTag(TagName), Roll.Value);
+            FGameplayTag::RequestGameplayTag(Pair.Key), Pair.Value);
     }
 
     FActiveGameplayEffectHandle Handle = ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
     ActiveStatEffects.Add(Slot, Handle);
 }
 
+int32 UGothicInventoryComponent::GetAggregateGearPower() const
+{
+    int32 Total = 0;
+    int32 Count = 0;
+    for (const TPair<EGothicEquipSlot, FGothicItemInstance>& Pair : EquippedItems)
+    {
+        if (Pair.Value.IsValid())
+        {
+            Total += Pair.Value.GearPower;
+            ++Count;
+        }
+    }
+    return Count > 0 ? Total / Count : 0;
+}
+
+float UGothicInventoryComponent::GetArchetypeDamageBonus(EGothicSecondaryStat DamageStat) const
+{
+    float Sum = 0.f;
+    for (const TPair<EGothicEquipSlot, FGothicItemInstance>& Pair : EquippedItems)
+    {
+        if (!Pair.Value.IsValid())
+        {
+            continue;
+        }
+        for (const FGothicStatRoll& Roll : Pair.Value.SecondaryStats)
+        {
+            if (Roll.StatType == DamageStat)
+            {
+                Sum += Roll.Value;
+            }
+        }
+    }
+    return Sum;
+}
+
 FName UGothicInventoryComponent::SecondaryStatToSetByCallerTag(EGothicSecondaryStat StatType)
 {
     switch (StatType)
     {
-        // FlatDamage deliberately feeds AttackPower rather than a stat of its
-        // own — AttackPower is already the damage scalar GA_Fire reads.
-        case EGothicSecondaryStat::FlatDamage:       return FName("Data.Stat.AttackPower");
+        // The eleven Damage_* archetype lines intentionally return NAME_None:
+        // they are NOT routed through GE_EquipmentStats into an attribute. They
+        // apply conditionally at fire time (only for the equipped archetype), so
+        // GA_Fire reads them straight off the equipped items via
+        // GetArchetypeDamageBonus rather than baking them into a character stat.
         case EGothicSecondaryStat::MovementSpeed:    return FName("Data.Stat.MovementSpeed");
         case EGothicSecondaryStat::EvasionChance:    return FName("Data.Stat.EvasionChance");
         case EGothicSecondaryStat::AbilityHaste:     return FName("Data.Stat.AbilityHaste");

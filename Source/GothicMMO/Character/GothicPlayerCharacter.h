@@ -44,6 +44,25 @@ public:
     virtual void OnRep_PlayerState() override;
     virtual void Tick(float DeltaTime) override;
 
+    /** Safety net for falling under the map / below KillZ — routes into the
+     *  normal checkpoint respawn instead of the default (which just destroys the
+     *  pawn and strands the controller). */
+    virtual void FellOutOfWorld(const class UDamageType& DmgType) override;
+
+    /**
+     * Z height below which the player is treated as having fallen out of the
+     * playable space and is respawned. This is the reliable trigger — the
+     * engine's KillZ often sits far lower than any level's floor, so a player
+     * who falls through geometry never reaches it. Checked every Tick on
+     * authority. Set per-level below the lowest legitimate floor.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Respawn")
+    float FallRespawnZ = -2000.f;
+
+    /** Shared respawn-on-fall path used by both FellOutOfWorld and the Tick
+     *  height check. Authority-only; no-op if already handled or no game mode. */
+    void TriggerFallRespawn();
+
     UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
     void TriggerSelahMoment();
     
@@ -71,6 +90,16 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
     int32 GetActiveGearPower() const;
 
+    /** Overall Gear Power (average across equipped gear) — the damage floor and
+     *  activity gate. Delegates to the inventory on the PlayerState. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    int32 GetAggregateGearPower() const;
+
+    /** Armor's summed damage bonus (percent) for a given weapon archetype.
+     *  GA_Fire passes the active weapon's archetype so only matching lines count. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    float GetArchetypeDamageBonusPct(EGothicWeaponArchetype Archetype) const;
+
     // -------------------------------------------------------------------------
     // Passive state — for the HUD's passive display. Resolve the granted passive
     // ability instances off the ASC so UMG can bind without reaching into GAS.
@@ -83,6 +112,18 @@ public:
     /** True while The Loved and The Lost is ramping (Hunter in combat). */
     UFUNCTION(BlueprintPure, Category = "Gothic|Passives")
     bool IsLovedAndLostActive() const;
+
+    /** True while The Read's vital-damage window is up (State.Read) — proc icon. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Passives")
+    bool IsReadActive() const;
+
+    /** True while The Reckoning's guaranteed-vital state is up (State.Reckoning) — proc icon. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Passives")
+    bool IsReckoningActive() const;
+
+    /** True when the Not At All passive is granted on this character — steady indicator. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Passives")
+    bool IsNotAtAllGranted() const;
 
     /**
      * Steadfast charges the active weapon costs to refill — 1/2/3 by slot tier.
@@ -254,6 +295,11 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
     TObjectPtr<UInputAction> ReloadAction;
 
+    /** Assign IA_Interact in BP_GothicPlayerCharacter. Collects the shared Selah
+     *  prompt when the player is near the fallen prompt-corpse. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+    TObjectPtr<UInputAction> InteractAction;
+
     // -------------------------------------------------------------------------
     // Inventory UI
     // -------------------------------------------------------------------------
@@ -304,6 +350,23 @@ protected:
     void OnLook(const FInputActionValue& Value);
     void OnSprintStarted();
     void OnSprintStopped();
+
+    /** IA_Interact — if a Selah prompt corpse is in range, ask the server to collect it. */
+    void OnInteract();
+
+    /** Server-side collect for a specific encounter, re-validated server-side. */
+    UFUNCTION(Server, Reliable)
+    void ServerCollectEncounterSelah(AGothicEncounterVolume* Enc);
+
+    /** Per-frame (locally controlled): show/clear the "[E] Meditate" prompt. */
+    void UpdateSelahInteractPrompt();
+
+    // SelahInteractRange (400uu) lived here and was read by nothing — collection
+    // has always used the encounter's own MeditationRange. Removed rather than
+    // left as an EditDefaultsOnly knob that silently does nothing when tuned.
+
+    /** The encounter the local interact prompt is currently raised for (to clear it correctly). */
+    TWeakObjectPtr<AActor> ShownSelahPromptCorpse;
 
 public:
     /**

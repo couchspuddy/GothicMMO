@@ -1,6 +1,7 @@
 // GA_Reckoning.cpp
 
 #include "AbilitySystem/GA_Reckoning.h"
+#include "AbilitySystem/GothicAttributeSet.h"
 #include "AbilitySystemComponent.h"
 #include "GameplayEffect.h"
 #include "TimerManager.h"
@@ -42,6 +43,38 @@ void UGA_Reckoning::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 
     RemainingDuration = BaseDuration;
     RestartDurationTimer();
+
+    // GE_SuperCost drained the meter to zero as the activation gate. Reckoning
+    // spends it visibly instead of instantly: refill to full now, then bleed it
+    // back down over the duration so the super bar doubles as the Reckoning
+    // timer. TickSuperDrain re-reads the remaining time each tick, so a Not At
+    // All extension pushes the bar back up on its own.
+    const float MaxSuper = CachedASC->GetNumericAttribute(
+        UGothicAttributeSet::GetMaxSuperMeterAttribute());
+    CachedASC->SetNumericAttributeBase(
+        UGothicAttributeSet::GetSuperMeterAttribute(), MaxSuper);
+
+    GetWorld()->GetTimerManager().SetTimer(
+        DrainTimerHandle, this, &UGA_Reckoning::TickSuperDrain, DrainTickInterval, true);
+}
+
+void UGA_Reckoning::TickSuperDrain()
+{
+    if (!CachedASC || !GetWorld())
+    {
+        return;
+    }
+
+    const float MaxSuper = CachedASC->GetNumericAttribute(
+        UGothicAttributeSet::GetMaxSuperMeterAttribute());
+    const float Remaining =
+        GetWorld()->GetTimerManager().GetTimerRemaining(DurationTimerHandle);
+    const float Frac = BaseDuration > 0.f
+        ? FMath::Clamp(Remaining / BaseDuration, 0.f, 1.f)
+        : 0.f;
+
+    CachedASC->SetNumericAttributeBase(
+        UGothicAttributeSet::GetSuperMeterAttribute(), MaxSuper * Frac);
 }
 
 void UGA_Reckoning::RestartDurationTimer()
@@ -91,6 +124,15 @@ void UGA_Reckoning::EndAbility(const FGameplayAbilitySpecHandle Handle,
     if (GetWorld())
     {
         GetWorld()->GetTimerManager().ClearTimer(DurationTimerHandle);
+        GetWorld()->GetTimerManager().ClearTimer(DrainTimerHandle);
+    }
+
+    // Reckoning is over — the meter is spent. Zero it so it starts recharging
+    // from empty via damage and kills.
+    if (CachedASC)
+    {
+        CachedASC->SetNumericAttributeBase(
+            UGothicAttributeSet::GetSuperMeterAttribute(), 0.f);
     }
 
     if (CachedASC && ActiveReckoningHandle.IsValid())

@@ -1,21 +1,31 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.0",
-	"FriendlyName": "Vigil Dev Tools",
-	"Description": "MCP toolsets for Vigil development: blackboard inspector, GAS diagnostics, encounter state.",
-	"Category": "Editor",
+	"VersionName": "0.1",
+	"FriendlyName": "Vigil Tools",
+	"Description": "Editor-only MCP toolsets for debugging Vigil in PIE. Content-only: no C++ module, so it never affects a packaged build.",
+	"Category": "Vigil",
 	"CreatedBy": "Nathan",
-	"EnabledByDefault": true,
 	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
 	"Installed": false,
+	"EnabledByDefault": true,
 	"Plugins": [
 		{
-			"Name": "ModelContextProtocol",
+			"Name": "PythonScriptPlugin",
+			"Enabled": true
+		},
+		{
+			"Name": "EditorScriptingUtilities",
 			"Enabled": true
 		},
 		{
 			"Name": "ToolsetRegistry",
+			"Enabled": true
+		},
+		{
+			"Name": "ModelContextProtocol",
 			"Enabled": true
 		}
 	]

@@ -74,6 +74,14 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Reckoning")
     TSubclassOf<UGameplayEffect> ReckoningStateEffect;
 
+    /**
+     * How often (seconds) the super meter is repainted while The Reckoning runs.
+     * The meter is refilled at activation and bled back to zero across the
+     * duration so the bar itself reads as the remaining Reckoning window.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Reckoning")
+    float DrainTickInterval = 0.1f;
+
 private:
     FTimerHandle DurationTimerHandle;
     float RemainingDuration = 0.f;
@@ -82,6 +90,10 @@ private:
     TObjectPtr<class UAbilitySystemComponent> CachedASC;
 
     FActiveGameplayEffectHandle ActiveReckoningHandle;
+
+    /** Repaints the super meter to match the fraction of duration remaining. */
+    FTimerHandle DrainTimerHandle;
+    void TickSuperDrain();
 
     void OnDurationExpired();
     void RestartDurationTimer();
