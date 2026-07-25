@@ -71,6 +71,14 @@ void UGothicAttributeSet::PreAttributeChange(const FGameplayAttribute& Attribute
     {
         NewValue = FMath::Max(0.f, NewValue);
     }
+    else if (Attribute == GetSteadfastAttribute())
+    {
+        NewValue = FMath::Clamp(NewValue, 0.f, GetMaxSteadfast());
+    }
+    else if (Attribute == GetMaxSteadfastAttribute())
+    {
+        NewValue = FMath::Max(0.f, NewValue);
+    }
 }
 
 void UGothicAttributeSet::OnRep_Selah(const FGameplayAttributeData& OldSelah)

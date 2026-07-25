@@ -122,13 +122,24 @@ bool UGothicInventoryComponent::EquipItem(const FGuid& InstanceID)
         return false;
     }
 
-    // Check Resonance Strain budget for Resonant/Pure items
-    if (Item->Definition->HasStrain() && WouldExceedStrain(*Item))
+    // Check Resonance Strain budget for Resonant/Pure items. If this equip replaces
+    // an item already in the same slot, that item's Strain is freed first — exclude it
+    // from the running total so a lower-Strain swap near the cap isn't wrongly refused.
+    if (Item->Definition->HasStrain())
     {
-        UE_LOG(LogTemp, Warning, TEXT("Inventory: Cannot equip %s — would exceed Resonance cap (%.1f + %.1f > %.1f)"),
-            *Item->Definition->ItemID.ToString(),
-            GetCurrentStrain(), Item->StrainCost, ResonanceCap);
-        return false;
+        float EffectiveStrain = GetCurrentStrain();
+        if (const FGothicItemInstance* Outgoing = EquippedItems.Find(Slot))
+        {
+            EffectiveStrain -= Outgoing->StrainCost;
+        }
+
+        if (EffectiveStrain + Item->StrainCost > ResonanceCap)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Inventory: Cannot equip %s — would exceed Resonance cap (%.1f + %.1f > %.1f)"),
+                *Item->Definition->ItemID.ToString(),
+                EffectiveStrain, Item->StrainCost, ResonanceCap);
+            return false;
+        }
     }
 
     // Copy the instance out of the Items array BEFORE mutating it. UnequipSlot()
