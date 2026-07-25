@@ -88,6 +88,37 @@ void UGothicAttributeSet::PreAttributeChange(const FGameplayAttribute& Attribute
     }
 }
 
+void UGothicAttributeSet::PreAttributeBaseChange(const FGameplayAttribute& Attribute,
+                                                 float& NewValue) const
+{
+    Super::PreAttributeBaseChange(Attribute, NewValue);
+
+    // Mirrors PreAttributeChange. See the header for why the init effect leans
+    // on this: it overrides the pools with a sentinel so they land on the real
+    // ceiling, gear included, instead of a hardcoded number that predates the
+    // gear bonus.
+    if (Attribute == GetHealthAttribute())
+    {
+        NewValue = FMath::Clamp(NewValue, 0.f, GetMaxHealth());
+    }
+    else if (Attribute == GetStaminaAttribute())
+    {
+        NewValue = FMath::Clamp(NewValue, 0.f, GetMaxStamina());
+    }
+    else if (Attribute == GetEtherAttribute())
+    {
+        NewValue = FMath::Clamp(NewValue, 0.f, GetMaxEther());
+    }
+    else if (Attribute == GetSuperMeterAttribute())
+    {
+        NewValue = FMath::Clamp(NewValue, 0.f, GetMaxSuperMeter());
+    }
+    else if (Attribute == GetSelahAttribute())
+    {
+        NewValue = FMath::Max(0.f, NewValue);
+    }
+}
+
 void UGothicAttributeSet::PostAttributeChange(const FGameplayAttribute& Attribute,
                                               float OldValue, float NewValue)
 {

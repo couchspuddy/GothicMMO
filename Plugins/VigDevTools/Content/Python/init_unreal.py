@@ -35,10 +35,25 @@ import importlib
 import unreal
 
 # (module name, class name) — imported and registered independently.
+#
+# Anything added to Content/Python is imported by Unreal but NOT published to
+# the agent unless it is listed here: the Toolset Registry only exposes classes
+# handed to Registration(). vig_blackboard_tools, vig_encounter_tools and
+# vig_gas_tools sat on disk unregistered through a whole debugging session,
+# which meant the boss's Phase 2 stall had to be inferred from position traces
+# instead of just reading bTransitionPending out of the blackboard. If you drop
+# a new toolset module in, add it here in the same change.
 _TOOLSETS = (
     ("vigil_pie_toolset", "VigilPIETools"),
     ("vigil_combat_toolset", "VigilCombatDrive"),
+    ("vig_blackboard_tools", "VigBlackboardTools"),
+    ("vig_encounter_tools", "VigEncounterTools"),
 )
+# vig_gas_tools is deliberately NOT registered: attributes, active effects,
+# granted abilities and owned tags are already covered by the engine's own
+# GASToolsets.AbilitySystemInspectorToolset, which is maintained upstream and
+# takes actor pointers directly. A second, hand-rolled copy of the same four
+# reads is a liability, not a convenience.
 
 _REGISTRATION = None
 _registered_classes = []

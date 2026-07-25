@@ -100,12 +100,32 @@ EBTNodeResult::Type UGothicBTTask_FindNearestPillar::ExecuteTask(
     const FVector ToPawn = (Pawn->GetActorLocation() - PillarLoc).GetSafeNormal2D();
     FVector ApproachPoint = PillarLoc + ToPawn * ApproachOffsetDistance;
 
+    // Drop the approach point to the pawn's own height before projecting. A
+    // pillar tall enough to carry a ceiling has its origin at mid-height --
+    // for the Rotunda columns that is ~2200uu above the floor -- and the
+    // projection extent is a box around the query point, not a ray to the
+    // ground. Projecting from the pillar's bare origin therefore missed the
+    // navmesh entirely, ApproachPoint kept its mid-air Z, and the Move To that
+    // follows failed silently: the Phase 2 sequence died one step after
+    // FindNearestPillar reported success, which is a far more confusing
+    // failure than the no-pillar-found case above.
+    ApproachPoint.Z = Pawn->GetActorLocation().Z;
+
     if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(Pawn->GetWorld()))
     {
         FNavLocation Projected;
-        if (NavSys->ProjectPointToNavigation(ApproachPoint, Projected, FVector(200.f, 200.f, 500.f)))
+        // Vertical extent is generous for the same reason -- the floor under a
+        // pillar can sit well below wherever the pawn happens to be standing.
+        if (NavSys->ProjectPointToNavigation(ApproachPoint, Projected, FVector(300.f, 300.f, 2000.f)))
         {
             ApproachPoint = Projected.Location;
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("FindNearestPillar[%s]: approach point for %s did not project to navmesh ")
+                TEXT("(%s) -- the following Move To will likely fail and stall the transition."),
+                *GetNameSafe(Pawn), *GetNameSafe(Nearest), *ApproachPoint.ToCompactString());
         }
     }
 

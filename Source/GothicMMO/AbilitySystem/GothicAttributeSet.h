@@ -37,6 +37,21 @@ public:
     virtual void PreAttributeChange(const FGameplayAttribute& Attribute, float& NewValue) override;
 
     /**
+     * Same clamps as PreAttributeChange, but for BASE value writes.
+     *
+     * PreAttributeChange only guards the CURRENT value, so an instant GE that
+     * Overrides Health writes its raw magnitude straight into the base. That
+     * matters because GE_InitStats_Player deliberately overrides Health,
+     * Stamina and Ether with a large sentinel and relies on the clamp to land
+     * them on whatever the max actually is once gear is factored in -- the
+     * flat 200/100/80 it used before could not see the gear bonus sitting on
+     * MaxHealth's aggregator, so the player spawned permanently short by
+     * exactly that bonus. Without this override the sentinel reaches the base
+     * unclamped and only collapses to something sane on the first damage.
+     */
+    virtual void PreAttributeBaseChange(const FGameplayAttribute& Attribute, float& NewValue) const override;
+
+    /**
      * Keeps Health in proportion when MaxHealth moves.
      *
      * GE_EquipmentStats adds MaxHealth from gear AFTER GE_InitStats_Player has

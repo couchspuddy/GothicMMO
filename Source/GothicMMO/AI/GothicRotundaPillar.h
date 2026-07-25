@@ -83,6 +83,24 @@ protected:
     // Components
     // -------------------------------------------------------------------------
 
+    /**
+     * The pillar's visual mesh, and the actor's ROOT.
+     *
+     * Being the root means the actor origin sits wherever this mesh's pivot is
+     * -- for the engine Cylinder that is its CENTRE, i.e. half the pillar's
+     * height above its base. Every system that locates a pillar
+     * (GothicBTTask_FindNearestPillar, Wall Pound's target lookup) measures to
+     * GetActorLocation, so a very tall pillar hoists its own origin out of
+     * gameplay range: at ~2200uu up, the navmesh projection and Wall Pound both
+     * stopped finding it, verified by A/B against a short one that collapsed
+     * normally.
+     *
+     * Reparenting this under a bare scene root to move the origin to the foot
+     * was tried and reverted -- it left the mesh with no physics body at all.
+     * See the constructor. Until that is solved, keep pillars short enough that
+     * their mid-height origin stays near the floor, and set the ceiling to
+     * match the pillar rather than the other way round.
+     */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Arena")
     TObjectPtr<UStaticMeshComponent> PillarMesh;
 

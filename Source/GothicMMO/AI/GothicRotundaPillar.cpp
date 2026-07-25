@@ -14,6 +14,20 @@ AGothicRotundaPillar::AGothicRotundaPillar()
     PrimaryActorTick.bCanEverTick = false;
     bReplicates = true;
 
+    // PillarMesh stays the root. Reparenting it under a bare scene component --
+    // to put the actor origin at the pillar's foot rather than its mid-height --
+    // was tried and reverted: every placed AND freshly spawned pillar came back
+    // with no physics body at all. The mesh registered, reported
+    // BlockAll/WorldStatic/QueryAndPhysics, and rendered, but a physics-filtered
+    // overlap found nothing and traces passed straight through, so
+    // FindNearestPillar's ECC_WorldStatic sphere overlap could never see it.
+    // Recompiling and resaving the Blueprint did not restore it.
+    //
+    // The consequence to design around: this mesh's pivot is at its CENTRE, so
+    // the actor origin sits at half the pillar's height, and everything locating
+    // a pillar uses GetActorLocation. Keep pillars short enough that their
+    // origin stays near the floor -- an origin ~2200uu up put them out of range
+    // of both the navmesh projection and Wall Pound's target lookup.
     PillarMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PillarMesh"));
     RootComponent = PillarMesh;
 

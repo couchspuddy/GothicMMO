@@ -14,6 +14,8 @@ Placement: Plugins/VigDevTools/Content/Python/vig_encounter_tools.py
 import unreal
 import toolset_registry
 
+import vigil_pie_common as common
+
 
 @unreal.uclass()
 class VigEncounterTools(unreal.ToolsetDefinition):
@@ -21,9 +23,8 @@ class VigEncounterTools(unreal.ToolsetDefinition):
     zone status, Selah balances, and encounter volume occupancy.
     Built for Eagle's Landing vertical slice tuning."""
 
-    @toolset_registry.tool_call
     @staticmethod
-    def dump_boss_state(actor_label: str = "") -> dict:
+    def _dump_boss_state_impl(actor_label: str = "") -> dict:
         """Read the Bestial Lucid or any boss-tier enemy's full state:
         health, phase, blackboard values, and nearby pillar status.
 
@@ -157,9 +158,8 @@ class VigEncounterTools(unreal.ToolsetDefinition):
 
         return result
 
-    @toolset_registry.tool_call
     @staticmethod
-    def dump_selah_state() -> dict:
+    def _dump_selah_state_impl() -> dict:
         """Read Selah balance from every player character in the level.
 
         Returns:
@@ -223,9 +223,8 @@ class VigEncounterTools(unreal.ToolsetDefinition):
             "players": players,
         }
 
-    @toolset_registry.tool_call
     @staticmethod
-    def dump_encounter_volumes() -> dict:
+    def _dump_encounter_volumes_impl() -> dict:
         """List all trigger volumes and encounter zones in the level,
         with their locations and any overlap state.
 
@@ -276,15 +275,20 @@ class VigEncounterTools(unreal.ToolsetDefinition):
             "volumes": volumes,
         }
 
-    @toolset_registry.tool_call
     @staticmethod
-    def check_pillar_destruction() -> dict:
-        """Find all actors tagged BestialLucidZone and report their
-        state: intact vs destroyed, location, and distance from
-        the rotunda center.
+    def _check_pillar_destruction_impl() -> dict:
+        """Report every Rotunda pillar's live state.
+
+        Was matching an actor tag "BestialLucidZone" that exists nowhere in the
+        project, so it always returned zero pillars. Matches on the pillar
+        CLASS instead, which cannot drift the way a tag string can, and reads
+        state through the BlueprintPure accessors on AGothicRotundaPillar --
+        CurrentState and CurrentHealth are private C++ members and are NOT
+        reachable by property reflection.
 
         Returns:
-            Dictionary with each pillar zone's status.
+            Dictionary with each pillar's state, health fraction, and the
+            ceiling/blocking-volume wiring that the collapse depends on.
         """
         world = VigEncounterTools._get_world()
         if isinstance(world, dict):
@@ -296,40 +300,113 @@ class VigEncounterTools(unreal.ToolsetDefinition):
 
         pillars = []
         for actor in all_actors:
-            tags = actor.tags if hasattr(actor, "tags") else []
-            tag_strs = [str(t) for t in tags]
-            if "BestialLucidZone" in tag_strs:
-                entry = {
-                    "label": actor.get_actor_label(),
-                    "class": actor.get_class().get_name(),
-                    "location": VigEncounterTools._vec_to_dict(
-                        actor.get_actor_location()
-                    ),
-                    "tags": tag_strs,
-                    "visible": actor.is_hidden() is False,
-                    "collision_enabled": (
-                        actor.get_component_by_class(
-                            unreal.StaticMeshComponent
-                        ) is not None
-                    ),
-                }
-                pillars.append(entry)
+            if "RotundaPillar" not in actor.get_class().get_name():
+                continue
+
+            entry = {
+                "pillar": actor.get_name(),
+                "class": actor.get_class().get_name(),
+                "location": VigEncounterTools._vec_to_dict(
+                    actor.get_actor_location()
+                ),
+                "tags": [str(t) for t in (actor.tags or [])],
+            }
+
+            # Public API first -- these are the authoritative state.
+            entry["state"] = common.try_read(
+                lambda a=actor: str(a.get_pillar_state()))
+            entry["destroyed"] = common.try_read(
+                lambda a=actor: bool(a.is_destroyed()))
+            entry["health_percent"] = common.try_read(
+                lambda a=actor: round(float(a.get_health_percent()), 3))
+
+            # Wiring: a null ceiling or blocking volume is why a collapse can
+            # "succeed" and still look like nothing happened.
+            entry["ceiling_mesh"] = common.try_read(
+                lambda a=actor: (
+                    a.get_editor_property("ceiling_mesh").get_owner().get_name()
+                    if a.get_editor_property("ceiling_mesh") else "None"),
+                default="<unreadable>")
+            entry["blocking_volume"] = common.try_read(
+                lambda a=actor: (
+                    a.get_editor_property("blocking_volume_actor").get_name()
+                    if a.get_editor_property("blocking_volume_actor") else "None"),
+                default="<unreadable>")
+
+            pillars.append(entry)
 
         return {
             "pillar_count": len(pillars),
+            "standing": sum(1 for p in pillars if p.get("destroyed") is False),
             "pillars": pillars,
         }
+
+    # -- Public tool surface ---------------------------------------------------
+    # Thin JSON wrappers. The bodies above return dicts, but this plugin's
+    # schema generator rejects an unparameterised `-> dict` at tool-DISCOVERY
+    # time, which is what kept this whole module from ever loading.
+
+    @toolset_registry.tool_call
+    @staticmethod
+    def dump_boss_state(actor_label: str = "") -> str:
+        """Boss health, phase, blackboard values and nearby pillar status.
+
+        Args:
+            actor_label: Boss actor label. Empty picks the first boss found.
+
+        Returns:
+            JSON boss state dump from the running PIE session.
+        """
+        return common.as_json(
+            VigEncounterTools._dump_boss_state_impl(actor_label))
+
+    @toolset_registry.tool_call
+    @staticmethod
+    def dump_selah_state() -> str:
+        """Selah balances and collection state in the running PIE session.
+
+        Returns:
+            JSON Selah state dump.
+        """
+        return common.as_json(VigEncounterTools._dump_selah_state_impl())
+
+    @toolset_registry.tool_call
+    @staticmethod
+    def dump_encounter_volumes() -> str:
+        """Encounter volumes in the level and their occupancy.
+
+        Returns:
+            JSON list of encounter volumes.
+        """
+        return common.as_json(VigEncounterTools._dump_encounter_volumes_impl())
+
+    @toolset_registry.tool_call
+    @staticmethod
+    def check_pillar_destruction() -> str:
+        """Live state of every Rotunda pillar: standing or collapsed, health,
+        and whether its ceiling and blocking volume are actually wired.
+
+        Returns:
+            JSON pillar state dump.
+        """
+        return common.as_json(
+            VigEncounterTools._check_pillar_destruction_impl())
 
     # -- Internal helpers --
 
     @staticmethod
     def _get_world():
-        try:
-            return unreal.get_editor_subsystem(
-                unreal.UnrealEditorSubsystem
-            ).get_editor_world()
-        except Exception:
-            return {"error": "No editor world available"}
+        """The RUNNING PIE world.
+
+        Was get_editor_world(), which meant every tool in this file reported
+        the editor's copy of the level -- actors at their authored transforms,
+        no gameplay state, and none of the runtime values these tools exist to
+        read. Encounter diagnostics are only meaningful against a live session.
+        """
+        world = common.pie_world()
+        if world is None:
+            return {"error": "Not in PIE. Press Play, then retry."}
+        return world
 
     @staticmethod
     def _vec_to_dict(vec) -> dict:
