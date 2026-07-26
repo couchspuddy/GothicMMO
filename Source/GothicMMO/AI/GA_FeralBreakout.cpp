@@ -9,6 +9,8 @@
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "AIController.h"
 #include "Engine/World.h"
 
 UGA_FeralBreakout::UGA_FeralBreakout()
@@ -89,6 +91,28 @@ void UGA_FeralBreakout::PerformBreakout()
 
             if (bArcSolved)
             {
+                // Two things have to happen BEFORE the launch or it dies on the
+                // spot, both observed in PIE:
+                //
+                // 1. Path following keeps steering her. The behaviour tree's
+                //    Move To is still active and immediately fights the launch
+                //    velocity.
+                // 2. She stays in Walking mode. The arc to a target BELOW her
+                //    has little or no upward component, so LaunchCharacter never
+                //    puts her airborne and ground friction bleeds the velocity
+                //    off within a couple of hundred uu.
+                //
+                // Measured before this: she travelled ~200uu of a ~650uu leap
+                // and her Z never moved off 642 -- a shove, not a leap.
+                if (AAIController* AIC = Cast<AAIController>(MeChar->GetController()))
+                {
+                    AIC->StopMovement();
+                }
+                if (UCharacterMovementComponent* Move = MeChar->GetCharacterMovement())
+                {
+                    Move->SetMovementMode(MOVE_Falling);
+                }
+
                 // Override both axes: whatever she was doing (a MoveTo, a stagger
                 // slide) must not blend with the launch or she lands short.
                 MeChar->LaunchCharacter(LaunchVelocity, true, true);
