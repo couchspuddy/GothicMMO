@@ -13,6 +13,8 @@
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
+#include "EngineUtils.h"
+#include "GameFramework/PlayerController.h"
 
 AGothicEncounterVolume::AGothicEncounterVolume()
 {
@@ -436,3 +438,84 @@ void AGothicEncounterVolume::AddWaveToEncounter(const TArray<AGothicEnemyBase*>&
         GS->ClearEncounterPrompt(this);
     }
 }
+
+// ---------------------------------------------------------------------------
+// gothic.collect — debug console command
+//
+// The Selah collect is only reachable through the player's
+// ServerCollectEncounterSelah RPC, which takes the encounter as a parameter.
+// The `ke` console command cannot pass parameters, so before this there was no
+// way to drive a collect from a script: the wave chain (roster clears ->
+// prompt -> collect spawns Wave 2 -> Wave 2 clears -> Wave 3) could only be
+// exercised by a human pressing the interact key, which meant the half of the
+// encounter past the prompt went untested.
+//
+// Picks the pending encounter nearest the local pawn so it behaves like an
+// actual interact rather than firing every prompt in the level at once.
+// ---------------------------------------------------------------------------
+#if !UE_BUILD_SHIPPING
+static void GothicCollectConsoleCommand(UWorld* World)
+{
+    if (!World)
+    {
+        return;
+    }
+
+    AGothicGameState* GS = World->GetGameState<AGothicGameState>();
+    if (!GS)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("gothic.collect: no AGothicGameState in this world."));
+        return;
+    }
+
+    // Measure from the pawn so "nearest" means nearest to the player, matching
+    // what an interact would have collected.
+    FVector From = FVector::ZeroVector;
+    if (const APlayerController* PC = World->GetFirstPlayerController())
+    {
+        if (const APawn* Pawn = PC->GetPawn())
+        {
+            From = Pawn->GetActorLocation();
+        }
+    }
+
+    AGothicEncounterVolume* Best = nullptr;
+    float BestDistSq = TNumericLimits<float>::Max();
+
+    for (TActorIterator<AGothicEncounterVolume> It(World); It; ++It)
+    {
+        AGothicEncounterVolume* Volume = *It;
+        if (!GS->IsPromptPending(Volume))
+        {
+            continue;
+        }
+
+        const float DistSq = FVector::DistSquared(From, Volume->GetActorLocation());
+        if (DistSq < BestDistSq)
+        {
+            BestDistSq = DistSq;
+            Best = Volume;
+        }
+    }
+
+    if (!Best)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("gothic.collect: no encounter currently has a prompt pending. Clear a roster first."));
+        return;
+    }
+
+    UE_LOG(LogTemp, Warning, TEXT("gothic.collect: collecting %s (%.0fuu away)."),
+        *Best->GetName(), FMath::Sqrt(BestDistSq));
+
+    // Deliberately the same entry point the RPC uses, so this exercises the real
+    // path -- including its own authority and prompt-ownership guards -- rather
+    // than a debug shortcut that could pass while the real one is broken.
+    Best->CompleteCollection();
+}
+
+static FAutoConsoleCommandWithWorld GGothicCollectCmd(
+    TEXT("gothic.collect"),
+    TEXT("Collect the pending Selah prompt nearest the player. Debug only."),
+    FConsoleCommandWithWorldDelegate::CreateStatic(&GothicCollectConsoleCommand));
+#endif
