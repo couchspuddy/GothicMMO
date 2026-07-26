@@ -16,6 +16,7 @@
 
 class UGothicHUDWidget;
 class UGothicCrosshairWidget;
+class UGothicQuitMenuWidget;
 class AGothicEnemyBase;
 
 /** Internal tracking for a single floating damage number on screen. */
@@ -110,6 +111,19 @@ public:
     /** Register an enemy to show a HUD-drawn health bar. Called from MulticastOnHit. */
     void RegisterEnemyHealthBar(AGothicEnemyBase* Enemy);
 
+    /**
+     * Show the quit-confirmation screen, or dismiss it if it is already up.
+     *
+     * BlueprintCallable so it can be driven from an input action without any
+     * extra plumbing, and console-reachable via
+     * `ke BP_GothicHUD_C_0 ToggleQuitMenu` for testing without a bound key.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
+    void ToggleQuitMenu();
+
+    UFUNCTION(BlueprintPure, Category = "Gothic|HUD")
+    bool IsQuitMenuOpen() const { return ActiveQuitMenu != nullptr; }
+
     // -------------------------------------------------------------------------
     // Interaction prompt — contextual, never persistent.
     // Called from interactable Blueprints on begin/end overlap. Deliberately a
@@ -192,6 +206,14 @@ protected:
 
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|HUD|Crosshairs")
     TSubclassOf<UGothicCrosshairWidget> Crosshair_Throwable_Class;
+
+    /** Assign WBP_QuitMenu here. Unset simply means ToggleQuitMenu does nothing. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|HUD|Menus")
+    TSubclassOf<UGothicQuitMenuWidget> QuitMenuClass;
+
+    /** The live quit menu, or null when it is closed. */
+    UPROPERTY(Transient)
+    TObjectPtr<UGothicQuitMenuWidget> ActiveQuitMenu;
 
     // -------------------------------------------------------------------------
     // Active widget instances

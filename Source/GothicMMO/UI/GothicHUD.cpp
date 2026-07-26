@@ -7,6 +7,7 @@
 #include "Engine/GameViewportClient.h"
 #include "UI/GothicHUDWidget.h"
 #include "UI/GothicCrosshairWidget.h"
+#include "UI/GothicQuitMenuWidget.h"
 #include "AI/GothicEnemyBase.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/Character.h"
@@ -64,7 +65,13 @@ void AGothicHUD::Tick(float DeltaTime)
     // to center, and the cursor is free-floating whenever a menu is open.
     if (ActiveCrosshairWidget && GetOwningPlayerController())
     {
-        FVector2D ViewportSize;
+        // Zero-initialised on purpose: FVector2D's default constructor leaves the
+        // components undefined, and if GameViewport is null nothing below writes
+        // them before the ViewportSize.X > 0 guard reads them. The guard cannot
+        // protect against that -- performing the read IS the undefined behaviour,
+        // and in practice it meant a null viewport could pass the check on
+        // whatever happened to be on the stack.
+        FVector2D ViewportSize = FVector2D::ZeroVector;
         if (GEngine && GEngine->GameViewport)
         {
             GEngine->GameViewport->GetViewportSize(ViewportSize);
@@ -542,5 +549,39 @@ void AGothicHUD::DrawEnemyHealthBars()
             NameText.OutlineColor = FLinearColor(0.f, 0.f, 0.f, 0.6f);
             Canvas->DrawItem(NameText);
         }
+    }
+}
+
+void AGothicHUD::ToggleQuitMenu()
+{
+    // Already up -> this is a "close" press. Route through DismissMenu so input
+    // mode and the cursor are restored the same way the Resume button does it.
+    if (ActiveQuitMenu)
+    {
+        ActiveQuitMenu->DismissMenu();
+        ActiveQuitMenu = nullptr;
+        return;
+    }
+
+    if (!QuitMenuClass)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("GothicHUD: QuitMenuClass is unset — assign WBP_QuitMenu on BP_GothicHUD or "
+                 "the quit screen can never open."));
+        return;
+    }
+
+    APlayerController* PC = GetOwningPlayerController();
+    if (!PC)
+    {
+        return;
+    }
+
+    ActiveQuitMenu = CreateWidget<UGothicQuitMenuWidget>(PC, QuitMenuClass);
+    if (ActiveQuitMenu)
+    {
+        // High Z so it sits over the HUD and any open inventory rather than
+        // under them -- a confirmation the player cannot see is worse than none.
+        ActiveQuitMenu->AddToViewport(1000);
     }
 }

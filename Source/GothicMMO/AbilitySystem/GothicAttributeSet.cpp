@@ -194,7 +194,25 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
             return;
         }
 
-        const float FinalDamage = FMath::Max(1.f, RawDamage - GetDefense());
+        // AttackPower is the attacker's flat contribution, mirroring Defense as
+        // the defender's flat reduction. Applied here rather than in GA_Fire so
+        // it covers EVERY damage source -- enemy melee, boss abilities and the
+        // pillar collapse all route through IncomingDamage, and wiring it into
+        // the player's fire path alone would have made it a player-only stat.
+        //
+        // Read from the instigator, so a source with no ASC (the Rotunda
+        // collapse volume names the pillar as its source object) contributes
+        // nothing rather than inheriting the victim's own AttackPower.
+        //
+        // Flat, not scaling: it is deliberately the same shape as Defense so the
+        // pair stays predictable to tune. That also means both matter far more
+        // to a 6-damage hit than a 250-damage one -- worth remembering when
+        // balancing armour against late-game weapons.
+        const float AttackBonus = SourceASC
+            ? SourceASC->GetNumericAttribute(GetAttackPowerAttribute())
+            : 0.f;
+
+        const float FinalDamage = FMath::Max(1.f, RawDamage + AttackBonus - GetDefense());
         const float NewHealth = FMath::Clamp(GetHealth() - FinalDamage, 0.f, GetMaxHealth());
         SetHealth(NewHealth);
 

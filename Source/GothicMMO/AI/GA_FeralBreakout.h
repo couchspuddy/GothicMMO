@@ -56,10 +56,22 @@ protected:
     int32 MaxWaveThralls = 4;
 
     /** Actor tag on a target placed on the arena floor. On break-out she leaps
-     *  (teleports, for now) there — down from her upstairs Part 1 perch into the
-     *  arena. NAME_None skips the leap and she rallies in place. */
+     *  there — down from her upstairs Part 1 perch into the arena.
+     *  NAME_None skips the leap and she rallies in place. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Breakout")
     FName LeapTargetTag = FName("FeralLeapTarget");
+
+    /**
+     * Arc height for the break-out leap, 0-1. Higher pitches the jump steeper
+     * and slower; lower makes it a flatter, faster pounce.
+     *
+     * She used to hard-teleport to the target, which read as a pop rather than
+     * a break-out. Now she is launched on a ballistic arc, so the landing is
+     * driven by gravity and she is genuinely airborne on the way down.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Breakout",
+              meta = (ClampMin = "0.05", ClampMax = "0.95"))
+    float LeapArcParam = 0.6f;
 
     // Base class montage callback — fires PerformBreakout at the hit window.
     virtual void OnMontageHitWindow(FGameplayEventData Payload) override;

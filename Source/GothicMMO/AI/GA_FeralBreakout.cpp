@@ -8,6 +8,7 @@
 #include "AI/GothicEncounterVolume.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "GameFramework/Character.h"
 #include "Engine/World.h"
 
 UGA_FeralBreakout::UGA_FeralBreakout()
@@ -61,17 +62,51 @@ void UGA_FeralBreakout::PerformBreakout()
     }
 
     // ── Leap: break out of the upstairs perch down to the arena floor ────
-    // Teleport for now (montage/animated leap is the deferred moveset pass).
-    // Done first so the rally overlap and the reinforcement spawns all resolve
-    // around her NEW arena position, not her old perch.
+    // A real ballistic launch, not a teleport. She is airborne for the descent,
+    // which is what sells the break-out; a hard SetActorLocation read as a pop.
+    //
+    // RallyCenter is the LANDING point, deliberately not her live location. The
+    // rally overlap and the reinforcement spawns have to resolve around the
+    // arena floor, and unlike the old teleport she has not arrived yet when
+    // they run -- she is still mid-arc. Measuring from her actual position here
+    // would centre the whole rally on the perch she just left.
+    FVector RallyCenter = Avatar->GetActorLocation();
+
     if (!LeapTargetTag.IsNone())
     {
         TArray<AActor*> LeapTargets;
         UGameplayStatics::GetAllActorsWithTag(GetWorld(), LeapTargetTag, LeapTargets);
         if (LeapTargets.Num() > 0 && LeapTargets[0])
         {
-            Avatar->SetActorLocation(
-                LeapTargets[0]->GetActorLocation(), false, nullptr, ETeleportType::TeleportPhysics);
+            const FVector TargetLoc = LeapTargets[0]->GetActorLocation();
+            RallyCenter = TargetLoc;
+
+            ACharacter* MeChar = Cast<ACharacter>(Avatar);
+            FVector LaunchVelocity = FVector::ZeroVector;
+            const bool bArcSolved = MeChar && UGameplayStatics::SuggestProjectileVelocity_CustomArc(
+                Avatar, LaunchVelocity, Avatar->GetActorLocation(), TargetLoc,
+                0.f /*use world gravity*/, LeapArcParam);
+
+            if (bArcSolved)
+            {
+                // Override both axes: whatever she was doing (a MoveTo, a stagger
+                // slide) must not blend with the launch or she lands short.
+                MeChar->LaunchCharacter(LaunchVelocity, true, true);
+            }
+            else
+            {
+                // No arc solves for this pair of points -- fall back to the old
+                // teleport rather than leaving her stranded on the perch with
+                // the encounter already counting her reinforcements.
+                UE_LOG(LogTemp, Warning,
+                    TEXT("FeralBreakout[%s]: no launch arc from %s to %s (ArcParam %.2f) -- "
+                         "falling back to teleport."),
+                    *GetNameSafe(Avatar), *Avatar->GetActorLocation().ToCompactString(),
+                    *TargetLoc.ToCompactString(), LeapArcParam);
+
+                Avatar->SetActorLocation(
+                    TargetLoc, false, nullptr, ETeleportType::TeleportPhysics);
+            }
         }
     }
 
@@ -85,7 +120,7 @@ void UGA_FeralBreakout::PerformBreakout()
     TArray<AActor*> Nearby;
     UKismetSystemLibrary::SphereOverlapActors(
         Avatar,
-        Avatar->GetActorLocation(),
+        RallyCenter,
         RallyRadius,
         TArray<TEnumAsByte<EObjectTypeQuery>>{ UEngineTypes::ConvertToObjectType(ECC_Pawn) },
         AGothicEnemyBase::StaticClass(),
