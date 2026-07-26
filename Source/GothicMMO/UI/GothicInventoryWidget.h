@@ -92,6 +92,28 @@ struct FGothicCharacterStatSummary
     /** INERT — no consumer yet. Shown so gear reads honestly, not as a promise. */
     UPROPERTY(BlueprintReadOnly, Category = "UI") float HealingReceived = 0.f;
     UPROPERTY(BlueprintReadOnly, Category = "UI") float ReloadSpeed = 0.f;
+
+    // -------------------------------------------------------------------------
+    // Display strings — bind the stat panel's text blocks to THESE, not to the
+    // floats above.
+    //
+    // The floats are the honest values and stay as-is for comparison maths, but
+    // they are not fit to show: the panel was rendering "Health 244.055908 /
+    // 244.055908" and "Ability Haste 57.081573" because a raw float straight
+    // into a Text conversion carries every decimal it has. Formatting here
+    // rather than in Blueprint keeps every stat's precision and unit in one
+    // place, so a percentage cannot end up looking like a flat number on one
+    // screen and a percentage on another.
+    // -------------------------------------------------------------------------
+
+    UPROPERTY(BlueprintReadOnly, Category = "UI|Display") FText HealthText;
+    UPROPERTY(BlueprintReadOnly, Category = "UI|Display") FText AttackPowerText;
+    UPROPERTY(BlueprintReadOnly, Category = "UI|Display") FText DefenseText;
+    UPROPERTY(BlueprintReadOnly, Category = "UI|Display") FText EtherText;
+    UPROPERTY(BlueprintReadOnly, Category = "UI|Display") FText MovementSpeedText;
+    UPROPERTY(BlueprintReadOnly, Category = "UI|Display") FText EvasionText;
+    UPROPERTY(BlueprintReadOnly, Category = "UI|Display") FText AbilityHasteText;
+    UPROPERTY(BlueprintReadOnly, Category = "UI|Display") FText SteadfastRateText;
 };
 
 /**

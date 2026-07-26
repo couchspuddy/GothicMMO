@@ -117,6 +117,25 @@ FGothicCharacterStatSummary UGothicInventoryWidget::GetCharacterStatSummary() co
     Out.HealingReceived  = ASC->GetNumericAttribute(UGothicAttributeSet::GetHealingReceivedAttribute());
     Out.ReloadSpeed      = ASC->GetNumericAttribute(UGothicAttributeSet::GetReloadSpeedAttribute());
 
+    // Presentation strings. See the header for why these exist rather than
+    // letting Blueprint convert the floats directly.
+    Out.HealthText = FText::FromString(FString::Printf(
+        TEXT("%.0f / %.0f"), Out.Health, Out.MaxHealth));
+    Out.AttackPowerText    = FText::AsNumber(FMath::RoundToInt(Out.AttackPower));
+    Out.DefenseText        = FText::AsNumber(FMath::RoundToInt(Out.Defense));
+    Out.EtherText          = FText::AsNumber(FMath::RoundToInt(Out.MaxEther));
+
+    // Signed: these read as bonuses on top of a base, so a bare "0" is
+    // ambiguous about whether gear contributed nothing or the stat is broken.
+    Out.MovementSpeedText  = FText::FromString(FString::Printf(TEXT("%+.0f"), Out.MovementSpeed));
+    Out.SteadfastRateText  = FText::FromString(FString::Printf(TEXT("%+.1f/s"), Out.SteadfastRate));
+
+    // Percentages, and labelled as such -- EvasionChance is rolled against 100
+    // in PostGameplayEffectExecute and AbilityHaste is a percent cooldown
+    // reduction, so showing them unmarked invited reading 57 as flat points.
+    Out.EvasionText        = FText::FromString(FString::Printf(TEXT("%.1f%%"), Out.EvasionChance));
+    Out.AbilityHasteText   = FText::FromString(FString::Printf(TEXT("%.0f%%"), Out.AbilityHaste));
+
     return Out;
 }
 
