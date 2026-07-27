@@ -140,6 +140,49 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
     float TraceRange = 5000.f;
 
+    // -------------------------------------------------------------------------
+    // Shock — the electrical repeater's two hooks. Both default to off, so every
+    // ordinary weapon is unaffected and this stays a property of the one Rig
+    // that sets them rather than a rule of the whole gun sandbox.
+    // -------------------------------------------------------------------------
+
+    /** Per-hit chance (0-1) to apply ShockStunEffect to the target. 0 disables. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Shock",
+              meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float StunChance = 0.f;
+
+    /**
+     * The GE granting State.Stunned. Rolled per hit against StunChance.
+     *
+     * Applying this to an ENEMY only did anything cosmetic until the stun was
+     * made to actually halt them — see AGothicEnemyBase's stun handling. Before
+     * that, State.Stunned drove an animation flag and blocked player abilities,
+     * and nothing else.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Shock")
+    TSubclassOf<UGameplayEffect> ShockStunEffect;
+
+    /**
+     * Consecutive hits with no miss before Oversurge can roll. 0 disables.
+     *
+     * The streak lives on the player, not the weapon asset, and resets on a
+     * miss or a weapon swap — otherwise you could bank hits with one gun and
+     * cash them with another.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Shock",
+              meta = (ClampMin = "0"))
+    int32 OversurgeHitsRequired = 0;
+
+    /** Chance (0-1) that a qualifying hit oversurges. Rolled every hit at or past the streak. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Shock",
+              meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float OversurgeChance = 0.f;
+
+    /** Damage multiplier applied when Oversurge fires. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Shock",
+              meta = (ClampMin = "1.0"))
+    float OversurgeDamageMultiplier = 6.f;
+
     /** Seconds between shots. Zero or negative RPM yields no cooldown rather than a divide by zero. */
     UFUNCTION(BlueprintPure, Category = "Weapon|Fire")
     float GetFireInterval() const { return RoundsPerMinute > 0.f ? 60.f / RoundsPerMinute : 0.f; }

@@ -181,6 +181,10 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
     if (!bHit || !Hit.GetActor())
     {
+        // A miss breaks the Oversurge streak. Done here rather than on the
+        // damage path so shooting a wall counts as a miss too -- the streak is
+        // "hits without missing", not "hits since the last hit".
+        Char->ResetConsecutiveHits();
         return;
     }
 
@@ -232,13 +236,13 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     {
         FinalDamage *= EffectiveVitalMult;
 
-        // The Read: while its buff tag is up, vital hits deal extra damage. This
-        // is the whole payoff of the redesigned Read — an instant self-buff that
-        // rewards landing vitals during the window, stacking multiplicatively on
-        // top of the weapon's own vital multiplier. Same tag-check pattern as
-        // Reckoning above; see UGA_Read.
-        if (SourceASC->HasMatchingGameplayTag(
-                FGameplayTag::RequestGameplayTag(FName("State.Read"))))
+        // The Read: vital hits hurt more against a target you have READ, and
+        // only that target. Checked on TargetASC, not SourceASC -- as a caster
+        // tag it sharpened every shot at every enemy in the room for the whole
+        // window, which made it a flat damage cooldown rather than an act of
+        // reading one opponent.
+        if (TargetASC->HasMatchingGameplayTag(
+                FGameplayTag::RequestGameplayTag(FName("State.Read.Marked"))))
         {
             FinalDamage *= ReadVitalDamageMultiplier;
         }
@@ -256,14 +260,43 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         return;
     }
 
+    // ── Shock: streak, Oversurge, stun ───────────────────────────────────
+    // Registered before the damage spec is finalised so an Oversurge can scale
+    // THIS shot rather than the next one.
+    Char->RegisterWeaponHit();
+
+    bool bOversurged = false;
+    if (WeaponData && WeaponData->OversurgeHitsRequired > 0 &&
+        Char->GetConsecutiveHits() >= WeaponData->OversurgeHitsRequired &&
+        FMath::FRand() < WeaponData->OversurgeChance)
+    {
+        FinalDamage *= WeaponData->OversurgeDamageMultiplier;
+        bOversurged = true;
+
+        // Spend the streak. Without this every subsequent hit keeps rolling at
+        // full chance, which turns a payoff into a sustained damage multiplier.
+        Char->ResetConsecutiveHits();
+    }
+
     Spec.Data->SetSetByCallerMagnitude(
         FGameplayTag::RequestGameplayTag(FName("Data.Damage")), FinalDamage);
 
     SourceASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
 
+    // Stun rolls independently of Oversurge -- they are separate hooks and a
+    // single shot is allowed to do both.
+    if (WeaponData && WeaponData->ShockStunEffect && WeaponData->StunChance > 0.f &&
+        FMath::FRand() < WeaponData->StunChance)
+    {
+        UGothicAbilitySystemComponent::ApplyEffectToASC(
+            TargetASC, WeaponData->ShockStunEffect, Char);
+    }
+
     if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(Hit.GetActor()))
     {
-        HitEnemy->MulticastOnHit(Hit.ImpactPoint, bIsVitalHit, FinalDamage);
+        // An Oversurge reads as a vital hit to the feedback layer so it gets the
+        // heavier number and flash rather than passing as an ordinary tick.
+        HitEnemy->MulticastOnHit(Hit.ImpactPoint, bIsVitalHit || bOversurged, FinalDamage);
     }
 
 }

@@ -177,6 +177,18 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
     TObjectPtr<UGothicLootTable> LootTable;
 
+    /**
+     * Halts or resumes this enemy when State.Stunned is gained or lost.
+     *
+     * State.Stunned previously did nothing to an enemy. It drove an animation
+     * flag on GothicEnemyAnimInstance and appeared in a couple of PLAYER
+     * abilities' ActivationBlockedTags, so an enemy that "got stunned" played a
+     * stun pose while continuing to path and swing. This stops the behaviour
+     * tree and the movement so the tag means what it looks like.
+     */
+    UFUNCTION()
+    void HandleStunTagChanged(const FGameplayTag CallbackTag, int32 NewCount);
+
     // SelahAwardRadius (500uu) and AwardSelahToNearbyEmbers() lived here. The
     // per-kill award was replaced by encounter-based collection; the function had
     // no callers and was not BlueprintCallable, so nothing could reach it. Both

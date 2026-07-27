@@ -91,17 +91,13 @@ void UGothicVitalPointComponent::TickComponent(float DeltaTime, ELevelTick TickT
     // follows the bone through animation
     if (OverlayDMI)
     {
+        // The overlay's only job is "shoot here" -- it tracks the CURRENT vital
+        // and nothing else. It used to also paint the predicted next vital via
+        // ReadPointWorldPos, from when The Read was a telegraph; that path had
+        // no callers left after the redesign, so the parameter sat off-world
+        // permanently. Removed along with the per-frame Warning log that sat
+        // inside this branch and would have spammed every tick had it ever run.
         UpdateVitalMaterialPosition();
-
-        // Keep the Read highlight following the bone while active
-        if (bReadHighlightActive)
-        {
-            const FVector NextPos = GetNextVitalWorldLocation();
-            OverlayDMI->SetVectorParameterValue(ReadPosParamName,
-                FLinearColor(NextPos.X, NextPos.Y, NextPos.Z, 1.f));
-    
-            UE_LOG(LogTemp, Warning, TEXT("VitalPoint TICK: ReadHighlight active | Pos=%s"), *NextPos.ToString());
-        }
     }
 
 #if WITH_EDITOR

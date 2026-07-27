@@ -4,6 +4,7 @@
 
 #include "TimerManager.h"
 #include "AI/GothicEnemyAIController.h"
+#include "BehaviorTree/BehaviorTreeComponent.h"
 #include "AI/GothicMeleeHitboxComponent.h"
 #include "AI/GothicVitalPointComponent.h"
 #include "AI/GothicPackSubsystem.h"
@@ -79,6 +80,15 @@ void AGothicEnemyBase::BeginPlay()
     Super::BeginPlay();
 
     InitializeGAS();
+
+    // Make State.Stunned actually stop this enemy. See HandleStunTagChanged.
+    if (AbilitySystemComponent)
+    {
+        AbilitySystemComponent->RegisterGameplayTagEvent(
+            FGameplayTag::RequestGameplayTag(FName("State.Stunned")),
+            EGameplayTagEventType::NewOrRemoved)
+            .AddUObject(this, &AGothicEnemyBase::HandleStunTagChanged);
+    }
 
     // Face the target, turn smoothly. Set in BeginPlay rather than the
     // constructor so a Blueprint's serialized bOrientRotationToMovement can't
@@ -348,4 +358,48 @@ void AGothicEnemyBase::MulticastOnHit_Implementation(
             HUD->RegisterEnemyHealthBar(this);
         }
     }
+}
+
+void AGothicEnemyBase::HandleStunTagChanged(const FGameplayTag CallbackTag, int32 NewCount)
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    AAIController* AIC = Cast<AAIController>(GetController());
+    const bool bStunned = NewCount > 0;
+
+    if (UCharacterMovementComponent* Move = GetCharacterMovement())
+    {
+        // StopMovementImmediately alone is not enough -- path following would
+        // simply re-issue velocity on the next tick, so the brain has to stop too.
+        Move->StopMovementImmediately();
+        Move->SetMovementMode(bStunned ? MOVE_None : MOVE_Walking);
+    }
+
+    if (AIC)
+    {
+        if (bStunned)
+        {
+            AIC->StopMovement();
+        }
+
+        if (UBrainComponent* Brain = AIC->GetBrainComponent())
+        {
+            // Named reason so a stun cannot be resumed by some other system's
+            // RestartLogic, and so the pause is legible in the AI debugger.
+            if (bStunned)
+            {
+                Brain->PauseLogic(TEXT("Stunned"));
+            }
+            else
+            {
+                Brain->ResumeLogic(TEXT("Stunned"));
+            }
+        }
+    }
+
+    UE_LOG(LogTemp, Verbose, TEXT("Stun[%s]: %s"),
+        *GetName(), bStunned ? TEXT("halted") : TEXT("resumed"));
 }

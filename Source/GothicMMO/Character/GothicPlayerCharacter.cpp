@@ -1027,6 +1027,11 @@ void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
     // A swap abandons any in-progress conversion — the cost was tied to the old weapon's tier
     EndSteadfastHold();
 
+    // ...and abandons the Oversurge streak with it. The streak is a property of
+    // sustained fire from one weapon; letting it carry across a swap would mean
+    // building it up on the cheap repeater and spending it on a heavy hitter.
+    ResetConsecutiveHits();
+
     // Update mesh and crosshair
     RefreshWeaponVisuals(NewIndex);
     PushAmmoToHUD();

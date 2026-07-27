@@ -40,10 +40,32 @@ public:
 
 protected:
     /**
-     * Duration GameplayEffect that grants State.Read. GA_Fire checks that tag to
-     * apply the vital-damage bonus. Assign GE_ReadState in Blueprint — a
-     * HasDuration effect; its own duration is the length of the buff.
+     * Duration GameplayEffect granting State.Read to the CASTER. Drives the HUD
+     * proc icon and nothing else — the damage bonus is gated on the target's
+     * mark, so this tag existing on the player no longer buffs anything.
+     * Assign GE_ReadState in Blueprint.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Read")
     TSubclassOf<UGameplayEffect> ReadStateEffect;
+
+    /**
+     * Duration GameplayEffect granting State.Read.Marked to the TARGET.
+     *
+     * This is what actually makes vitals hurt more. Give it the same duration as
+     * ReadStateEffect so the HUD icon and the live mark agree; if they drift the
+     * mark is authoritative, because GA_Fire reads the target.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Read")
+    TSubclassOf<UGameplayEffect> ReadMarkEffect;
+
+    /** How far the Read reaches to find its target. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Read")
+    float ReadRange = 6000.f;
+
+    /**
+     * Trace radius. A Read that demanded pixel-accurate aim would be miserable
+     * with a moving target, so this is a fat sweep rather than a line.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Read")
+    float ReadTraceRadius = 40.f;
 };

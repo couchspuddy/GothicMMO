@@ -233,6 +233,24 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
     bool IsInventoryOpen() const { return ActiveInventoryWidget != nullptr; }
 
+    /**
+     * Consecutive weapon hits with no miss in between. Drives the electrical
+     * Rig's Oversurge.
+     *
+     * Kept on the character rather than the weapon asset because the asset is a
+     * shared data object -- a streak stored there would be global to every actor
+     * holding that weapon. Reset by a miss and by a weapon swap, so hits banked
+     * with one gun cannot be cashed with another.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Combat")
+    int32 GetConsecutiveHits() const { return ConsecutiveWeaponHits; }
+
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Combat")
+    void RegisterWeaponHit() { ++ConsecutiveWeaponHits; }
+
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Combat")
+    void ResetConsecutiveHits() { ConsecutiveWeaponHits = 0; }
+
 protected:
     virtual void BeginPlay() override;
 
@@ -410,6 +428,10 @@ private:
     bool bHUDReady = false;
     bool bAbilitiesGranted = false;
     bool bInventoryBound = false;
+
+    /** See GetConsecutiveHits. Transient — a streak should not survive a respawn. */
+    UPROPERTY(Transient)
+    int32 ConsecutiveWeaponHits = 0;
 
     /** Resolve the granted Loved-and-the-Lost passive instance, or null. */
     const UGA_TheLovedAndTheLost* FindLovedAndLost() const;
