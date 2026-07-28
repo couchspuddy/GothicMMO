@@ -141,6 +141,14 @@ void AGothicHUD::SetCrosshairType(EGothicCrosshairType NewType)
     }
 }
 
+void AGothicHUD::NotifyAimDownSights(bool bIsAiming)
+{
+    if (ActiveCrosshairWidget)
+    {
+        ActiveCrosshairWidget->OnAimDownSights(bIsAiming);
+    }
+}
+
 void AGothicHUD::SetCrosshairVisible(bool bVisible)
 {
     bCrosshairVisible = bVisible;
@@ -535,20 +543,17 @@ void AGothicHUD::DrawEnemyHealthBars()
             Canvas->DrawItem(Fill);
         }
 
-        // Name above the bar
-        const FText EnemyName = Enemy->GetAccursedName();
-        if (!EnemyName.IsEmpty())
-        {
-            FCanvasTextItem NameText(
-                FVector2D(ScreenPos.X, BarY - 18.f),
-                EnemyName,
-                GEngine->GetSmallFont(),
-                FColor(200, 200, 200, 200));
-            NameText.bCentreX = true;
-            NameText.bOutlined = true;
-            NameText.OutlineColor = FLinearColor(0.f, 0.f, 0.f, 0.6f);
-            Canvas->DrawItem(NameText);
-        }
+        // NO NAME HERE, deliberately.
+        //
+        // The Accursed's name belongs to the Selah moment and nowhere else. Reading
+        // it off a health bar mid-fight spends the reveal before it happens: the
+        // whole point is that you learn who they were AFTER you killed them, and a
+        // nameplate you shot at for thirty seconds is not a revelation.
+        //
+        // The names are cycled by UGothicSelahPromptWidget::StartNameCycle, driven
+        // from AGothicGameState::OnSelahMomentStarted. This canvas draw was the real
+        // source of in-combat names — WBP_EnemyHealthBar's binding was a second,
+        // unused path, so removing the widget node changed nothing on screen.
     }
 }
 

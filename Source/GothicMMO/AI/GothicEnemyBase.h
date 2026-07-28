@@ -99,6 +99,38 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Lore")
     FText GetAccursedName() const { return AccursedName; }
 
+    /**
+     * Fill AccursedName with a generated period name when it has been left empty.
+     *
+     * On by default because the Thralls are the many, and hand-naming a plaza of
+     * 45 of them is not work anyone should do — a measured Encounter 1 revealed
+     * 12 names out of 25 kills, and the blanks were simply unnamed spawns. Wave
+     * enemies especially cannot be named by hand: they do not exist until the
+     * encounter spawns them.
+     *
+     * CLEAR THIS on the named Accursed. The Feral Retained and the Bestial Lucid
+     * are written characters, not generated ones, and a random name would
+     * overwrite the authored beat the Selah moment is built around.
+     *
+     * An authored AccursedName always wins regardless of this flag — generation
+     * only ever fills a blank, so it can never clobber a name someone typed.
+     *
+     * Read at runtime from the CLASS DEFAULT rather than from the placed actor, so
+     * clearing it on a Blueprint takes effect on actors already in the level. See
+     * the note in BeginPlay.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Lore")
+    bool bGenerateAccursedName = true;
+
+    /**
+     * Builds one name from the period tables. Deterministic in Seed, so the same
+     * Accursed is the same person on every machine and across every run — the
+     * name is identity, not decoration, and a corpse that renamed itself between
+     * a client and the server would be worse than an unnamed one.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Lore")
+    static FText MakeAccursedName(int32 Seed);
+
     // -----------------------------------------------------------------
     // Pack coordination — optional stamp for Thrall pack grouping.
     // -----------------------------------------------------------------

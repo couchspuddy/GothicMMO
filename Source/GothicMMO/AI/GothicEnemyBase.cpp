@@ -75,9 +75,89 @@ AGothicEnemyBase::AGothicEnemyBase()
     bReplicates = true;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Accursed names
+//
+// Eagle's Landing is Philadelphia as it was around the turn of the century, so
+// the pool is drawn from what that city's rolls actually looked like: old
+// Anglo-Dutch family names alongside the Irish, German and Italian surnames of
+// the wards that did the work. The point of the Selah moment is that these were
+// people, and "Thrall 14" is not a person.
+//
+// Kept as file-static tables rather than a DataTable on purpose. A DataTable
+// would be the tidier answer if designers needed to curate these, but nothing
+// about the list is tuning — it never wants balancing, only more entries — and
+// an asset means one more thing to cook, load and forget to reference.
+// ═══════════════════════════════════════════════════════════════════════════
+
+namespace
+{
+    const TCHAR* const GAccursedFirstNames[] = {
+        TEXT("Albert"),   TEXT("Clarence"), TEXT("Ernest"),   TEXT("Horace"),
+        TEXT("Walter"),   TEXT("Harold"),   TEXT("Chester"),  TEXT("Silas"),
+        TEXT("Leland"),   TEXT("Rufus"),    TEXT("Everett"),  TEXT("Alonzo"),
+        TEXT("Virgil"),   TEXT("Emmett"),   TEXT("Lyman"),    TEXT("Ambrose"),
+        TEXT("Thaddeus"), TEXT("Cornelius"),TEXT("Otto"),     TEXT("August"),
+        TEXT("Adelaide"), TEXT("Cordelia"), TEXT("Henrietta"),TEXT("Prudence"),
+        TEXT("Millicent"),TEXT("Augusta"),  TEXT("Beatrix"),  TEXT("Clementine"),
+        TEXT("Lavinia"),  TEXT("Rosalind"), TEXT("Theodora"), TEXT("Winifred"),
+        TEXT("Hester"),   TEXT("Euphemia"), TEXT("Ottilie"),  TEXT("Maud"),
+        TEXT("Bridget"),  TEXT("Etta"),     TEXT("Lottie"),   TEXT("Nell"),
+    };
+
+    const TCHAR* const GAccursedSurnames[] = {
+        TEXT("Rittenhouse"), TEXT("Lippincott"), TEXT("Pemberton"), TEXT("Wistar"),
+        TEXT("Shippen"),     TEXT("Ridgway"),    TEXT("Norris"),    TEXT("Biddle"),
+        TEXT("Chew"),        TEXT("Peale"),      TEXT("Bingham"),   TEXT("Meade"),
+        TEXT("Gallagher"),   TEXT("Devlin"),     TEXT("Quigley"),   TEXT("Hanrahan"),
+        TEXT("Mullen"),      TEXT("Tobin"),      TEXT("Boyle"),     TEXT("Fagan"),
+        TEXT("Keeler"),      TEXT("Sheridan"),   TEXT("Doyle"),     TEXT("Rafferty"),
+        TEXT("Vogel"),       TEXT("Weimer"),     TEXT("Zeller"),    TEXT("Kraus"),
+        TEXT("Brauer"),      TEXT("Hesse"),      TEXT("Marchetti"), TEXT("Ferrara"),
+        TEXT("Costa"),       TEXT("Lombardo"),   TEXT("Abernathy"), TEXT("Crowder"),
+        TEXT("Ashcombe"),    TEXT("Thorne"),     TEXT("Waverly"),   TEXT("Selby"),
+    };
+}
+
+FText AGothicEnemyBase::MakeAccursedName(int32 Seed)
+{
+    const int32 FirstCount = UE_ARRAY_COUNT(GAccursedFirstNames);
+    const int32 LastCount  = UE_ARRAY_COUNT(GAccursedSurnames);
+
+    // FRandomStream rather than FMath::Rand: seeded, reproducible, and it does
+    // not disturb the global stream that gameplay randomness draws from.
+    FRandomStream Stream(Seed);
+    const int32 FirstIdx = Stream.RandHelper(FirstCount);
+    const int32 LastIdx  = Stream.RandHelper(LastCount);
+
+    return FText::FromString(FString::Printf(TEXT("%s %s"),
+        GAccursedFirstNames[FirstIdx], GAccursedSurnames[LastIdx]));
+}
+
 void AGothicEnemyBase::BeginPlay()
 {
     Super::BeginPlay();
+
+    // Name the nameless. Seeded from the actor's own name so the result is stable
+    // for a given Accursed: placed enemies keep the same name across runs, and
+    // server and client agree without this needing to replicate.
+    //
+    // Read the flag off the CLASS DEFAULT, not off this instance. bGenerateAccursedName
+    // is EditDefaultsOnly — a decision about a kind of Accursed, not about one of
+    // them — and a placed actor serialises whatever the default was on the day it
+    // was dropped in the level, then keeps it forever. Clearing the flag on
+    // BP_Enemy_BestialLucid did not reach the boss already standing in Eagle's
+    // Landing: she was placed while the default was true, so she generated a name
+    // and overwrote her own. Asking the class sidesteps every stale instance.
+    const AGothicEnemyBase* ClassDefaults = GetClass()
+        ? GetClass()->GetDefaultObject<AGothicEnemyBase>() : nullptr;
+    const bool bMayGenerate = ClassDefaults ? ClassDefaults->bGenerateAccursedName
+                                            : bGenerateAccursedName;
+
+    if (bMayGenerate && AccursedName.IsEmpty())
+    {
+        AccursedName = MakeAccursedName(GetTypeHash(GetFName()));
+    }
 
     InitializeGAS();
 
@@ -259,6 +339,41 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
     if (GetController())
     {
         GetController()->StopMovement();
+    }
+
+    // Kill the attack that was already in flight, or a corpse keeps swinging.
+    //
+    // StopMovement above only stops the pawn WALKING. An attack ability activated a
+    // frame before death carries on: its montage plays out, and the behaviour tree —
+    // still ticking — is free to start another one. That is the "dead enemy keeps
+    // playing attack montages" case, and it is intermittent precisely because it
+    // depends on dying inside that window.
+    //
+    // All three are needed. Cancelling abilities alone leaves the montage running,
+    // stopping montages alone lets the tree start a fresh attack, and stopping the
+    // tree alone leaves the current ability mid-swing.
+    if (AbilitySystemComponent)
+    {
+        AbilitySystemComponent->CancelAllAbilities();
+    }
+
+    if (USkeletalMeshComponent* MeshComp = GetMesh())
+    {
+        if (UAnimInstance* Anim = MeshComp->GetAnimInstance())
+        {
+            // Short blend rather than 0: a hard cut out of a swing reads as a
+            // glitch, and the death state is entered from bIsDead in the ABP, so
+            // stopping montages here cannot interrupt the death animation itself.
+            Anim->StopAllMontages(0.15f);
+        }
+    }
+
+    if (AAIController* AIC = Cast<AAIController>(GetController()))
+    {
+        if (UBrainComponent* Brain = AIC->GetBrainComponent())
+        {
+            Brain->StopLogic(TEXT("Died"));
+        }
     }
 
     FTimerHandle CorpseTimer;

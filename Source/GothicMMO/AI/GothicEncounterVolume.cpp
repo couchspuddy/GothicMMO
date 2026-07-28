@@ -15,6 +15,7 @@
 #include "TimerManager.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
+#include "NavigationSystem.h"
 
 AGothicEncounterVolume::AGothicEncounterVolume()
 {
@@ -128,8 +129,37 @@ void AGothicEncounterVolume::HandleEnemyDied(AGothicEnemyBase* DeadEnemy)
     RemainingEnemyCount = FMath::Max(0, RemainingEnemyCount - 1);
     LastEnemyToDie = DeadEnemy;
 
+    // Bank the reward at the moment of death — see AccumulatedSelah's note. This
+    // is the only point at which the enemy is guaranteed to still exist.
+    if (DeadEnemy)
+    {
+        AccumulatedSelah += DeadEnemy->GetSelahAwardAmount();
+        if (!CachedGainEffect && DeadEnemy->GetSelahGainEffect())
+        {
+            CachedGainEffect = DeadEnemy->GetSelahGainEffect();
+        }
+        if (!DeadEnemy->GetAccursedName().IsEmpty())
+        {
+            AccumulatedNames.Add(DeadEnemy->GetAccursedName());
+        }
+    }
+
     UE_LOG(LogTemp, Verbose, TEXT("Selah[%s]: %s died — %d remaining, WaveStage=%d"),
         *GetName(), *GetNameSafe(DeadEnemy), RemainingEnemyCount, WaveStage);
+
+    // REINFORCEMENT mode: the wave arrives mid-fight, off the living count, and
+    // never touches the Selah. Checked before the RemainingEnemyCount <= 0 branch
+    // so a threshold of 0 is impossible here — that value selects interrupt mode.
+    if (ReinforceAtLivingCount > 0 && WaveStage == 0 && PendingWaveSpawnPoints.Num() > 0
+        && RemainingEnemyCount <= ReinforceAtLivingCount)
+    {
+        WaveStage = 2; // same stage the interrupt wave uses, so Wave 3 still follows
+        UE_LOG(LogTemp, Verbose, TEXT("Selah[%s]: reinforcements at %d living"),
+            *GetName(), RemainingEnemyCount);
+        SpawnWaveFromPoints(PendingWaveSpawnPoints);
+        OnEncounterMemberDied.Broadcast(DeadEnemy);
+        return;
+    }
 
     if (RemainingEnemyCount <= 0)
     {
@@ -159,31 +189,18 @@ void AGothicEncounterVolume::HandleEnemyDied(AGothicEnemyBase* DeadEnemy)
 
 void AGothicEncounterVolume::ActivateSelahPrompt()
 {
-    CachedTotalSelah = 0.f;
-    CachedGainEffect = nullptr;
-    for (AGothicEnemyBase* Enemy : EncounterEnemies)
-    {
-        if (!Enemy) continue;
-        CachedTotalSelah += Enemy->GetSelahAwardAmount();
-        if (!CachedGainEffect && Enemy->GetSelahGainEffect())
-        {
-            CachedGainEffect = Enemy->GetSelahGainEffect();
-        }
-    }
+    // Read the running totals banked in HandleEnemyDied rather than re-walking
+    // EncounterEnemies. Walking the roster here counted only the members whose
+    // corpses had not yet expired, so the payout shrank the longer an encounter
+    // ran; CachedGainEffect is likewise banked on the first death that carries one.
+    CachedTotalSelah = AccumulatedSelah;
 
     AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr;
     if (GS)
     {
-        // Collect Accursed names — set BEFORE the prompt corpse so
-        // they're available when OnEncounterPromptActivated fires.
-        TArray<FText> Names;
-        for (AGothicEnemyBase* Enemy : EncounterEnemies)
-        {
-            if (Enemy && !Enemy->GetAccursedName().IsEmpty())
-            {
-                Names.Add(Enemy->GetAccursedName());
-            }
-        }
+        // Names are set BEFORE the prompt corpse so they're available when
+        // OnEncounterPromptActivated fires.
+        const TArray<FText>& Names = AccumulatedNames;
         GS->SetSelahNames(Names);
         // Anchor the prompt to THIS encounter (the area), not the corpse — the
         // corpse may despawn while the meditation prompt is still up.
@@ -198,6 +215,37 @@ void AGothicEncounterVolume::ActivateSelahPrompt()
     }
 }
 
+AActor* AGothicEncounterVolume::FindNearestPlayerPawn() const
+{
+    const UWorld* World = GetWorld();
+    if (!World)
+    {
+        return nullptr;
+    }
+
+    // Nearest rather than first: in co-op the wave should come for whoever is
+    // actually standing in the encounter, not for player 1 wherever they are.
+    AActor* Best = nullptr;
+    float BestDistSq = TNumericLimits<float>::Max();
+    for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+    {
+        APlayerController* PC = It->Get();
+        APawn* Pawn = PC ? PC->GetPawn() : nullptr;
+        if (!Pawn)
+        {
+            continue;
+        }
+
+        const float DistSq = FVector::DistSquared(Pawn->GetActorLocation(), GetActorLocation());
+        if (DistSq < BestDistSq)
+        {
+            BestDistSq = DistSq;
+            Best = Pawn;
+        }
+    }
+    return Best;
+}
+
 TArray<AGothicEnemyBase*> AGothicEncounterVolume::SpawnWaveFromPoints(
     const TArray<TObjectPtr<AGothicEnemySpawnPoint>>& Points)
 {
@@ -208,31 +256,89 @@ TArray<AGothicEnemyBase*> AGothicEncounterVolume::SpawnWaveFromPoints(
         return Spawned;
     }
 
+    const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+
     for (AGothicEnemySpawnPoint* Point : Points)
     {
         if (!Point || !Point->EnemyClass) continue;
 
-        FActorSpawnParameters SpawnParams;
-        SpawnParams.SpawnCollisionHandlingOverride =
-            ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+        const FVector Origin = Point->GetActorLocation();
+        const int32 Count = FMath::Max(1, Point->SpawnCount);
+        const float Scatter = FMath::Max(0.f, Point->ScatterRadius);
 
-        AGothicEnemyBase* NewEnemy = World->SpawnActor<AGothicEnemyBase>(
-            Point->EnemyClass, Point->GetActorLocation(), Point->GetActorRotation(), SpawnParams);
-
-        if (NewEnemy)
+        for (int32 i = 0; i < Count; ++i)
         {
-            // Pack stamp AFTER spawn, through the setter — BeginPlay has
-            // already run inside SpawnActor and saw NAME_None; SetPackID
-            // is the convergence point for both assignment paths.
-            if (!Point->PackID.IsNone())
+            // The first enemy always takes the point itself, so a count of 1
+            // behaves exactly as it did before this became a multi-spawn.
+            FVector SpawnLocation = Origin;
+            if (i > 0 && Scatter > 0.f)
             {
-                NewEnemy->SetPackID(Point->PackID);
+                const FVector2D Offset = FMath::RandPointInCircle(Scatter);
+                SpawnLocation = Origin + FVector(Offset.X, Offset.Y, 0.f);
+
+                // Project back to walkable ground. Without this, a scatter disc
+                // that overhangs the Encounter 2 balcony or a plaza wall drops
+                // enemies into geometry, where they either fall out of the world
+                // or stand unreachable and the encounter can never complete.
+                if (NavSys)
+                {
+                    FNavLocation Projected;
+                    if (NavSys->ProjectPointToNavigation(
+                            SpawnLocation, Projected, FVector(Scatter, Scatter, 300.f)))
+                    {
+                        SpawnLocation = Projected.Location;
+                    }
+                    else
+                    {
+                        SpawnLocation = Origin;
+                    }
+                }
             }
-            Spawned.Add(NewEnemy);
+
+            FActorSpawnParameters SpawnParams;
+            SpawnParams.SpawnCollisionHandlingOverride =
+                ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+
+            AGothicEnemyBase* NewEnemy = World->SpawnActor<AGothicEnemyBase>(
+                Point->EnemyClass, SpawnLocation, Point->GetActorRotation(), SpawnParams);
+
+            if (NewEnemy)
+            {
+                // Pack stamp AFTER spawn, through the setter — BeginPlay has
+                // already run inside SpawnActor and saw NAME_None; SetPackID
+                // is the convergence point for both assignment paths.
+                if (!Point->PackID.IsNone())
+                {
+                    NewEnemy->SetPackID(Point->PackID);
+                }
+                Spawned.Add(NewEnemy);
+            }
         }
     }
 
     AddWaveToEncounter(Spawned); // registers deaths, bumps the count, retracts any prompt
+
+    // Point the new arrivals at the player. Without this a wave spawns and simply
+    // stands there: measured on the plaza's 16-strong reinforcement wave, 12 of 16
+    // never moved and never acquired a target, because nothing sets one and their
+    // spawn points sit outside perception range of wherever the player is fighting.
+    // Only the three that happened to land within ~500uu engaged at all.
+    //
+    // The placed roster gets its target from HandleTriggerBeginOverlap, which fires
+    // once per encounter and is opt-in — so it can never cover enemies that did not
+    // exist when the player crossed the trigger. Reinforcements are, by definition,
+    // arriving because the player is already here.
+    if (AActor* Target = FindNearestPlayerPawn())
+    {
+        for (AGothicEnemyBase* Enemy : Spawned)
+        {
+            if (Enemy)
+            {
+                Enemy->SetCombatTarget(Target);
+            }
+        }
+    }
+
     return Spawned;
 }
 
@@ -275,7 +381,11 @@ void AGothicEncounterVolume::CompleteCollection()
 
     // The first collection of a waved encounter is the fake-out; any other
     // collection (the final one, or a plain encounter) fills to full and rewards.
-    const bool bInterruptCollect = (WaveStage == 0 && PendingWaveSpawnPoints.Num() > 0);
+    // ReinforceAtLivingCount is what selects the mode, so it also has to veto the
+    // fake-out here. Testing WaveStage alone would still fake out a reinforcement
+    // encounter whose threshold was mis-set and whose wave therefore never fired.
+    const bool bInterruptCollect = (WaveStage == 0 && ReinforceAtLivingCount <= 0
+        && PendingWaveSpawnPoints.Num() > 0);
 
     UE_LOG(LogTemp, Verbose, TEXT("Selah[%s]: collect started — WaveStage=%d PendingWavePoints=%d -> %s"),
         *GetName(), WaveStage, PendingWaveSpawnPoints.Num(),
@@ -301,6 +411,21 @@ void AGothicEncounterVolume::CompleteCollection()
     }
 }
 
+void AGothicEncounterVolume::NotifyBreakout()
+{
+    // Authority-only like the rest of this actor's state. The gate that listens
+    // is the replicated half of the pair, so clients learn about the opening
+    // through bOpen rather than through this delegate.
+    if (!HasAuthority() || bBrokenOut)
+    {
+        return;
+    }
+
+    bBrokenOut = true;
+    UE_LOG(LogTemp, Verbose, TEXT("Selah[%s]: BREAK-OUT announced"), *GetName());
+    OnEncounterBreakout.Broadcast(this);
+}
+
 void AGothicEncounterVolume::FinalizeCollection()
 {
     if (!HasAuthority())
@@ -316,6 +441,13 @@ void AGothicEncounterVolume::FinalizeCollection()
 
     // Fill the bar to full — the collection landed.
     GS->SetSelahCollectPhase(3 /*completed*/, 0.f);
+
+    // Mark and announce BEFORE the award loop. Anything gating forward progress
+    // on this encounter (AGothicBleedGate) should open on the collection landing,
+    // not after the Selah moment and name reveal have finished playing — the
+    // player is standing still through that beat and should not also be walled in.
+    bRewarded = true;
+    OnEncounterRewarded.Broadcast(this);
 
     UE_LOG(LogTemp, Verbose, TEXT("Selah[%s]: FINALIZED — awarding %.1f Selah to %d player(s), WaveStage=%d"),
         *GetName(), CachedTotalSelah, GS->PlayerArray.Num(), WaveStage);

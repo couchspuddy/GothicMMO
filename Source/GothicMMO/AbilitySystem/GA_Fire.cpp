@@ -9,6 +9,9 @@
 #include "AI/GothicVitalPointComponent.h"
 #include "Character/GothicPlayerCharacter.h"
 #include "Camera/CameraComponent.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
@@ -48,7 +51,56 @@ bool UGA_Fire::CanActivateAbility(
     const AGothicPlayerCharacter* Char =
         ActorInfo ? Cast<AGothicPlayerCharacter>(ActorInfo->AvatarActor.Get()) : nullptr;
 
+    // No shooting through the Selah moment. Refused at CanActivate rather than
+    // swallowed later so no round is consumed and no cooldown is paid — the
+    // trigger simply does nothing, and the ammo counter does not tick down on a
+    // shot the player never got.
+    if (Char && Char->IsSelahMomentLocked())
+    {
+        return false;
+    }
+
     return Char && Char->HasRoundChambered();
+}
+
+void UGA_Fire::PlayFireMontage(AGothicPlayerCharacter* Char) const
+{
+    if (!FireMontage || !Char)
+    {
+        return;
+    }
+
+    USkeletalMeshComponent* Mesh = Char->GetMesh();
+    UAnimInstance* Anim = Mesh ? Mesh->GetAnimInstance() : nullptr;
+    if (!Anim)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("GA_Fire: no AnimInstance on %s's mesh — fire montage cannot play."),
+            *GetNameSafe(Char));
+        return;
+    }
+
+    // Montage_Play, not PlayMontageAndWait: the ability is about to EndAbility on
+    // this same frame and an ability task would be torn down with it. The montage
+    // outliving the ability is the correct behaviour here — the shot is over, the
+    // animation is still finishing.
+    //
+    // Restarting from the top on every shot is intentional: at a fire rate faster
+    // than the animation, a re-triggered montage should snap back to the recoil
+    // rather than politely queue, which is what "the gun keeps jogging" looked like.
+    const float PlayedLength = Anim->Montage_Play(FireMontage, FMath::Max(0.01f, FireMontagePlayRate));
+
+    // Diagnostic, and worth keeping. Montage_Play is silent on failure: a skeleton
+    // mismatch, a montage with no valid segment, or a blocked slot all return 0.0
+    // and look exactly like the animation "not playing" — which is how a slot-name
+    // mismatch (Arms vs UpperBody) hid here for a whole round of debugging.
+    //
+    // A non-zero length means the montage IS playing and anything still wrong is
+    // downstream in the AnimGraph — the slot not reaching the output pose, or a
+    // layered blend overwriting it. Zero means it never started at all.
+    UE_LOG(LogTemp, Warning,
+        TEXT("GA_Fire: Montage_Play('%s') returned %.3f  [slot must be sampled by %s]"),
+        *GetNameSafe(FireMontage), PlayedLength, *GetNameSafe(Anim->GetClass()));
 }
 
 void UGA_Fire::ActivateAbility(
@@ -88,7 +140,9 @@ void UGA_Fire::ActivateAbility(
     // Cosmetic half — instant, local, never waits on the server.
     if (ActorInfo->IsLocallyControlled())
     {
-        Char->ApplyRecoilKick();
+        Char->ApplyRecoilKick();      // moves the player's aim
+        Char->AddWeaponFireKick();    // moves the weapon in frame
+        PlayFireMontage(Char);
         OnFireCosmetic();
     }
 
@@ -170,8 +224,21 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     TSubclassOf<UGameplayEffect> EffectiveDamageGE = WeaponData && WeaponData->DamageEffect
         ? WeaponData->DamageEffect : DamageEffectClass;
 
+    // Spread, off by default — both cones are 0, so this is still the perfect ray
+    // the weapon has always fired. Wired now so accuracy can become the reason to
+    // aim later without touching the trace again; until then aiming pays off in FOV
+    // and the crosshair only.
+    //
+    // Note the crosshair has always drawn a spread the bullets did not have. Turning
+    // these on is what finally makes the reticle honest.
+    const float SpreadDegrees = Char->IsAiming() ? ADSSpreadDegrees : HipFireSpreadDegrees;
+
+    const FVector AimDir = SpreadDegrees > 0.f
+        ? FMath::VRandCone(Camera->GetForwardVector(), FMath::DegreesToRadians(SpreadDegrees))
+        : Camera->GetForwardVector();
+
     const FVector Start = Camera->GetComponentLocation();
-    const FVector End   = Start + (Camera->GetForwardVector() * EffectiveRange);
+    const FVector End   = Start + (AimDir * EffectiveRange);
 
     FHitResult Hit;
     FCollisionQueryParams Params;

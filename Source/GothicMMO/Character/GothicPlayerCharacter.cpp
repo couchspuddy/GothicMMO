@@ -10,6 +10,7 @@
 #include "Game/GothicGameMode.h"
 #include "Game/GothicGameState.h"
 #include "GameFramework/PlayerStart.h"
+#include "Components/CapsuleComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "UI/GothicHUD.h"
 #include "AI/GothicSteadfastComponent.h"
@@ -17,6 +18,7 @@
 #include "UI/GothicHUDWidget.h"
 #include "UI/GothicInventoryWidget.h"
 #include "Camera/CameraComponent.h"
+#include "Net/UnrealNetwork.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -42,6 +44,15 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
 {
 
     PrimaryActorTick.bCanEverTick = true;
+
+    // The player is the only actor that collides with the Bleed. AGothicBleedGate
+    // types its barrier as ArenaBlock, whose project-default response is Ignore,
+    // so this opt-in is what makes a gate solid — and its absence on the Accursed
+    // is what lets them walk through one. Set here rather than on the Blueprint's
+    // capsule so it is versioned with the gate that depends on it, and cannot be
+    // lost to a Blueprint data revert.
+    GetCapsuleComponent()->SetCollisionResponseToChannel(
+        ECC_GameTraceChannel2 /*ArenaBlock*/, ECR_Block);
 
     FirstPersonCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FirstPersonCamera"));
     FirstPersonCamera->SetupAttachment(GetMesh());
@@ -76,6 +87,15 @@ void AGothicPlayerCharacter::BeginPlay()
 {
     Super::BeginPlay();
 
+    // Whatever the Blueprint set is the resting FOV — read it once rather than
+    // hardcoding 90 here and having the two disagree the moment someone tunes it.
+    if (FirstPersonCamera)
+    {
+        HipFieldOfView = FirstPersonCamera->FieldOfView;
+    }
+
+    AnchorCameraToBone();
+
 
     if (APlayerController* PC = Cast<APlayerController>(GetController()))
     {
@@ -106,22 +126,19 @@ void AGothicPlayerCharacter::BeginPlay()
         if (StartWeapon && WeaponMeshComponent)
         {
             WeaponMeshComponent->SetStaticMesh(StartWeapon->WeaponMesh);
-            WeaponMeshComponent->SetRelativeLocation(StartWeapon->MeshOffset);
-            WeaponMeshComponent->SetRelativeRotation(StartWeapon->MeshRotation);
             WeaponMeshComponent->SetRelativeScale3D(StartWeapon->MeshScale);
-
         }
+
+        ApplyWeaponAttachment(StartWeapon);
     }
 
-    // Force the hand-socket attachment at runtime. The Blueprint serialized an
-    // attachment of WeaponMesh to the camera, which overrides the constructor's
-    // SetupAttachment — so re-attach explicitly here to guarantee the weapon
-    // follows the character's hand animation. Per-weapon grip alignment still
-    // comes from WeaponData MeshOffset/Rotation/Scale (kept as relative transform).
-    if (WeaponMeshComponent && GetMesh())
+    // A constructor SetOwnerNoSee is overridden by whatever the Blueprint serialized
+    // on the inherited mesh, and the Blueprint had it off — which is the entire reason
+    // the player could see their own shoulder swinging through frame. Enforce it here,
+    // where the Blueprint cannot win.
+    if (GetMesh() && bHideBodyInFirstPerson)
     {
-        WeaponMeshComponent->AttachToComponent(
-            GetMesh(), FAttachmentTransformRules::KeepRelativeTransform, TEXT("HandGrip_R"));
+        GetMesh()->SetOwnerNoSee(true);
     }
 
     // Delay HUD polling until widget is fully constructed
@@ -395,6 +412,27 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
         UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: InventoryToggleAction not assigned — inventory cannot be opened. Assign IA_InventoryToggle in BP_GothicPlayerCharacter."));
     }
 
+    // Aim down sights — hold, so it needs both edges like sprint and reload
+    if (ADSAction)
+    {
+        EIC->BindAction(ADSAction, ETriggerEvent::Started,   this, &AGothicPlayerCharacter::OnADSPressed);
+        EIC->BindAction(ADSAction, ETriggerEvent::Completed, this, &AGothicPlayerCharacter::OnADSReleased);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: ADSAction not assigned — aiming does nothing. Assign IA_ADS in BP_GothicPlayerCharacter."));
+    }
+
+    // Quit menu toggle
+    if (QuitMenuAction)
+    {
+        EIC->BindAction(QuitMenuAction, ETriggerEvent::Started, this, &AGothicPlayerCharacter::ToggleQuitMenu);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: QuitMenuAction not assigned — the quit menu cannot be opened and a packaged build cannot be exited. Assign IA_QuitMenu in BP_GothicPlayerCharacter."));
+    }
+
     // Ability inputs go through InputHandler → ASC tag pipeline
     // ASC may not be ready here — bindings are set up again in InitGASFromPlayerState
     if (InputHandler && AbilitySystemComponent)
@@ -417,8 +455,26 @@ void AGothicPlayerCharacter::Tick(float DeltaTime)
         return;
     }
 
+    // Ease the FOV toward the aim state. Interpolated rather than snapped: a hard
+    // FOV cut reads as a glitch, and the ~0.15s pull-in is most of what makes
+    // aiming feel like a weapon settling rather than a zoom toggle.
+    if (IsLocallyControlled() && FirstPersonCamera)
+    {
+        const float TargetFOV = bIsAiming ? ADSFieldOfView : HipFieldOfView;
+        const float CurrentFOV = FirstPersonCamera->FieldOfView;
+        if (!FMath::IsNearlyEqual(CurrentFOV, TargetFOV, 0.05f))
+        {
+            FirstPersonCamera->SetFieldOfView(FMath::FInterpTo(
+                CurrentFOV, TargetFOV, DeltaTime, FMath::Max(0.1f, ADSFieldOfViewInterpSpeed)));
+        }
+    }
+
     if (IsLocallyControlled())
     {
+        // Ahead of the bHUDReady early-return below: the weapon is visible from the
+        // first frame, and the HUD has nothing to do with it.
+        UpdateFirstPersonWeaponPose(DeltaTime);
+
         UpdateSelahInteractPrompt();
     }
 
@@ -460,6 +516,13 @@ void AGothicPlayerCharacter::OnMove(const FInputActionValue& Value)
         {
             return;
         }
+    }
+
+    // The Selah moment holds you in place. Same reasoning as the cursor gate above:
+    // refuse the input here, once, rather than in every system that could move.
+    if (bSelahMomentLock)
+    {
+        return;
     }
 
     const FVector2D MoveVec = Value.Get<FVector2D>();
@@ -569,6 +632,86 @@ void AGothicPlayerCharacter::UpdateSelahInteractPrompt()
     }
 }
 
+void AGothicPlayerCharacter::AnchorCameraToBone()
+{
+    if (!FirstPersonCamera || CameraAttachBoneName.IsNone())
+    {
+        return; // left on the mesh component — the original behaviour
+    }
+
+    USkeletalMeshComponent* MeshComp = GetMesh();
+    if (!MeshComp || !MeshComp->DoesSocketExist(CameraAttachBoneName))
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("GothicPlayerCharacter: CameraAttachBoneName '%s' is not a bone or socket on "
+                 "%s — camera left on the mesh component."),
+            *CameraAttachBoneName.ToString(), *GetNameSafe(MeshComp ? MeshComp->GetSkeletalMeshAsset() : nullptr));
+        return;
+    }
+
+    // KeepWorldTransform, so the eye does not move when the anchor changes. The
+    // camera keeps the exact position the Blueprint placed it at and only starts
+    // following a different parent — which makes this a clean A/B: anything that
+    // looks different afterwards is the anchoring, not a shifted viewpoint.
+    FirstPersonCamera->AttachToComponent(
+        MeshComp, FAttachmentTransformRules::KeepWorldTransform, CameraAttachBoneName);
+
+    if (!CameraBoneOffsetAdjust.IsNearlyZero())
+    {
+        FirstPersonCamera->AddLocalOffset(CameraBoneOffsetAdjust);
+    }
+}
+
+void AGothicPlayerCharacter::GetLifetimeReplicatedProps(
+    TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(AGothicPlayerCharacter, bIsAiming);
+}
+
+void AGothicPlayerCharacter::OnADSPressed()  { SetAiming(true); }
+void AGothicPlayerCharacter::OnADSReleased() { SetAiming(false); }
+
+void AGothicPlayerCharacter::SetAiming(bool bNewAiming)
+{
+    if (bIsAiming == bNewAiming)
+    {
+        return;
+    }
+
+    // Sprinting and aiming are mutually exclusive — holding both would otherwise
+    // leave you at sprint speed with a sniper's FOV.
+    if (bNewAiming && bIsSprinting)
+    {
+        bIsSprinting = false;
+    }
+
+    bIsAiming = bNewAiming;
+    RefreshMovementSpeed();
+
+    // The crosshair has had this hook since it was written, with nothing calling it.
+    if (const APlayerController* PC = Cast<APlayerController>(GetController()))
+    {
+        if (AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD()))
+        {
+            GothicHUD->NotifyAimDownSights(bIsAiming);
+        }
+    }
+
+    if (!HasAuthority())
+    {
+        ServerSetAiming(bNewAiming);
+    }
+}
+
+void AGothicPlayerCharacter::ServerSetAiming_Implementation(bool bNewAiming)
+{
+    // Authority copy only. Re-running the local half here would fight the owning
+    // client's prediction on a listen server.
+    bIsAiming = bNewAiming;
+    RefreshMovementSpeed();
+}
+
 void AGothicPlayerCharacter::RefreshMovementSpeed()
 {
     const float Base = bIsSprinting ? SprintSpeed : WalkSpeed;
@@ -582,14 +725,45 @@ void AGothicPlayerCharacter::RefreshMovementSpeed()
             UGothicAttributeSet::GetMovementSpeedAttribute());
     }
 
-    GetCharacterMovement()->MaxWalkSpeed = FMath::Max(1.f, Base + Bonus);
+    // Aiming multiplies the FINAL speed, gear bonus included, so a heavily kitted
+    // player still gives up the same proportion for aiming.
+    const float AimScale = bIsAiming ? FMath::Clamp(ADSMoveSpeedMultiplier, 0.1f, 1.f) : 1.f;
+
+    GetCharacterMovement()->MaxWalkSpeed = FMath::Max(1.f, (Base + Bonus) * AimScale);
 }
 
 void AGothicPlayerCharacter::TriggerSelahMoment()
 {
+    // Hold the player still for the reveal. Movement and fire are refused while
+    // this is set (see OnMove and UGA_Fire::CanActivateAbility); menus are not.
+    bSelahMomentLock = true;
+
+    // Kill any momentum already in flight, or a player who was sprinting when the
+    // last enemy died keeps sliding through the whole moment.
+    if (UCharacterMovementComponent* Move = GetCharacterMovement())
+    {
+        Move->StopMovementImmediately();
+    }
+
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().SetTimer(
+            SelahMomentLockHandle, this, &AGothicPlayerCharacter::EndSelahMomentLock,
+            FMath::Max(0.1f, SelahMomentLockSeconds), false);
+    }
 
     // Blueprint handles the visual and audio — call the event
     OnSelahMoment();
+}
+
+void AGothicPlayerCharacter::EndSelahMomentLock()
+{
+    bSelahMomentLock = false;
+
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().ClearTimer(SelahMomentLockHandle);
+    }
 }
 
 bool AGothicPlayerCharacter::HasRoundChambered() const
@@ -1049,6 +1223,41 @@ void AGothicPlayerCharacter::OnWeaponSlot3() { SwapWeapon(2); }
 // Inventory UI
 // ═══════════════════════════════════════════════════════════════════════════
 
+void AGothicPlayerCharacter::ToggleQuitMenu()
+{
+    if (!IsLocallyControlled())
+    {
+        return;
+    }
+
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    if (!PC)
+    {
+        return;
+    }
+
+    // Escape backs out of the topmost screen. With the inventory up, that IS the
+    // inventory — opening the quit menu on top of it would leave two screens
+    // stacked, both wanting the cursor, and ToggleInventory's input-mode reset
+    // would fight the menu's on the way back down.
+    if (ActiveInventoryWidget)
+    {
+        ToggleInventory();
+        return;
+    }
+
+    if (AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD()))
+    {
+        GothicHUD->ToggleQuitMenu();
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("GothicPlayerCharacter: no AGothicHUD — quit menu cannot open. Is the "
+                 "GameMode's HUDClass set to BP_GothicHUD?"));
+    }
+}
+
 void AGothicPlayerCharacter::ToggleInventory()
 {
     if (!IsLocallyControlled())
@@ -1183,6 +1392,102 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
     }
 }
 
+void AGothicPlayerCharacter::ApplyWeaponAttachment(const UGothicWeaponData* WeaponData)
+{
+    if (!WeaponMeshComponent)
+    {
+        return;
+    }
+
+    // Only the local player gets the camera-parented weapon. A simulated proxy has no
+    // meaningful camera of its own, and other players need to see the gun in the hand
+    // where the animation puts it.
+    const bool bCameraMounted =
+        bAttachWeaponToCamera && IsLocallyControlled() && FirstPersonCamera != nullptr;
+
+    if (bCameraMounted)
+    {
+        WeaponMeshComponent->AttachToComponent(
+            FirstPersonCamera, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+
+        WeaponMeshComponent->SetRelativeLocation(CameraWeaponOffset);
+        WeaponMeshComponent->SetRelativeRotation(CameraWeaponRotation);
+    }
+    else if (GetMesh())
+    {
+        WeaponMeshComponent->AttachToComponent(
+            GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, TEXT("HandGrip_R"));
+
+        if (WeaponData)
+        {
+            WeaponMeshComponent->SetRelativeLocation(WeaponData->MeshOffset);
+            WeaponMeshComponent->SetRelativeRotation(WeaponData->MeshRotation);
+        }
+    }
+}
+
+void AGothicPlayerCharacter::AddWeaponFireKick()
+{
+    // Stack, then clamp. Repeating a single identical hop reads as a looping
+    // animation rather than a gun fighting back, but unbounded stacking walks the
+    // weapon out of frame on anything with a fast fire rate.
+    CurrentFireKickLocation += FireKickOffset;
+    CurrentFireKickRotation += FireKickRotation;
+
+    const float Ceiling = FMath::Max(1.f, MaxStackedFireKick);
+
+    const FVector MaxLoc = FireKickOffset * Ceiling;
+    CurrentFireKickLocation.X = FMath::Clamp(CurrentFireKickLocation.X,
+        FMath::Min(0.f, MaxLoc.X), FMath::Max(0.f, MaxLoc.X));
+    CurrentFireKickLocation.Y = FMath::Clamp(CurrentFireKickLocation.Y,
+        FMath::Min(0.f, MaxLoc.Y), FMath::Max(0.f, MaxLoc.Y));
+    CurrentFireKickLocation.Z = FMath::Clamp(CurrentFireKickLocation.Z,
+        FMath::Min(0.f, MaxLoc.Z), FMath::Max(0.f, MaxLoc.Z));
+
+    const FRotator MaxRot = FireKickRotation * Ceiling;
+    CurrentFireKickRotation.Pitch = FMath::Clamp(CurrentFireKickRotation.Pitch,
+        FMath::Min(0.f, MaxRot.Pitch), FMath::Max(0.f, MaxRot.Pitch));
+    CurrentFireKickRotation.Yaw = FMath::Clamp(CurrentFireKickRotation.Yaw,
+        FMath::Min(0.f, MaxRot.Yaw), FMath::Max(0.f, MaxRot.Yaw));
+    CurrentFireKickRotation.Roll = FMath::Clamp(CurrentFireKickRotation.Roll,
+        FMath::Min(0.f, MaxRot.Roll), FMath::Max(0.f, MaxRot.Roll));
+}
+
+void AGothicPlayerCharacter::UpdateFirstPersonWeaponPose(float DeltaTime)
+{
+    if (!WeaponMeshComponent || !bAttachWeaponToCamera || !FirstPersonCamera)
+    {
+        return;
+    }
+
+    // Blended, not switched — the weapon should swing down as the sprint starts
+    // rather than appear in the lowered pose on the first frame.
+    SprintPoseAlpha = FMath::FInterpTo(
+        SprintPoseAlpha, IsSprinting() ? 1.f : 0.f, DeltaTime, FMath::Max(0.5f, SprintPoseBlendSpeed));
+
+    CurrentFireKickLocation = FMath::VInterpTo(
+        CurrentFireKickLocation, FVector::ZeroVector, DeltaTime, FMath::Max(0.5f, FireKickRecoverySpeed));
+    CurrentFireKickRotation = FMath::RInterpTo(
+        CurrentFireKickRotation, FRotator::ZeroRotator, DeltaTime, FMath::Max(0.5f, FireKickRecoverySpeed));
+
+    const FVector TargetLocation =
+        CameraWeaponOffset + (SprintWeaponOffset * SprintPoseAlpha) + CurrentFireKickLocation;
+
+    // Compose rotations as quaternions with the offsets OUTERMOST, so they act in
+    // camera space. Adding Euler components instead would apply them in the weapon's
+    // own frame — and this mesh is yawed -90, so its local pitch axis runs straight
+    // down the barrel. "Muzzle rises" would have come out as the gun rolling on its
+    // side. The same trap cost a session's worth of tuning on the spine pin.
+    const FQuat BaseQ   = CameraWeaponRotation.Quaternion();
+    const FQuat SprintQ = FRotator(SprintWeaponRotation.Pitch * SprintPoseAlpha,
+                                   SprintWeaponRotation.Yaw   * SprintPoseAlpha,
+                                   SprintWeaponRotation.Roll  * SprintPoseAlpha).Quaternion();
+    const FQuat KickQ   = CurrentFireKickRotation.Quaternion();
+
+    WeaponMeshComponent->SetRelativeLocation(TargetLocation);
+    WeaponMeshComponent->SetRelativeRotation((KickQ * SprintQ * BaseQ).Rotator());
+}
+
 void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
 {
     if (!WeaponMeshComponent || !WeaponSlots.IsValidIndex(SlotIndex))
@@ -1194,9 +1499,11 @@ void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
     if (WeaponData)
     {
         WeaponMeshComponent->SetStaticMesh(WeaponData->WeaponMesh);
-        WeaponMeshComponent->SetRelativeLocation(WeaponData->MeshOffset);
-        WeaponMeshComponent->SetRelativeRotation(WeaponData->MeshRotation);
         WeaponMeshComponent->SetRelativeScale3D(WeaponData->MeshScale);
+
+        // Location and rotation come from here, not from WeaponData directly — which
+        // of the two offsets is correct depends on what the weapon is parented to.
+        ApplyWeaponAttachment(WeaponData);
 
         if (IsLocallyControlled())
         {

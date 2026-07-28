@@ -25,6 +25,25 @@ class UGameplayEffect;
 class AGothicEnemySpawnPoint;
 class UBoxComponent;
 class AGothicPlayerCharacter;
+class AGothicEncounterVolume;
+
+/**
+ * Fires when a collection actually PAYS OUT — not when the prompt appears and
+ * not on the interrupted fake-out collect. This is the "encounter is genuinely
+ * finished" signal; AGothicBleedGate keys its opening off it.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
+	FOnEncounterRewarded, AGothicEncounterVolume*, Encounter);
+
+/**
+ * Fires when this encounter's occupant breaks OUT of it — the Feral Retained
+ * smashing off her upstairs perch. Distinct from OnEncounterRewarded because it
+ * happens mid-fight, with the encounter unfinished and nothing paid out: the
+ * hole she leaves is the way on, so the exit it opens cannot wait for a
+ * collection that has not happened yet.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
+	FOnEncounterBreakout, AGothicEncounterVolume*, Encounter);
 
 UCLASS()
 class GOTHICMMO_API AGothicEncounterVolume : public AActor
@@ -53,6 +72,32 @@ public:
 	 *  every individual enemy's own OnEnemyDied themselves. */
 	UPROPERTY(BlueprintAssignable, Category = "Gothic|Encounter")
 	FOnEnemyDied OnEncounterMemberDied;
+
+	/** Broadcast from FinalizeCollection — the encounter's reward has landed. */
+	UPROPERTY(BlueprintAssignable, Category = "Gothic|Encounter")
+	FOnEncounterRewarded OnEncounterRewarded;
+
+	/** True once this encounter's collection has paid out. Gates read this on
+	 *  BeginPlay so a gate that registers late still opens. */
+	UFUNCTION(BlueprintPure, Category = "Gothic|Encounter")
+	bool IsRewarded() const { return bRewarded; }
+
+	/** Broadcast from NotifyBreakout — the occupant has broken out of here. */
+	UPROPERTY(BlueprintAssignable, Category = "Gothic|Encounter")
+	FOnEncounterBreakout OnEncounterBreakout;
+
+	/** True once the break-out has happened. Read on BeginPlay by gates, for the
+	 *  same late-registration reason as IsRewarded. */
+	UFUNCTION(BlueprintPure, Category = "Gothic|Encounter")
+	bool IsBrokenOut() const { return bBrokenOut; }
+
+	/**
+	 * Announce that this encounter's occupant has broken out. Called by
+	 * UGA_FeralBreakout at the moment she leaves the perch. Idempotent — a
+	 * second call is ignored, so a re-activated ability cannot re-fire the beat.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Gothic|Encounter")
+	void NotifyBreakout();
 
 	UFUNCTION(BlueprintCallable, Category = "Gothic|Encounter")
 	void AddWaveToEncounter(const TArray<AGothicEnemyBase*>& NewWaveEnemies);
@@ -109,6 +154,23 @@ protected:
 	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter|Waves")
 	float InterruptDelay = 0.f;
 
+	/**
+	 * REINFORCEMENT mode. When > 0, PendingWaveSpawnPoints spawn mid-fight the
+	 * moment the living roster drops to this many — Thralls arriving from the
+	 * approaches — and Wave 3 follows when that wave falls, exactly as before.
+	 * The prompt then appears once and the first collect REWARDS.
+	 *
+	 * Leave at 0 for the interrupted-Selah fake-out (the Feral Retained's arena),
+	 * where the waves deliberately wait for a collection attempt.
+	 *
+	 * This split exists because both behaviours previously shared one trigger:
+	 * any encounter that wanted reinforcements got the Selah fake-out too, so
+	 * the interrupt — which is meant to be one encounter's signature beat —
+	 * fired at the entry intersection as well.
+	 */
+	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter|Waves", meta = (ClampMin = "0"))
+	int32 ReinforceAtLivingCount = 0;
+
 	/** Full length of the Selah collection channel — the time the fill-bar takes
 	 *  to complete a real (uninterrupted) collection and pay out. */
 	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter|Waves")
@@ -162,6 +224,23 @@ private:
 	// AGothicEncounterVolume.h — add to private section
 	float CachedTotalSelah = 0.f;
 
+	/**
+	 * Selah and names accumulated AS ENEMIES DIE, not gathered from the roster
+	 * when the prompt goes up.
+	 *
+	 * ActivateSelahPrompt used to walk EncounterEnemies and skip null entries —
+	 * but a corpse is destroyed CorpseLifetime seconds after its kill, which nulls
+	 * its slot. The payout therefore scaled with how recently things died rather
+	 * than with what the encounter contained: a measured 25-enemy Encounter 1
+	 * pooled 12 Selah and revealed 12 of 25 names, because the opening roster and
+	 * the reinforcement wave had already decayed by the time the last wave fell.
+	 * Barely visible on a 10-enemy 40-second fight; badly wrong on a 48-enemy one.
+	 */
+	float AccumulatedSelah = 0.f;
+
+	UPROPERTY()
+	TArray<FText> AccumulatedNames;
+
 	UPROPERTY()
 	TSubclassOf<UGameplayEffect> CachedGainEffect;
 
@@ -175,11 +254,26 @@ private:
 	 */
 	int32 WaveStage = 0;
 
+	/**
+	 * Set by FinalizeCollection. Server-only, like the rest of this actor's
+	 * state — bReplicates is false here by design, so a client's copy of this
+	 * volume never sees it. AGothicBleedGate is the replicated half of the
+	 * pair: the gate carries its own open flag to clients.
+	 */
+	bool bRewarded = false;
+
+	/** Set by NotifyBreakout. Server-only, for the same reason as bRewarded. */
+	bool bBrokenOut = false;
+
 	FTimerHandle InterruptTimerHandle;
 	FTimerHandle CollectFinishHandle;
 
-	/** Spawns one enemy per point, stamps pack IDs, folds them into the roster. */
+	/** Spawns SpawnCount enemies per point, stamps pack IDs, folds them into the
+	 *  roster, and sets each one's combat target so the wave actually engages. */
 	TArray<AGothicEnemyBase*> SpawnWaveFromPoints(const TArray<TObjectPtr<AGothicEnemySpawnPoint>>& Points);
+
+	/** Closest player pawn to this volume, or null if there are none. */
+	AActor* FindNearestPlayerPawn() const;
 
 	/** Timer callback — springs the interrupt wave (Wave 2). */
 	void SpawnInterruptWave();

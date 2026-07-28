@@ -26,6 +26,7 @@ the Input Action asset, not the gameplay code.
 It is also why this harness cannot test input itself. Do not add that here.
 """
 
+import math
 import time
 
 import unreal
@@ -49,6 +50,20 @@ _error_streak = 0
 _MAX_ERROR_STREAK = 5
 
 _ACTIONS = {}
+
+# Active move_to orders, keyed by pawn name. Driven every tick by _drive_movers.
+# Movement has to be sustained rather than fired once: add_movement_input feeds
+# CharacterMovement for a single frame, so a one-shot call moves a pawn by
+# millimetres. Keeping the order here and re-applying it each tick is what makes
+# a scenario able to walk somewhere -- and, because it goes through
+# CharacterMovement rather than set_actor_location, what makes it collide with
+# geometry and with an AGothicBleedGate exactly as a player does.
+_movers = {}
+
+_MOVE_ACCEPT_RADIUS = 150.0   # uu; capsule-ish, so "arrived" isn't pixel-exact
+_MOVE_TIMEOUT = 30.0          # give up on an order after this many game seconds
+_MOVE_STALL_SECONDS = 2.0     # no net progress for this long => report blocked
+_MOVE_STALL_EPSILON = 25.0    # uu of closing distance that counts as progress
 
 
 def _action(name):
@@ -373,6 +388,140 @@ def _a_console(world, step):
     return {"command": step["command"]}
 
 
+def _step_vector(step):
+    try:
+        return unreal.Vector(
+            float(step["x"]), float(step["y"]), float(step["z"]))
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("step needs numeric 'x', 'y' and 'z'")
+
+
+@_action("move_to")
+def _a_move_to(world, step):
+    """Walk a pawn to a world location using real character movement.
+
+    Registers a sustained order; _drive_movers applies it every tick until the
+    pawn arrives, stalls, or times out. The outcome is appended to the scenario
+    results as a synthetic 'move_to result' record, so a blocked move shows up
+    in the dump rather than silently never finishing.
+    """
+    pawn = _actor(world, step)
+    target = _step_vector(step)
+    start_loc = pawn.get_actor_location()
+    order = {
+        "pawn": pawn,
+        "name": pawn.get_name(),
+        "target": target,
+        "accept_radius": float(step.get("accept_radius", _MOVE_ACCEPT_RADIUS)),
+        "timeout": float(step.get("timeout", _MOVE_TIMEOUT)),
+        "started_at": _elapsed(),
+        "start_dist": math.hypot(target.x - start_loc.x, target.y - start_loc.y),
+        "best_dist": None,
+        "stalled_for": 0.0,
+    }
+    order["best_dist"] = order["start_dist"]
+    _movers[order["name"]] = order
+    return {
+        "moving": order["name"],
+        "from": common.vec(start_loc),
+        "to": common.vec(target),
+        "distance": round(order["start_dist"], 1),
+    }
+
+
+@_action("stop_move")
+def _a_stop_move(world, step):
+    pawn = _actor(world, step)
+    removed = _movers.pop(pawn.get_name(), None)
+    return {"stopped": pawn.get_name(), "had_order": removed is not None}
+
+
+@_action("teleport")
+def _a_teleport(world, step):
+    """Instantly reposition a pawn. Bypasses collision entirely.
+
+    Use for setting up an encounter, never for testing a barrier: a teleport
+    will pass straight through an AGothicBleedGate and tell you nothing about
+    whether the gate holds. Use move_to for that.
+    """
+    pawn = _actor(world, step)
+    target = _step_vector(step)
+    before = pawn.get_actor_location()
+    pawn.set_actor_location(target, False, True)
+    if "yaw" in step:
+        rot = pawn.get_actor_rotation()
+        rot.yaw = float(step["yaw"])
+        pawn.set_actor_rotation(rot, True)
+    _movers.pop(pawn.get_name(), None)
+    return {
+        "teleported": pawn.get_name(),
+        "from": common.vec(before),
+        "to": common.vec(pawn.get_actor_location()),
+    }
+
+
+def _drive_movers(elapsed, delta_seconds):
+    """Apply every active move order for one frame, and retire finished ones."""
+    for name in list(_movers.keys()):
+        order = _movers[name]
+        pawn = order["pawn"]
+
+        if not common.is_valid(pawn):
+            _movers.pop(name, None)
+            _results.append({"do": "move_to result", "actor": name,
+                             "ok": False, "outcome": "pawn became invalid",
+                             "fired_at": round(elapsed, 3)})
+            continue
+
+        loc = pawn.get_actor_location()
+        target = order["target"]
+        # Horizontal only: a target Z that differs from the pawn's would otherwise
+        # tilt the input vector and slow the pawn on ramps.
+        dx = target.x - loc.x
+        dy = target.y - loc.y
+        dist = math.hypot(dx, dy)
+
+        if dist <= order["accept_radius"]:
+            _movers.pop(name, None)
+            _results.append({"do": "move_to result", "actor": name, "ok": True,
+                             "outcome": "arrived", "at": common.vec(loc),
+                             "took_seconds": round(elapsed - order["started_at"], 2),
+                             "fired_at": round(elapsed, 3)})
+            continue
+
+        if dist < order["best_dist"] - _MOVE_STALL_EPSILON:
+            order["best_dist"] = dist
+            order["stalled_for"] = 0.0
+        else:
+            order["stalled_for"] += delta_seconds
+
+        if order["stalled_for"] >= _MOVE_STALL_SECONDS:
+            _movers.pop(name, None)
+            _results.append({
+                "do": "move_to result", "actor": name, "ok": False,
+                "outcome": "blocked",
+                "blocked_at": common.vec(loc),
+                "remaining_distance": round(dist, 1),
+                "note": "no progress for %.1fs -- geometry, navmesh, or a Bleed gate"
+                        % _MOVE_STALL_SECONDS,
+                "fired_at": round(elapsed, 3)})
+            continue
+
+        if elapsed - order["started_at"] >= order["timeout"]:
+            _movers.pop(name, None)
+            _results.append({
+                "do": "move_to result", "actor": name, "ok": False,
+                "outcome": "timed out", "at": common.vec(loc),
+                "remaining_distance": round(dist, 1),
+                "fired_at": round(elapsed, 3)})
+            continue
+
+        # Unit vector built by hand rather than via Vector.normalize(), whose
+        # in-place-vs-copy behaviour differs across engine Python bindings.
+        pawn.add_movement_input(
+            unreal.Vector(dx / dist, dy / dist, 0.0), 1.0, False)
+
+
 @_action("mark")
 def _a_mark(world, step):
     """No-op marker. Lands a labelled timestamp in the results for correlation."""
@@ -427,6 +576,7 @@ def start(world, steps, max_duration=60.0):
     _stop_reason = None
     _max_duration = float(max_duration)
     _error_streak = 0
+    _movers.clear()   # a previous run's unfinished walk must not resume into this one
 
     common.audit("scenario start\t%d steps\tmax_duration=%.1f" % (len(_steps), _max_duration))
     _tick_handle = unreal.register_slate_post_tick_callback(_on_tick)
@@ -442,6 +592,7 @@ def stop(reason="stopped by request"):
             pass
         _tick_handle = None
         _stop_reason = reason
+        _movers.clear()   # nothing drives them once the tick callback is gone
         common.audit("scenario stop\t%s" % reason)
     return True
 
@@ -507,7 +658,16 @@ def _on_tick(delta_seconds):
                 record["error"] = "%s: %s" % (type(exc).__name__, exc)
             _results.append(record)
 
-        if all(s.get("_fired") for s in _steps) and elapsed > _last_at() + _grace:
+        # Sustained orders are driven after this frame's steps, so a move_to that
+        # fired on this very tick gets its first frame of input immediately.
+        _drive_movers(elapsed, delta_seconds)
+
+        # An outstanding move keeps the scenario alive past the last step's grace
+        # window; otherwise the run ends the instant the final step fires and a
+        # walk that needed eight seconds is cut off at one.
+        if (all(s.get("_fired") for s in _steps)
+                and not _movers
+                and elapsed > _last_at() + _grace):
             stop("completed")
 
         _error_streak = 0

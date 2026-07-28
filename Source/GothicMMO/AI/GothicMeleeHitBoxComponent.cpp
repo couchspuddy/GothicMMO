@@ -1,6 +1,7 @@
 // GothicMeleeHitboxComponent.cpp
 
 #include "AI/GothicMeleeHitboxComponent.h"
+#include "AI/GothicEnemyBase.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
 #include "GameplayTagContainer.h"
@@ -71,6 +72,27 @@ void UGothicMeleeHitboxComponent::OnHitboxOverlap(
 
     // Don't hit the same actor twice in one swing
     if (AlreadyHitThisSwing.Contains(OtherActor))
+    {
+        return;
+    }
+
+    // The Accursed do not kill each other.
+    //
+    // This box only excluded the swinger itself, so any Accursed standing inside a
+    // neighbour's swing arc took the full hit. In a pack — which is how Thralls
+    // fight — that is most of the time.
+    //
+    // Measured 2026-07-27 on encounter 1's reinforcement wave: two of the eight
+    // Thralls were already at 68/80 and 56/80 before the player fired a single
+    // shot. A Thrall's swing is BaseDamage 15, which is 12 after Defense, so those
+    // are exactly one and two hits from each other. Every wave was arriving
+    // pre-damaged, which quietly invalidates encounter tuning — a roster's real HP
+    // was whatever the pack had left after chewing on itself on the way in.
+    //
+    // Checked by class rather than by a team ID because this project has no team
+    // affiliation system; if one ever lands, this is the single place to swap.
+    if (GetOwner() && GetOwner()->IsA(AGothicEnemyBase::StaticClass())
+        && OtherActor->IsA(AGothicEnemyBase::StaticClass()))
     {
         return;
     }

@@ -32,6 +32,7 @@
 #include "GA_Fire.generated.h"
 
 class AGothicPlayerCharacter;
+class UAnimMontage;
 
 UCLASS()
 class GOTHICMMO_API UGA_Fire : public UGothicGameplayAbility
@@ -87,6 +88,35 @@ protected:
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Fire")
     void OnFireCosmetic();
 
+    /**
+     * Fire animation, played on the character's own mesh. Assign
+     * MM_Pistol_Fire_Montage (or the rifle equivalent) in BP_GA_Fire.
+     *
+     * Deliberately NOT routed through the base class's MontageToPlay /
+     * PlayOptionalMontage pair. That pair holds the ability open and defers its
+     * payload to an Event.Montage.HitWindow notify, which is right for a swing and
+     * wrong for a gun: the shot must land on the trigger pull, not several frames
+     * later when an animation says so. So the trace still runs immediately and this
+     * is purely cosmetic — a montage missing its notify cannot cost you the shot.
+     *
+     * Plays on the locally controlled pawn only, alongside the recoil kick. Remote
+     * players will not see another player's fire animation until this is promoted to
+     * a multicast; for a single-player slice that trade is invisible.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Montage")
+    TObjectPtr<UAnimMontage> FireMontage;
+
+    /** Playback rate for FireMontage. Raise it if the animation outlasts the
+     *  weapon's fire rate and shots start swallowing each other's animation. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Montage")
+    float FireMontagePlayRate = 1.f;
+
+private:
+    /** Plays FireMontage on the character's mesh. Null-safe; no-op if unassigned. */
+    void PlayFireMontage(AGothicPlayerCharacter* Char) const;
+
+protected:
+
     /** The GameplayEffect that deals the damage. Assign GE_WeaponDamage in BP_GA_Fire. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire")
     TSubclassOf<UGameplayEffect> DamageEffectClass;
@@ -102,6 +132,27 @@ protected:
     /** Hitscan range in cm. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire")
     float TraceRange = 5000.f;
+
+    /**
+     * Half-angle of the fire cone while NOT aiming, in degrees.
+     *
+     * ZERO BY DEFAULT — a perfect ray, exactly as the weapon behaved before spread
+     * existed. The plumbing is here so accuracy can become the reason to aim after
+     * the test build, but turning it on is a real accuracy change: the measured
+     * 39 DPS baseline against Thralls was established with a perfect ray, so raising
+     * this lowers effective DPS and wants re-measuring rather than eyeballing.
+     *
+     * A sane starting point when you do want it: 1.5 here against 0.2 aimed.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Spread",
+              meta = (ClampMin = "0.0", ClampMax = "15.0"))
+    float HipFireSpreadDegrees = 0.f;
+
+    /** Half-angle of the fire cone while aiming — the mechanical payoff for giving
+     *  up movement speed. Also zero for now; see HipFireSpreadDegrees. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Spread",
+              meta = (ClampMin = "0.0", ClampMax = "15.0"))
+    float ADSSpreadDegrees = 0.f;
 
     /**
      * Aggregate Gear Power that scales damage by exactly 1.0. UGothicItemDefinition

@@ -62,8 +62,20 @@ protected:
     FName LeapTargetTag = FName("FeralLeapTarget");
 
     /**
-     * Arc height for the break-out leap, 0-1. Higher pitches the jump steeper
-     * and slower; lower makes it a flatter, faster pounce.
+     * Arc height for the break-out leap, 0-1. LOWER is steeper and higher —
+     * this reads backwards, and it is the engine's convention, not a typo:
+     * SuggestProjectileVelocity_CustomArc treats the parameter as "how direct
+     * is the shot", so 1.0 is a flat line drive and 0.0 is a near-vertical lob.
+     *
+     * Measured 2026-07-27 on a ~530uu leap, arc vs. what she actually does:
+     *     0.85 -> rise   0uu, 0.00s airborne, travels 171uu  (a flat slide)
+     *     0.55 -> rise  66uu, 0.34s airborne, travels 132uu  (a stumble)
+     *     0.25 -> rise 444uu, 1.34s airborne, travels 620uu  (a leap)
+     *
+     * The comment here used to claim the opposite, which is worth knowing
+     * because raising it to "get more air" makes her stop leaping altogether:
+     * a flat solution keeps her grounded, and ground friction eats the launch
+     * within a couple of hundred uu.
      *
      * She used to hard-teleport to the target, which read as a pop rather than
      * a break-out. Now she is launched on a ballistic arc, so the landing is

@@ -94,6 +94,24 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                 "damage_vital": {"actor": "str", "amount": "float"},
                 "console": {"command": "str", "force": "bool (optional)"},
                 "mark": {"label": "str"},
+                "move_to": {
+                    "actor": "str", "x": "float", "y": "float", "z": "float",
+                    "accept_radius": "float (optional, default 150)",
+                    "timeout": "float game seconds (optional, default 30)",
+                    "_note": "Real locomotion via add_movement_input, so collision, "
+                             "navmesh and Bleed gates all apply. Sustained across "
+                             "ticks; the scenario stays alive until the walk ends. "
+                             "Outcome lands in results as a 'move_to result' record: "
+                             "arrived, blocked, or timed out.",
+                },
+                "stop_move": {"actor": "str"},
+                "teleport": {
+                    "actor": "str", "x": "float", "y": "float", "z": "float",
+                    "yaw": "float (optional)",
+                    "_note": "Instant, and bypasses collision. For positioning only "
+                             "-- it passes straight through a Bleed gate, so it can "
+                             "never tell you whether a barrier holds. Use move_to.",
+                },
             },
             "example": [
                 {"at": 0.0, "do": "freeze_vital", "actor": "Feral", "index": 2},

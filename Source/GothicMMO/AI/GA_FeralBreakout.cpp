@@ -137,6 +137,24 @@ void UGA_FeralBreakout::PerformBreakout()
     AGothicEnemyBase* Me = Cast<AGothicEnemyBase>(Avatar);
     AActor* AggroTarget = Me ? Me->GetCombatTarget() : nullptr;
 
+    // ── Open the way she just made ───────────────────────────────────────
+    // Announced here, at the launch and not at the landing: the exit is the hole
+    // she leaves on the way through, so it should be open while she is still in
+    // the air. Any AGothicBleedGate listing this encounter under
+    // BreakoutEncounters dissolves now, with the fight still running — which is
+    // the point, since the arena below is where the player follows her.
+    if (Me && Me->OwningEncounter)
+    {
+        Me->OwningEncounter->NotifyBreakout();
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("FeralBreakout[%s]: no OwningEncounter — any break-out gate stays shut. "
+                 "Is she inside her encounter volume's roster?"),
+            *GetNameSafe(Avatar));
+    }
+
     // ── Rally already-placed ferals around her ───────────────────────────
     TArray<AActor*> IgnoreActors;
     IgnoreActors.Add(Avatar);

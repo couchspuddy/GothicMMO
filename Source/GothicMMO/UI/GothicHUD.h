@@ -68,6 +68,18 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
     void SetCrosshairVisible(bool bVisible);
 
+    /**
+     * Tells the active crosshair the player started or stopped aiming.
+     *
+     * UGothicCrosshairWidget::OnAimDownSights existed from the start with nothing
+     * calling it, because ADS itself was never implemented — the reticle has been
+     * drawing a spread the bullets did not have. Routed through the HUD rather than
+     * letting the pawn reach into the widget, so the HUD stays the only thing that
+     * knows which crosshair is currently up.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD|Crosshairs")
+    void NotifyAimDownSights(bool bIsAiming);
+
     // -------------------------------------------------------------------------
     // Called every frame to update dynamic crosshair spread
     // based on player movement speed

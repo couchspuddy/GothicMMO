@@ -43,6 +43,159 @@ public:
     virtual void PossessedBy(AController* NewController) override;
     virtual void OnRep_PlayerState() override;
     virtual void Tick(float DeltaTime) override;
+    virtual void GetLifetimeReplicatedProps(
+        TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+    // -----------------------------------------------------------------
+    // Aim down sights
+    //
+    // Three effects, because any one alone reads as a gimmick: the camera pulls
+    // in, the weapon tightens, and you give up speed for it. The trade is the
+    // point — aiming should be the accurate option and the slow one.
+    // -----------------------------------------------------------------
+
+    /** True while the aim input is held. Replicated because GA_Fire's trace runs
+     *  on the server, and spread cannot be decided from a state only the shooter
+     *  knows. */
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gothic|Aim")
+    bool bIsAiming = false;
+
+    UFUNCTION(BlueprintPure, Category = "Gothic|Aim")
+    bool IsAiming() const { return bIsAiming; }
+
+    /** True while the sprint input is held. Read by the anim instance, which
+     *  releases the upper-body pin during a sprint. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Movement")
+    bool IsSprinting() const { return bIsSprinting; }
+
+    /** The first-person camera. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Camera")
+    UCameraComponent* GetFirstPersonCamera() const { return FirstPersonCamera; }
+
+    // -------------------------------------------------------------------------
+    // First-person weapon presentation
+    //
+    // The weapon is parented to the CAMERA for the local player, not to the hand.
+    // This is the thing that actually locks the muzzle to the crosshair, and it
+    // does so by construction rather than by correction: a child of the camera
+    // cannot move relative to the camera, at any pitch, during any animation.
+    //
+    // Everything before this tried to achieve the same result from the other end —
+    // rotate the torso so the hand happens to land where the camera is looking. That
+    // can only ever approximate, because the weapon hangs off a bone chain the camera
+    // knows nothing about, and every fix was correct at exactly one look angle.
+    //
+    // Note this is what the Blueprint already had. BeginPlay was re-attaching it to
+    // HandGrip_R on every launch, which is why it never behaved.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Parent the weapon to the camera for the locally-controlled player.
+     *
+     * Turn this off to go back to hand-socket attachment, where the weapon inherits
+     * the animation — correct for a third-person view, unusable for a first-person one.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
+    bool bAttachWeaponToCamera = true;
+
+    /**
+     * Where the weapon sits relative to the camera: +X forward, +Y right, +Z up.
+     *
+     * This REPLACES WeaponData's MeshOffset while camera-attached, because that value
+     * was authored to align the mesh inside a hand and means nothing in camera space.
+     * Expect to tune this once per weapon silhouette.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
+    FVector CameraWeaponOffset = FVector(30.f, 12.f, -12.f);
+
+    /** Weapon orientation relative to the camera. Replaces WeaponData's MeshRotation
+     *  while camera-attached, for the same reason. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
+    FRotator CameraWeaponRotation = FRotator::ZeroRotator;
+
+    /**
+     * Hide the character mesh from its own owner.
+     *
+     * The constructor already asks for this, but a serialized Blueprint value silently
+     * overrides a constructor call, which is why a shoulder was still in frame. Enforced
+     * at BeginPlay so the Blueprint cannot lose it. Other players still see the full body.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
+    bool bHideBodyInFirstPerson = true;
+
+    // -------------------------------------------------------------------------
+    // Weapon pose: sprint and fire kick
+    //
+    // These replace what the body animation used to do. Once the weapon became a
+    // child of the camera it stopped inheriting the skeleton, so a sprint montage
+    // or a fire montage moves the character's arms and nothing the player can see.
+    // Moving the weapon in CAMERA space is the equivalent, and it has the advantage
+    // of being frame-rate independent, tunable without a re-import, and incapable
+    // of drifting off the crosshair.
+    //
+    // All offsets below are in camera space and are applied ON TOP of
+    // CameraWeaponOffset / CameraWeaponRotation, never in the weapon's own frame.
+    // -------------------------------------------------------------------------
+
+    /** Where the weapon moves while sprinting, relative to its resting pose.
+     *  Negative X pulls it back toward the player, negative Z drops it. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
+    FVector SprintWeaponOffset = FVector(-8.f, 4.f, -10.f);
+
+    /** How the weapon tilts while sprinting. Negative pitch points the muzzle down. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
+    FRotator SprintWeaponRotation = FRotator(-30.f, -15.f, 0.f);
+
+    /** How quickly the weapon moves between resting and sprinting poses. Lower is
+     *  heavier; too high and the transition snaps. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson",
+              meta = (ClampMin = "0.5"))
+    float SprintPoseBlendSpeed = 9.f;
+
+    /** Positional kick per shot. Negative X drives the weapon back toward the eye. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
+    FVector FireKickOffset = FVector(-3.f, 0.f, 0.5f);
+
+    /** Rotational kick per shot. Positive pitch lifts the muzzle. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
+    FRotator FireKickRotation = FRotator(6.f, 0.f, 0.f);
+
+    /** How fast the weapon settles back after a shot. This is the whole feel of the
+     *  gun — high is snappy and mechanical, low is heavy and slow to recover. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson",
+              meta = (ClampMin = "0.5"))
+    float FireKickRecoverySpeed = 11.f;
+
+    /**
+     * Ceiling on accumulated kick, as a multiple of a single shot.
+     *
+     * Kicks stack so that sustained fire climbs rather than repeating one identical
+     * hop, but without a ceiling a fast weapon walks the gun clean out of frame.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson",
+              meta = (ClampMin = "1.0"))
+    float MaxStackedFireKick = 2.5f;
+
+    /** Add one shot's worth of visual kick. Called from GA_Fire on the local client;
+     *  cosmetic only, and deliberately separate from ApplyRecoilKick, which moves the
+     *  player's actual aim. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons|FirstPerson")
+    void AddWeaponFireKick();
+
+    /** FOV while aiming. The hip value is captured from the camera at BeginPlay,
+     *  so whatever the Blueprint sets stays the resting FOV. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Aim")
+    float ADSFieldOfView = 55.f;
+
+    /** How fast FOV moves between hip and aimed. Higher snaps; lower drifts. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Aim")
+    float ADSFieldOfViewInterpSpeed = 12.f;
+
+    /** MaxWalkSpeed multiplier while aiming. Applied inside RefreshMovementSpeed
+     *  so gear bonuses and sprint cannot overwrite it. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Aim",
+              meta = (ClampMin = "0.1", ClampMax = "1.0"))
+    float ADSMoveSpeedMultiplier = 0.4f;
 
     /** Safety net for falling under the map / below KillZ — routes into the
      *  normal checkpoint respawn instead of the default (which just destroys the
@@ -65,7 +218,40 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
     void TriggerSelahMoment();
-    
+
+    /**
+     * True while the Selah moment holds the player still.
+     *
+     * The moment is the one beat in the game that is not combat: the names of the
+     * Accursed you just killed are read out, and the player is meant to be
+     * standing in it rather than strafing through it. Movement and weapon fire are
+     * refused; the inventory and the quit menu are NOT, because taking the pause
+     * to read your gear is exactly what the beat is for.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Selah")
+    bool IsSelahMomentLocked() const { return bSelahMomentLock; }
+
+    /**
+     * Releases the lock early. Call from the name-cycle widget's
+     * OnSelahMomentComplete so the lock ends exactly when the last name fades,
+     * rather than on the fallback timer.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+    void EndSelahMomentLock();
+
+    /**
+     * Fallback duration for the lock, in seconds.
+     *
+     * A timer rather than purely waiting on the widget, because the widget lives
+     * on the client and can be destroyed mid-cycle (level travel, a respawn, an
+     * interrupted collection). If its completion event never arrives, this is what
+     * stops the player being frozen for the rest of the run. Keep it comfortably
+     * longer than the name cycle — the widget normally releases the lock first.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
+    float SelahMomentLockSeconds = 8.f;
+
+
     /** True if the active weapon has at least one round in its magazine. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
     bool HasRoundChambered() const;
@@ -234,6 +420,22 @@ public:
     bool IsInventoryOpen() const { return ActiveInventoryWidget != nullptr; }
 
     /**
+     * Opens the quit menu, or closes it if already open. Bound to QuitMenuAction.
+     *
+     * The menu itself lives on the HUD (AGothicHUD::ToggleQuitMenu) — this only
+     * forwards the keypress, the same way ToggleInventory owns its widget here.
+     * It existed fully built and fully unreachable: nothing called
+     * ToggleQuitMenu, so a packaged build could not be exited except by killing
+     * the process.
+     *
+     * Escape closes the INVENTORY first if that is open, and only opens the quit
+     * menu when nothing else is up. One escape key that backs out of the topmost
+     * thing is what players expect; two screens fighting over it is not.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|UI")
+    void ToggleQuitMenu();
+
+    /**
      * Consecutive weapon hits with no miss in between. Drives the electrical
      * Rig's Oversurge.
      *
@@ -266,6 +468,30 @@ protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
     TObjectPtr<UStaticMeshComponent> WeaponMeshComponent;
 
+    /**
+     * Re-parent the weapon and apply the relative transform that matches whichever
+     * parent it landed on.
+     *
+     * Attachment and transform must be set together — a hand-socket offset applied to
+     * a camera-parented weapon puts it somewhere arbitrary — so both BeginPlay and
+     * RefreshWeaponVisuals route through here rather than each setting their own.
+     */
+    void ApplyWeaponAttachment(const UGothicWeaponData* WeaponData);
+
+    /** Drive the camera-mounted weapon's sprint pose and fire-kick recovery. Ticked
+     *  on the local client only; does nothing when the weapon is hand-socketed. */
+    void UpdateFirstPersonWeaponPose(float DeltaTime);
+
+private:
+    /** 0..1 blend toward the sprint pose. */
+    float SprintPoseAlpha = 0.f;
+
+    /** Live fire kick, decaying toward zero every tick. */
+    FVector CurrentFireKickLocation = FVector::ZeroVector;
+    FRotator CurrentFireKickRotation = FRotator::ZeroRotator;
+
+protected:
+
     // -------------------------------------------------------------------------
     // Input Mapping Context
     // -------------------------------------------------------------------------
@@ -290,6 +516,48 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
     TObjectPtr<UInputAction> SprintAction;
 
+    /** Assign IA_ADS in BP_GothicPlayerCharacter. Hold to aim. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+    TObjectPtr<UInputAction> ADSAction;
+
+    // -----------------------------------------------------------------
+    // First-person camera anchoring
+    // -----------------------------------------------------------------
+
+    /**
+     * Bone the first-person camera rides. NAME_None keeps it on the mesh
+     * component, which is the original behaviour.
+     *
+     * WHY: the weapon is attached to a hand socket, so it inherits every bit of
+     * body animation. The camera was attached to the mesh COMPONENT, which does
+     * not move with animation at all. That difference is the weapon sway — the
+     * gun bobs with the pelvis while the view stays perfectly still, and the eye
+     * reads the relative motion.
+     *
+     * Anchoring the camera to a bone in the same chain as the weapon makes both
+     * move together, so the gun sits still in frame and the bob shows up as head
+     * movement instead. spine_05 rather than head: the aim layer already holds
+     * everything from spine_01 up rigid, so spine_05 moves exactly as the pelvis
+     * does — identically to the weapon — while head can carry extra animation.
+     *
+     * Only POSITION is inherited: the camera has bUsePawnControlRotation, so the
+     * bone's rotation never reaches the view.
+     *
+     * TO REVERT: clear this to None in BP_GothicPlayerCharacter. No rebuild.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Camera")
+    FName CameraAttachBoneName = TEXT("spine_05");
+
+    /**
+     * Extra offset applied after anchoring, in bone space.
+     *
+     * Zero by default and deliberately so: the attach preserves the camera's
+     * existing world position, so switching anchors does not move the eye and the
+     * only thing that changes is what it follows. Use this to nudge afterwards.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Camera")
+    FVector CameraBoneOffsetAdjust = FVector::ZeroVector;
+
     /** Press 1 for Sidearm, 2 for Piece, 3 for Rig. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
     TObjectPtr<UInputAction> WeaponSlot1Action;
@@ -303,6 +571,10 @@ protected:
     /** Assign IA_InventoryToggle in BP_GothicPlayerCharacter. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
     TObjectPtr<UInputAction> InventoryToggleAction;
+
+    /** Assign IA_QuitMenu (Escape) in BP_GothicPlayerCharacter. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+    TObjectPtr<UInputAction> QuitMenuAction;
 
     /**
      * Assign IA_Reload in BP_GothicPlayerCharacter.
@@ -454,6 +726,33 @@ private:
 
     /** Drives both the initial threshold delay and the repeat interval. */
     FTimerHandle SteadfastHoldTimerHandle;
+
+    /** Set by TriggerSelahMoment, cleared by EndSelahMomentLock or its timer.
+     *  Local only — the moment is a per-player beat, not shared world state. */
+    bool bSelahMomentLock = false;
+
+    FTimerHandle SelahMomentLockHandle;
+
+    // ── Aim down sights ──────────────────────────────────────────────────
+    void OnADSPressed();
+    void OnADSReleased();
+
+    /** Applies aim state locally, then tells the server. */
+    void SetAiming(bool bNewAiming);
+
+    /** The server needs the aim state for GA_Fire's spread; the owning client sets
+     *  it locally first so the FOV and speed change on the same frame as the input
+     *  rather than a round trip later. */
+    UFUNCTION(Server, Reliable)
+    void ServerSetAiming(bool bNewAiming);
+
+    /** Resting FOV, captured from the camera in BeginPlay so the Blueprint's value
+     *  is the source of truth rather than a duplicated constant here. */
+    float HipFieldOfView = 90.f;
+
+    /** Re-parents FirstPersonCamera onto CameraAttachBoneName. No-op if the name
+     *  is None or the bone does not exist. */
+    void AnchorCameraToBone();
 
     /** True while conversions are actually running — gates OnSteadfastConversionEnded. */
     bool bSteadfastConversionFired = false;
