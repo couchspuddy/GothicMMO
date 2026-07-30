@@ -5,9 +5,13 @@
 #include "AI/GothicBossArenaManager.h"
 #include "AI/GothicRotundaPillar.h"
 #include "BehaviorTree/BlackboardComponent.h"
+#include "Character/GothicPlayerCharacter.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "AbilitySystemBlueprintLibrary.h"
+#include "AbilitySystemComponent.h"
 #include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "AIController.h"
 
 UBTTask_BossCharge::UBTTask_BossCharge()
@@ -19,8 +23,10 @@ UBTTask_BossCharge::UBTTask_BossCharge()
 
 FString UBTTask_BossCharge::GetStaticDescription() const
 {
-    return FString::Printf(TEXT("Charge at %.0f speed, max %.0f cm\nPillar damage: %.0f | Stagger: %.1fs"),
-        ChargeSpeed, MaxChargeDistance, PillarImpactDamage, StaggerDuration);
+    return FString::Printf(
+        TEXT("Charge at %.0f speed, max %.0f cm\nPillar damage: %.0f | Stagger: %.1fs\nPlayer damage: %.0f raw within %.0f cm"),
+        ChargeSpeed, MaxChargeDistance, PillarImpactDamage, StaggerDuration,
+        ChargeDamage, ChargeHitRadius);
 }
 
 uint16 UBTTask_BossCharge::GetInstanceMemorySize() const
@@ -54,6 +60,8 @@ EBTNodeResult::Type UBTTask_BossCharge::ExecuteTask(
     Memory->ChargeStartLocation = BossChar->GetActorLocation();
     Memory->DistanceTraveled = 0.f;
     Memory->bImpacted = false;
+    Memory->NumHitPawns = 0;
+    FMemory::Memzero(Memory->HitPawns, sizeof(Memory->HitPawns));
 
     // Lock direction toward target — boss does NOT re-track mid-charge
     FVector ToTarget = Target->GetActorLocation() - BossChar->GetActorLocation();
@@ -91,6 +99,12 @@ void UBTTask_BossCharge::TickTask(
     BossChar->AddMovementInput(Memory->ChargeDirection, 1.f);
     Memory->DistanceTraveled = FVector::Dist(
         BossChar->GetActorLocation(), Memory->ChargeStartLocation);
+
+    // Run over anyone standing in the lane. Checked every tick and before the
+    // impact branch below, because the impact branch returns early — a player
+    // pinned between the boss and the pillar she is about to hit has to take
+    // the charge on the frame it arrives, not never.
+    ApplyChargeDamage(BossChar, Memory);
 
     // Check for pillar impact
     AGothicBossArenaManager* ArenaManager = Cast<AGothicBossArenaManager>(
@@ -158,5 +172,94 @@ void UBTTask_BossCharge::TickTask(
         BossChar->GetCharacterMovement()->StopMovementImmediately();
         BossChar->GetCharacterMovement()->MaxWalkSpeed = Memory->DefaultWalkSpeed;
         FinishLatentTask(OwnerComp, EBTNodeResult::Succeeded);
+    }
+}
+
+void UBTTask_BossCharge::ApplyChargeDamage(
+    ACharacter* BossChar, FBTBossChargeMemory* Memory) const
+{
+    if (!BossChar || !Memory || !ChargeDamageEffect || !BossChar->HasAuthority())
+    {
+        return;
+    }
+
+    UAbilitySystemComponent* BossASC =
+        UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(BossChar);
+    if (!BossASC)
+    {
+        return;
+    }
+
+    TArray<AActor*> IgnoreActors;
+    IgnoreActors.Add(BossChar);
+
+    TArray<AActor*> Overlapping;
+    UKismetSystemLibrary::SphereOverlapActors(
+        BossChar,
+        BossChar->GetActorLocation(),
+        ChargeHitRadius,
+        TArray<TEnumAsByte<EObjectTypeQuery>>{ UEngineTypes::ConvertToObjectType(ECC_Pawn) },
+        AGothicPlayerCharacter::StaticClass(),
+        IgnoreActors,
+        Overlapping);
+
+    for (AActor* Victim : Overlapping)
+    {
+        if (!Victim)
+        {
+            continue;
+        }
+
+        // Once per pawn per charge. A charge lasts ~1.2s at these speeds, so
+        // without this the player would take a hit every frame they stayed in
+        // contact — a wall of damage rather than a single body check.
+        bool bAlreadyHit = false;
+        for (int32 i = 0; i < Memory->NumHitPawns; ++i)
+        {
+            if (Memory->HitPawns[i] == Victim)
+            {
+                bAlreadyHit = true;
+                break;
+            }
+        }
+        if (bAlreadyHit)
+        {
+            continue;
+        }
+
+        UAbilitySystemComponent* TargetASC =
+            UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Victim);
+        if (!TargetASC)
+        {
+            continue;
+        }
+
+        // Same construction as GothicMeleeHitboxComponent: source ASC makes the
+        // spec so the boss's AttackPower is read off a real instigator, flat
+        // damage rides Data.Damage, and the target's Defense is subtracted by
+        // the attribute set. Nothing charge-specific about the pipeline.
+        FGameplayEffectContextHandle Context = BossASC->MakeEffectContext();
+        Context.AddSourceObject(BossChar);
+
+        FGameplayEffectSpecHandle Spec = BossASC->MakeOutgoingSpec(
+            ChargeDamageEffect, 1.f, Context);
+
+        if (Spec.IsValid())
+        {
+            Spec.Data->SetSetByCallerMagnitude(
+                FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
+                ChargeDamage);
+
+            BossASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
+
+            if (Memory->NumHitPawns < FBTBossChargeMemory::MaxTrackedHits)
+            {
+                Memory->HitPawns[Memory->NumHitPawns++] = Victim;
+            }
+
+            UE_LOG(LogTemp, Log,
+                TEXT("BossCharge[%s]: ran over %s for %.0f raw"),
+                *BossChar->GetName(), *Victim->GetName(), ChargeDamage);
+        }
     }
 }

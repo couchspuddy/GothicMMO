@@ -5,9 +5,13 @@
 #include "Components/BoxComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
+#include "AbilitySystem/GothicAttributeSet.h"
 #include "Character/GothicPlayerCharacter.h"
+#include "GameFramework/WorldSettings.h"
 #include "TimerManager.h"
 #include "NavigationSystem.h"
+#include "Engine/World.h"
+#include "Engine/OverlapResult.h"
 
 AGothicRotundaPillar::AGothicRotundaPillar()
 {
@@ -106,8 +110,10 @@ void AGothicRotundaPillar::TransitionToState(EPillarState NewState)
         break;
 
     case EPillarState::Destroyed:
-        BeginCeilingCollapse();
-        OnPillarCollapse();
+        // The arena manager's bookkeeping fires now, at the moment the pillar
+        // dies — phase progression should not wait on debris. The player-facing
+        // half of the collapse (cue, slab, damage) is deferred to impact.
+        BeginCollapseWarning();
         OnPillarDestroyed.Broadcast(this);
         break;
 
@@ -116,63 +122,212 @@ void AGothicRotundaPillar::TransitionToState(EPillarState NewState)
     }
 }
 
-void AGothicRotundaPillar::BeginCeilingCollapse()
+void AGothicRotundaPillar::BeginCollapseWarning()
 {
-
+    // The pillar itself is gone the instant it breaks — that IS the first half
+    // of the tell. What is still overhead, and still harmless, is the ceiling.
     if (PillarMesh)
     {
         PillarMesh->SetVisibility(false);
         PillarMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     }
 
-    CollapseDamageVolume->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-    ApplyCollapseDamageToPlayersInZone();
+    bCollapseDamageApplied = false;
 
-    FTimerHandle CollapseTimer;
+    OnPillarCollapseWarning();
+
+    if (WarningDuration <= 0.f)
+    {
+        // Degenerate config — still go through the impact path so the drop and
+        // the damage stay welded together, just with no window to react in.
+        FinishCeilingCollapse();
+        return;
+    }
+
     GetWorldTimerManager().SetTimer(
-        CollapseTimer, this,
+        CollapseWarningTimer, this,
         &AGothicRotundaPillar::FinishCeilingCollapse,
-        CollapseDuration, false);
+        WarningDuration, false);
 }
 
 void AGothicRotundaPillar::FinishCeilingCollapse()
 {
-
-    CollapseDamageVolume->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-
-    if (BlockingVolumeActor)
-    {
-        BlockingVolumeActor->SetActorHiddenInGame(false);
-        BlockingVolumeActor->SetActorEnableCollision(true);
-
-        UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
-        if (NavSys)
-        {
-            NavSys->Build();
-        }
-    }
-
+    // ── The slab lands ───────────────────────────────────────────────────
     if (CeilingMesh)
     {
+        // No ejection. A 400uu single-frame teleport of a blocking body through
+        // a standing pawn is a depenetration event: the character movement
+        // component resolves it by shoving the pawn out along the shortest
+        // axis, which from under a ceiling means sideways at speed or, worse,
+        // through the floor. The collapse is meant to cost health, not
+        // position, so the slab stops interacting with pawns entirely before
+        // it moves and never gets the chance.
+        CeilingMesh->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+
         FVector Loc = CeilingMesh->GetComponentLocation();
         Loc.Z -= 400.f;
+        // bSweep deliberately false: a swept move would re-introduce exactly the
+        // push-out this is avoiding.
         CeilingMesh->SetWorldLocation(Loc);
+    }
+
+    // ── and the damage lands with it, same frame ─────────────────────────
+    ApplyCollapseDamageAtImpact();
+
+    OnPillarCollapse();
+
+    // Debris settles, THEN the nav blocker goes live.
+    BlockingVolumeAttempts = 0;
+    GetWorldTimerManager().SetTimer(
+        BlockingVolumeTimer, this,
+        &AGothicRotundaPillar::EnableBlockingVolume,
+        FMath::Max(0.01f, CollapseDuration), false);
+}
+
+void AGothicRotundaPillar::EnableBlockingVolume()
+{
+    if (!BlockingVolumeActor)
+    {
+        return;
+    }
+
+    // The CDO has this as None, but placed pillars can point it at a real
+    // blocking volume. Switching collision on underneath a pawn does the same
+    // violence the slab would have: the pawn is inside a solid now, and the
+    // movement component's next depenetration pass fires it out. So we ask
+    // first, and wait if the answer is "someone is standing there."
+    FVector Origin, Extent;
+    BlockingVolumeActor->GetActorBounds(false, Origin, Extent);
+
+    TArray<FOverlapResult> Overlaps;
+    FCollisionObjectQueryParams ObjParams;
+    ObjParams.AddObjectTypesToQuery(ECC_Pawn);
+    FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(PillarBlockingVolumeClearance), false, this);
+    QueryParams.AddIgnoredActor(BlockingVolumeActor);
+
+    const bool bOccupied = GetWorld() && GetWorld()->OverlapMultiByObjectType(
+        Overlaps, Origin, FQuat::Identity, ObjParams,
+        FCollisionShape::MakeBox(Extent), QueryParams) && Overlaps.Num() > 0;
+
+    if (bOccupied && BlockingVolumeAttempts < 20)
+    {
+        ++BlockingVolumeAttempts;
+        UE_LOG(LogTemp, Verbose,
+            TEXT("RotundaPillar[%s]: blocking volume still occupied by a pawn — deferring activation (attempt %d)"),
+            *GetName(), BlockingVolumeAttempts);
+
+        GetWorldTimerManager().SetTimer(
+            BlockingVolumeTimer, this,
+            &AGothicRotundaPillar::EnableBlockingVolume,
+            0.5f, false);
+        return;
+    }
+
+    if (bOccupied)
+    {
+        // Four seconds of a pawn refusing to leave. Enabling anyway would risk
+        // ejecting it, so the nav blocker stays off; a walkable zone is a much
+        // cheaper failure than a player launched out of the arena.
+        UE_LOG(LogTemp, Warning,
+            TEXT("RotundaPillar[%s]: pawn never cleared the blocking volume — leaving it disabled rather than ejecting them"),
+            *GetName());
+        return;
+    }
+
+    BlockingVolumeActor->SetActorHiddenInGame(false);
+    BlockingVolumeActor->SetActorEnableCollision(true);
+
+    if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+    {
+        NavSys->Build();
     }
 }
 
-void AGothicRotundaPillar::ApplyCollapseDamageToPlayersInZone()
+void AGothicRotundaPillar::ApplyCollapseDamageAtImpact()
 {
-    if (!CollapseDamageEffect || !HasAuthority()) return;
-
-    TArray<AActor*> OverlappingActors;
-    CollapseDamageVolume->GetOverlappingActors(
-        OverlappingActors, AGothicPlayerCharacter::StaticClass());
-
-    for (AActor* Actor : OverlappingActors)
+    if (!HasAuthority() || bCollapseDamageApplied)
     {
+        return;
+    }
+    bCollapseDamageApplied = true;
+
+    if (!CollapseDamageEffect)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("RotundaPillar[%s]: ceiling landed but CollapseDamageEffect is unassigned — collapse is cosmetic"),
+            *GetName());
+        return;
+    }
+
+    UWorld* World = GetWorld();
+    if (!World || !CollapseDamageVolume)
+    {
+        return;
+    }
+
+    // Explicit overlap query rather than enabling the volume's collision and
+    // reading GetOverlappingActors on the same frame. That pattern is a race:
+    // overlaps are populated by the physics scene's next update, so a volume
+    // switched on this frame reports nothing, and whether the collapse hurt
+    // anyone depended on how recently the player had moved. A direct
+    // OverlapMultiByObjectType against the volume's world box answers now.
+    const FVector BoxOrigin = CollapseDamageVolume->GetComponentLocation();
+    const FVector BoxExtent = CollapseDamageVolume->GetScaledBoxExtent();
+    const FQuat   BoxRot    = CollapseDamageVolume->GetComponentQuat();
+
+    TArray<FOverlapResult> Overlaps;
+    FCollisionObjectQueryParams ObjParams;
+    ObjParams.AddObjectTypesToQuery(ECC_Pawn);
+    FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(PillarCollapseDamage), false, this);
+
+    World->OverlapMultiByObjectType(
+        Overlaps, BoxOrigin, BoxRot, ObjParams,
+        FCollisionShape::MakeBox(BoxExtent), QueryParams);
+
+    const float KillZ = World->GetWorldSettings() ? World->GetWorldSettings()->KillZ : -HALF_WORLD_MAX;
+
+    TSet<AActor*> AlreadyDamaged;
+    for (const FOverlapResult& Overlap : Overlaps)
+    {
+        AActor* Victim = Overlap.GetActor();
+        if (!Victim || !Victim->IsA(AGothicPlayerCharacter::StaticClass()))
+        {
+            continue;
+        }
+
+        // One pawn can present several overlapping shapes (capsule, mesh,
+        // hitboxes). Once per victim per collapse, whatever they bring.
+        bool bAlreadyInSet = false;
+        AlreadyDamaged.Add(Victim, &bAlreadyInSet);
+        if (bAlreadyInSet)
+        {
+            continue;
+        }
+
         UAbilitySystemComponent* TargetASC =
-            UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Actor);
-        if (!TargetASC) continue;
+            UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Victim);
+        if (!TargetASC)
+        {
+            continue;
+        }
+
+        // Percentage of the VICTIM'S pool, not a flat number.
+        //
+        // The damage pipeline is FinalDamage = max(1, Raw + SourceAttackPower -
+        // TargetDefense). The pillar has no ASC, so SourceAttackPower is 0 (see
+        // GothicAttributeSet::PostGameplayEffectExecute — the bonus is read off
+        // the instigator precisely so ASC-less sources don't inherit the
+        // victim's own AttackPower). That leaves Defense as the only distortion,
+        // and adding it back here is what makes the post-pipeline result land on
+        // the fraction exactly instead of the fraction minus armour.
+        const float TargetMaxHealth =
+            TargetASC->GetNumericAttribute(UGothicAttributeSet::GetMaxHealthAttribute());
+        const float TargetDefense =
+            TargetASC->GetNumericAttribute(UGothicAttributeSet::GetDefenseAttribute());
+
+        const float Magnitude = TargetMaxHealth > 0.f
+            ? (TargetMaxHealth * CollapseDamageFraction) + TargetDefense
+            : CollapseDamage;
 
         FGameplayEffectContextHandle Context = TargetASC->MakeEffectContext();
         Context.AddSourceObject(this);
@@ -184,9 +339,15 @@ void AGothicRotundaPillar::ApplyCollapseDamageToPlayersInZone()
         {
             Spec.Data->SetSetByCallerMagnitude(
                 FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
-                CollapseDamage);
+                Magnitude);
             TargetASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
 
+            UE_LOG(LogTemp, Log,
+                TEXT("RotundaPillar[%s]: ceiling hit %s for %.1f%% of %.1f MaxHealth "
+                     "(sent %.1f raw, Defense %.1f) | victim Z %.0f vs KillZ %.0f"),
+                *GetName(), *Victim->GetName(), CollapseDamageFraction * 100.f,
+                TargetMaxHealth, Magnitude, TargetDefense,
+                Victim->GetActorLocation().Z, KillZ);
         }
     }
 }
