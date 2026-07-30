@@ -37,23 +37,45 @@ void UGothicAbilitySet::GiveToAbilitySystem(
             continue;
         }
 
-        // ---- ADD: idempotency guard ----
+        // ---- idempotency guard ----
         // If this ASC already has a spec of this ability class, don't grant a
         // second one. The player init path runs twice (PossessedBy +
         // OnRep_PlayerState), so without this a single input activates two
-        // identical specs.
+        // identical specs — and the player's ASC lives on the PlayerState, so it
+        // arrives at every respawn still holding everything from last life.
+        FGameplayAbilitySpecHandle ExistingHandle;
         bool bAlreadyGranted = false;
+        bool bExistingIsActive = false;
+
         for (const FGameplayAbilitySpec& Existing : ASC->GetActivatableAbilities())
         {
             if (Existing.Ability && Existing.Ability->GetClass() == Entry.AbilityClass)
             {
                 bAlreadyGranted = true;
+                ExistingHandle = Existing.Handle;
+                bExistingIsActive = Existing.IsActive();
                 break;
             }
         }
 
         if (bAlreadyGranted)
         {
+            // Re-point the slot map at the surviving spec. The handle is still
+            // good, but the map is cheap to rewrite and going stale here would
+            // cost the HUD its cooldown readout.
+            ASC->RegisterAbilitySlot(Entry.AbilitySlot, ExistingHandle);
+
+            // Passives are the case a bare `continue` got wrong. OnDeath calls
+            // CancelAllAbilities, which ends the passive INSTANCE while leaving
+            // the spec on the PlayerState's ASC — so on the next life the grant
+            // is skipped as already-present and the passive simply never comes
+            // back. The player would permanently lose The Loved and The Lost and
+            // Not At All to their first death. Re-activate rather than skip.
+            if (Entry.bActivateOnGranted && !bExistingIsActive)
+            {
+                ASC->TryActivateAbility(ExistingHandle);
+            }
+
             continue;
         }
         // ---- END guard ----
