@@ -23,6 +23,30 @@ void AGothicGameMode::PostLogin(APlayerController* NewPlayer)
 {
     Super::PostLogin(NewPlayer);
 
+    // Seed the checkpoint at the level entrance.
+    //
+    // CheckpointLocation stayed zero until the first Selah payout wrote it, so
+    // every death before the first encounter cleared fell through the IsZero()
+    // guards in the respawn readers and put the player at a RANDOM PlayerStart.
+    // The checkpoint is no longer allowed to be "unset": from the moment someone
+    // logs in, dying returns them to where they came in.
+    //
+    // Read after Super, and off the pawn rather than FindPlayerStart: PostLogin
+    // has already run RestartPlayer by this point, so the pawn is standing on the
+    // start that was actually chosen — and our FindPlayerStart override picks
+    // RANDOMLY, so asking it a second time could name a different one.
+    //
+    // The IsZero() check stops a mid-session rejoin stomping real progress.
+    if (AGothicGameState* GS = GetGameState<AGothicGameState>())
+    {
+        if (GS->CheckpointLocation.IsZero())
+        {
+            if (const APawn* NewPawn = NewPlayer ? NewPlayer->GetPawn() : nullptr)
+            {
+                GS->SetCheckpointFromLocation(NewPawn->GetActorLocation());
+            }
+        }
+    }
 }
 
 void AGothicGameMode::Logout(AController* Exiting)

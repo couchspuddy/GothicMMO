@@ -507,7 +507,10 @@ void AGothicEncounterVolume::FinalizeCollection()
             FMath::Max(0.1f, ReturnDelaySeconds), false);
     }
 
-    GS->CheckpointLocation = GetActorLocation();
+    // The volume's own location is a trigger box CENTRE, not a floor — EV4's sits
+    // 340 uu above the ground and the boss volume's 740. Let the game state
+    // project it down, or "respawn at the checkpoint" means falling out of the sky.
+    GS->SetCheckpointFromLocation(GetActorLocation(), this);
 
     // SelahNames is deliberately NOT cleared here. The moment that just started
     // cycles those names over several seconds, and wiping the replicated array in

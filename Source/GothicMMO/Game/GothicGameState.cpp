@@ -19,6 +19,51 @@ void AGothicGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(AGothicGameState, SelahCollectDuration);
 }
 
+void AGothicGameState::SetCheckpointFromLocation(const FVector& WorldLocation, AActor* IgnoreActor)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// Start a little ABOVE the point given, so a location already sitting a
+	// fraction under the floor still traces down onto it instead of starting
+	// inside the geometry and missing everything.
+	const FVector TraceStart = WorldLocation + FVector(0.f, 0.f, 200.f);
+	const FVector TraceEnd   = WorldLocation - FVector(0.f, 0.f, 10000.f);
+
+	FCollisionQueryParams Params(TEXT("GothicCheckpointFloor"), false);
+	Params.AddIgnoredActor(this);
+	if (IgnoreActor)
+	{
+		Params.AddIgnoredActor(IgnoreActor);
+	}
+
+	FHitResult Hit;
+	if (World->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_Visibility, Params))
+	{
+		CheckpointLocation = Hit.ImpactPoint;
+		return;
+	}
+
+	// Nothing underneath. Store the raw point rather than nothing at all — a
+	// checkpoint somewhere beats a checkpoint nowhere — but say so loudly. A
+	// checkpoint recorded in mid-air is the exact failure this function exists to
+	// prevent, and it must never pass silently.
+	UE_LOG(LogTemp, Warning,
+		TEXT("GothicGameState: checkpoint floor trace found nothing under %s — storing the raw "
+		     "location. Respawning here will drop the player from whatever height it sits at."),
+		*WorldLocation.ToCompactString());
+
+	CheckpointLocation = WorldLocation;
+}
+
 void AGothicGameState::SetSelahCollectPhase(uint8 NewPhase, float Duration)
 {
 	if (!HasAuthority())

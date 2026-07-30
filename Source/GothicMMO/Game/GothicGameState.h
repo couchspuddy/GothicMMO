@@ -26,6 +26,23 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gothic|Checkpoint")
 	FVector CheckpointLocation = FVector::ZeroVector;
 
+	/**
+	 * Server-side. Records a checkpoint at FLOOR level under WorldLocation.
+	 *
+	 * The floor projection is the whole point. Encounter volumes recorded their
+	 * own GetActorLocation(), which is a trigger box's CENTRE — EV4's sits 340 uu
+	 * above its floor and the boss volume's 740 — so "respawn at the checkpoint"
+	 * dropped the player out of the sky. IgnoreActor keeps the trace off the
+	 * volume doing the recording.
+	 *
+	 * Stores the floor and deliberately NOT a lift: every reader
+	 * (AGothicGameMode::RespawnPlayer, AGothicPlayerCharacter::TriggerFallRespawn)
+	 * already raises the capsule clear of it, and lifting at both ends drops the
+	 * player twice as far as either intended.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Gothic|Checkpoint")
+	void SetCheckpointFromLocation(const FVector& WorldLocation, AActor* IgnoreActor = nullptr);
+
 	/** Fired on every client when a shared prompt becomes available. Blueprint hooks vignette/audio/UI here. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Selah")
 	void OnEncounterPromptActivated(AGothicEnemyBase* PromptCorpse);
