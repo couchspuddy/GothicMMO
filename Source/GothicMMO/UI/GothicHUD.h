@@ -163,7 +163,7 @@ public:
 
     /**
      * Who currently owns the prompt, or null if the slot is free. Callers that
-     * re-assert a prompt every tick (the Selah "Meditate" prompt) must check this
+     * re-assert a prompt every tick (the Selah "Collect Selah" prompt) must check this
      * and yield, otherwise they starve every proximity interactable in range.
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|HUD|Interact")
