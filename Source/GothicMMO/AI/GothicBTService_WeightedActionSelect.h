@@ -78,7 +78,14 @@ struct FGothicWeightedActionEntry
     UPROPERTY(EditAnywhere, Category = "Action")
     float RecklessnessWeightBonus = 0.f;
 
-    /** Optional range gate. -1 on either bound means no limit on that side. */
+    /**
+     * Optional range gate, in HORIZONTAL (XY) cm from pawn to target.
+     * -1 on either bound means no limit on that side.
+     *
+     * Horizontal so that a creature's capsule half-height can never move its
+     * range bands: actor locations are capsule centres, so pawns in contact on
+     * one floor still read a non-zero 3D separation.
+     */
     UPROPERTY(EditAnywhere, Category = "Action")
     float MinRange = -1.f;
 

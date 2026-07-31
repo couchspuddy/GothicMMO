@@ -154,7 +154,18 @@ bool AGothicEnemyAIController::IsTargetInAttackRange() const
         return false;
     }
 
-    const float DistanceToTarget = FVector::Dist(OwnerPawn->GetActorLocation(), Target->GetActorLocation());
+    // HORIZONTAL distance, deliberately. See the MeleeAttackRange comment in the
+    // header: an actor's location sits at the centre of its capsule, so the 3D
+    // separation between two pawns standing on the same floor is never zero — it
+    // floors at the difference of their capsule half-heights. The Bestial Lucid's
+    // capsule fix (88 -> 253) therefore silently subtracted 165uu of reach from
+    // every range check that measured in 3D: at 150uu of genuine melee contact
+    // the 3D distance read 327uu, past a 200uu MeleeAttackRange, and this
+    // function returned false in 100% of sampled combat ticks.
+    //
+    // Creature capsule heights must never change combat reach. Floors are
+    // separated by navigation and line of sight, not by this number.
+    const float DistanceToTarget = FVector::Dist2D(OwnerPawn->GetActorLocation(), Target->GetActorLocation());
     return DistanceToTarget <= MeleeAttackRange;
 }
 

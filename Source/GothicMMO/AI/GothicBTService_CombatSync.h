@@ -14,11 +14,39 @@
 //     now" — cooldown, cost, and blocked tags all honored, because the check
 //     IS CanActivateAbility. The GE stays the single source of truth; the BB
 //     bool is a projection of it, refreshed on a cadence.
-//   - DistanceToTarget (Float), for literal-comparison decorators.
 //   - bInAttackRange (Bool), sourced from the controller's own
 //     IsTargetInAttackRange() so MeleeAttackRange stays tuned in ONE place.
 //   - TargetLocation (Vector), refreshed every service tick instead of every
 //     2s leash tick — un-stales any Move To bound to the location key.
+//
+// There used to be a third: DistanceToTargetKey, a Float key holding live
+// distance to the target "for literal-comparison decorators." It is gone, and
+// this is why.
+//
+// BB_BestialLucid has no distance key — it was never authored one — so the
+// dropdown on BT_BestialLucid's CombatSync node was pointed at the only float
+// that sounded plausible: AttackRange. AttackRange is not an output. It is an
+// INPUT, written once at AGothicEnemyAIController::OnPossess from the
+// controller's MeleeAttackRange, and read by the tree as the boss's configured
+// reach. So every 0.2s this service overwrote the boss's tuning value with how
+// far away the player happened to be.
+//
+// The signature in the PIE dump is unmistakable once you know to look for it —
+// the key holds its authored 450 out of combat, then tracks live distance the
+// moment a target exists: 472.491 against a computed 473.5, 474.591 against
+// 474.6, 1232.472 while chasing at ~1218. Every range comparison downstream was
+// comparing the distance to itself, bInAttackRange was false in 100% of
+// samples, and AttackCycleCount never left 0.
+//
+// A configurable "write this number into whatever key you like" is a footgun in
+// a Blackboard that mixes config inputs and computed outputs in one namespace.
+// Nothing consumed the export — audited before removal: no decorator in
+// BT_BestialLucid, BT_EnemyCombat or BT_FeralRetained compares a distance key,
+// and the two nodes that genuinely need distance (WeightedActionSelect's range
+// bands, BTService_ApproachSpeed's deceleration) each compute it themselves,
+// from the pawn and the target, horizontally. So the export is simply gone, and
+// ValidateConfiguration now refuses to let the remaining selectors point at a
+// controller-owned config key.
 //
 // With these as Blackboard keys, decorators get Observer Aborts: the moment
 // bChargeReady flips true mid-walk, the tree aborts the walk and charges.
@@ -116,14 +144,14 @@ protected:
     UPROPERTY(EditAnywhere, Category = "Sync")
     FBlackboardKeySelector TargetActorKey;
 
-    /** Optional Float key — straight-line distance to the target (cm). */
-    UPROPERTY(EditAnywhere, Category = "Sync")
-    FBlackboardKeySelector DistanceToTargetKey;
+    // DistanceToTargetKey — REMOVED, deliberately. See the class comment above.
 
     /**
      * Optional Bool key — the controller's IsTargetInAttackRange() verdict.
-     * Prefer this over comparing DistanceToTarget against a literal in a
-     * decorator: the range number stays on the controller where it's tuned.
+     * The one supported way for the tree to ask "close enough to hit?": the
+     * range number stays on the controller where it is tuned, and it is measured
+     * horizontally there. Do NOT reintroduce a raw-distance float for decorators
+     * to compare against literals.
      */
     UPROPERTY(EditAnywhere, Category = "Sync")
     FBlackboardKeySelector InAttackRangeKey;

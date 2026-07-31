@@ -56,7 +56,11 @@ void UAnimNotify_GroundPoundImpact::Notify(
     {
         if (!Player) continue;
 
-        const float Distance = FVector::Dist(ImpactLocation, Player->GetActorLocation());
+        // Horizontal. The ground pound is a ring travelling out across the
+        // floor; ImpactLocation is the boss's actor origin, which sits at her
+        // capsule centre and rose 165uu when that capsule was fixed. In 3D
+        // every one of these radii quietly shrank by the same amount.
+        const float Distance = FVector::Dist2D(ImpactLocation, Player->GetActorLocation());
         if (Distance > ImpactRadius) continue;
 
         UAbilitySystemComponent* PlayerASC =
