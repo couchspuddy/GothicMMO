@@ -615,13 +615,13 @@ void AGothicPlayerCharacter::UpdateSelahInteractPrompt()
         //
         // The HUD keeps ONE prompt with one owner, and this runs every tick over a
         // radius the size of the whole arena. Asserting unconditionally meant
-        // "Meditate" overwrote the Contract Board's prompt every single frame, and
+        // "Collect Selah" overwrote the Contract Board's prompt every single frame, and
         // the board's own ClearInteractPrompt was rejected because it wasn't the
         // owner — every interactable inside a completed encounter went dead.
         AActor* CurrentOwner = HUD->GetInteractPromptOwner();
         if (!CurrentOwner || CurrentOwner == Enc)
         {
-            HUD->SetInteractPrompt(Enc, FText::FromString(TEXT("Meditate")));
+            HUD->SetInteractPrompt(Enc, FText::FromString(TEXT("Collect Selah")));
             ShownSelahPromptCorpse = Enc;
         }
     }
