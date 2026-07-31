@@ -197,6 +197,17 @@ public:
               meta = (ClampMin = "0.1", ClampMax = "1.0"))
     float ADSMoveSpeedMultiplier = 0.4f;
 
+    /**
+     * Death by damage. Everything the base class does (State.Dead, cancel
+     * abilities, drop collision, stop moving) plus the half that was missing:
+     * telling the game mode to respawn us.
+     *
+     * Overridden here rather than added to AGothicCharacterBase so enemies —
+     * which share that base and route through it on every kill — cannot possibly
+     * be affected.
+     */
+    virtual void OnDeath_Implementation(AActor* Killer) override;
+
     /** Safety net for falling under the map / below KillZ — routes into the
      *  normal checkpoint respawn instead of the default (which just destroys the
      *  pawn and strands the controller). */

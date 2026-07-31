@@ -205,10 +205,59 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     AbilitySystemComponent = PS->GetGothicASC();
     AttributeSet           = PS->GetGothicAttributeSet();
 
+    // A player's ASC and AttributeSet live on the PlayerState, so they SURVIVE
+    // the pawn — everything OnDeath wrote into them is still there when the
+    // replacement pawn possesses. State.Dead above all: it sits in the
+    // ActivationBlockedTags of every ability, so a respawned player who kept it
+    // would come back unable to fire, melee, or use a single power. Nothing
+    // removed it, because nothing ever respawned anybody.
+    //
+    // Cleared here rather than in the game mode because this is the one path
+    // every fresh player pawn takes — respawn, checkpoint restart, first spawn —
+    // and because it has to happen BEFORE the ability sets are granted below:
+    // the passives re-activate through TryActivateAbility, which the tag blocks.
+    //
+    // SetLooseGameplayTagCount rather than RemoveLooseGameplayTag: loose tags are
+    // ref-counted, and a death reported twice leaves a count of two that a single
+    // remove would not pay off.
+    if (HasAuthority() && AbilitySystemComponent)
+    {
+        AbilitySystemComponent->SetLooseGameplayTagCount(
+            FGameplayTag::RequestGameplayTag(FName("State.Dead")), 0);
+    }
 
     InitializeGAS();
 
-    // Grant ability sets — data driven, replaces old StartupAbilities array
+    if (HasAuthority() && AttributeSet)
+    {
+        // Come back alive. GE_InitStats_Player overrides Health with a sentinel
+        // that PreAttributeBaseChange clamps to MaxHealth, so this is usually
+        // already true by the time we get here — but a Blueprint shipping without
+        // a DefaultAttributeEffect would respawn the player on the 0 health they
+        // died at, and they would then die to the next point of damage, forever.
+        // Guarded on MaxHealth so it can never write a zero of its own.
+        if (AttributeSet->GetMaxHealth() > 0.f)
+        {
+            AttributeSet->SetHealth(AttributeSet->GetMaxHealth());
+        }
+
+        // Restore the Reckoning progress banked in OnDeath. -1 means nothing is
+        // pending, which is every spawn that did not follow a death.
+        const float CachedSuperMeter = PS->ConsumeCachedSuperMeterOnDeath();
+        if (CachedSuperMeter >= 0.f)
+        {
+            AttributeSet->SetSuperMeter(CachedSuperMeter);
+        }
+    }
+
+    // Grant ability sets — data driven, replaces old StartupAbilities array.
+    //
+    // bAbilitiesGranted lives on the PAWN, and the pawn is precisely what a
+    // respawn replaces — so this block runs again on every new life against an
+    // ASC that is already carrying last life's grants. That is deliberate, not a
+    // leak: UGothicAbilitySet::GiveToAbilitySystem asks the ASC for an existing
+    // spec before granting anything, so nothing duplicates, and re-running it is
+    // what brings back the passives that OnDeath's CancelAllAbilities shut down.
     if (HasAuthority() && !bAbilitiesGranted)
     {
         for (const TObjectPtr<UGothicAbilitySet>& AbilitySet : StartupAbilitySets)
@@ -1101,6 +1150,56 @@ bool AGothicPlayerCharacter::IsNotAtAllGranted() const
         }
     }
     return false;
+}
+
+void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
+{
+    // Re-entry guard ahead of Super, which early-outs on State.Dead but returns
+    // void, so the rest of this function would still run on a second call. Two
+    // damage instances landing in the same frame is enough to trigger it.
+    // AGothicEnemyBase guards its own override the same way and for the same
+    // reason.
+    if (AbilitySystemComponent && AbilitySystemComponent->HasMatchingGameplayTag(
+            FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
+    {
+        return;
+    }
+
+    // Tag as dead, cancel abilities, drop collision, stop moving.
+    Super::OnDeath_Implementation(Killer);
+
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    // Reckoning progress is the one thing death does not take. Bank it now,
+    // because the next pawn's GAS init re-applies GE_InitStats_Player over the
+    // top of the attribute set — which survives on the PlayerState and would
+    // otherwise come back overwritten.
+    if (AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>())
+    {
+        if (AttributeSet)
+        {
+            PS->CacheSuperMeterOnDeath(AttributeSet->GetSuperMeter());
+        }
+    }
+
+    // This is the line the whole death path was missing. Everything above leaves
+    // the player tagged dead, uncollidable and unable to move — and then the base
+    // class returned, with nothing anywhere calling the game mode. That is the
+    // soft-lock: a dead player who is never respawned and can never act.
+    //
+    // Player-controlled only. An AI-possessed player pawn (a test dummy, a future
+    // companion) has no respawn to ask for, and the game mode's path assumes a
+    // PlayerStart and a checkpoint that belong to a person.
+    if (Cast<APlayerController>(GetController()))
+    {
+        if (AGothicGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AGothicGameMode>() : nullptr)
+        {
+            GM->RequestRespawn(GetController());
+        }
+    }
 }
 
 void AGothicPlayerCharacter::TriggerFallRespawn()
