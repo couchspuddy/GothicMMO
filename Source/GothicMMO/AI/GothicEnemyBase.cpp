@@ -336,6 +336,15 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
         HealthBarWidget->SetVisibility(false);
     }
 
+    // Vital-point cosmetic teardown — shimmer, mesh overlay, and shift timer.
+    // The component documented this call from a PlayDeathCosmetics path that
+    // was never built, so nothing ever made it and corpses kept glowing for
+    // the full CorpseLifetime.
+    if (VitalPointComponent)
+    {
+        VitalPointComponent->HandleOwnerDeath();
+    }
+
     if (GetController())
     {
         GetController()->StopMovement();

@@ -90,11 +90,15 @@ public:
     void NotifyDamageTaken(float DamageAmount);
 
     /**
-     * Cosmetic teardown on death. Destroys the shimmer and kills the shift
-     * timer. Call from PlayDeathCosmetics — that path runs on EVERY machine
-     * (server via OnDeath, clients via MulticastOnDeath), which is exactly
-     * the set of machines that own a shimmer instance. Without this, corpses
-     * glow for the full CorpseLifetime.
+     * Cosmetic teardown on death. Destroys the shimmer, clears the mesh
+     * overlay, and kills the shift timer. Without this, corpses glow for the
+     * full CorpseLifetime.
+     *
+     * Called from AGothicEnemyBase::OnDeath, which is server-side — so this
+     * covers standalone and the listen host. Remote clients own their own
+     * shimmer/overlay instances (DMI parameters don't replicate) and still
+     * need a multicast cosmetics path to tear theirs down; that path does
+     * not exist yet.
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|VitalPoint")
     void HandleOwnerDeath();
@@ -190,7 +194,7 @@ public:
      * The shimmer visual should match this radius so the feedback is honest.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|VitalPoint")
-    float HitDetectionRadius = 30.f;
+    float HitDetectionRadius = 15.f;
 
     /** Editor only — draws the actual hit volume so it can be compared against the shimmer. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gothic|VitalPoint")

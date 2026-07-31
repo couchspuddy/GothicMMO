@@ -416,6 +416,10 @@ void UGothicVitalPointComponent::HandleOwnerDeath()
     {
         GetWorld()->GetTimerManager().ClearTimer(ShiftTimerHandle);
     }
+
+    // Stop ticking, or the per-frame UpdateVitalMaterialPosition call puts the
+    // overlay right back next frame and the off-world write above is undone.
+    SetComponentTickEnabled(false);
 }
 
 // ── Material overlay ─────────────────────────────────────────────────────────
