@@ -98,7 +98,14 @@ void UGA_Fire::PlayFireMontage(AGothicPlayerCharacter* Char) const
     // A non-zero length means the montage IS playing and anything still wrong is
     // downstream in the AnimGraph — the slot not reaching the output pose, or a
     // layered blend overwriting it. Zero means it never started at all.
-    UE_LOG(LogTemp, Warning,
+    //
+    // Verbose, not Warning. This fires on EVERY shot, and at the Oversurge
+    // Repeater's fire rate that is a line of "Warning" per few frames — enough
+    // to bury the genuine warnings a boss encounter produces and make an
+    // otherwise clean run look alarming. Nothing here is wrong when it prints;
+    // it is a measurement. Turn it on with `Log LogTemp Verbose` when the gun's
+    // animation is the thing under investigation.
+    UE_LOG(LogTemp, Verbose,
         TEXT("GA_Fire: Montage_Play('%s') returned %.3f  [slot must be sampled by %s]"),
         *GetNameSafe(FireMontage), PlayedLength, *GetNameSafe(Anim->GetClass()));
 }
@@ -126,7 +133,10 @@ void UGA_Fire::ActivateAbility(
         return;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("GA_Fire Activate: Auth=%d Local=%d | CooldownGE=%s | DamageGE=%s"),
+    // Also Verbose — same reasoning as the Montage_Play line above. Successful
+    // activation is the expected case, once per shot, and logging it at Warning
+    // made a normal magazine indistinguishable from a fault.
+    UE_LOG(LogTemp, Verbose, TEXT("GA_Fire Activate: Auth=%d Local=%d | CooldownGE=%s | DamageGE=%s"),
     HasAuthority(&ActivationInfo) ? 1 : 0,
     ActorInfo->IsLocallyControlled() ? 1 : 0,
     *GetNameSafe(GetCooldownGameplayEffect()),

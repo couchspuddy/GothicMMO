@@ -49,7 +49,13 @@ void UBTService_ApproachSpeed::TickNode(
         return;
     }
 
-    const float DistToTarget = FVector::Dist(
+    // HORIZONTAL, matching every other range in the engagement model
+    // (IsTargetInAttackRange, WeightedActionSelect's bands). ApproachDecelDistance
+    // and PreferredEngageDistance are authored as floor distances; measuring them
+    // in 3D makes a tall creature think it is further out than it is and hold
+    // full speed into contact, then never reach the "at engage distance" branch
+    // at all — the boss's capsule half-height alone contributed 165uu here.
+    const float DistToTarget = FVector::Dist2D(
         OwnerChar->GetActorLocation(),
         Target->GetActorLocation());
 

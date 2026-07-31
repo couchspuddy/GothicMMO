@@ -3,6 +3,7 @@
 #include "AI/GothicRotundaPillar.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
+#include "Materials/MaterialInterface.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
@@ -183,7 +184,33 @@ void AGothicRotundaPillar::BeginCollapseWarning()
     // The stressed, glowing pillar IS the tell, and it has to be on screen for
     // the whole of WarningDuration. It goes away at impact, in
     // FinishCeilingCollapse, together with the slab and the damage.
+    //
+    // The swap itself lives in BP_RotundaPillar's OnPillarCollapseWarning, which
+    // makes it invisible to a headless verification pass — the last PIE run could
+    // confirm the timing of the warning and the damage but not that the ember-red
+    // tell was ever applied. So read slot 0 back across the event and say what
+    // actually changed. Cheap, once per collapse, and it turns "the telegraph
+    // looked fine to me" into something the log can settle.
+    UMaterialInterface* MaterialBefore = PillarMesh ? PillarMesh->GetMaterial(0) : nullptr;
+
     OnPillarCollapseWarning();
+
+    UMaterialInterface* MaterialAfter = PillarMesh ? PillarMesh->GetMaterial(0) : nullptr;
+
+    if (MaterialBefore != MaterialAfter)
+    {
+        UE_LOG(LogTemp, Verbose,
+            TEXT("RotundaPillar[%s]: collapse warning — mesh material 0 swapped %s -> %s, visible for %.2fs"),
+            *GetName(), *GetNameSafe(MaterialBefore), *GetNameSafe(MaterialAfter), WarningDuration);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Verbose,
+            TEXT("RotundaPillar[%s]: collapse warning — mesh material 0 UNCHANGED (%s). "
+                 "The %.2fs telegraph is running with no visual tell unless OnPillarCollapseWarning "
+                 "sells it some other way (VFX, decal, cue)."),
+            *GetName(), *GetNameSafe(MaterialAfter), WarningDuration);
+    }
 
     // Re-derive the damage footprint now, while the mesh is still standing and
     // its bounds are meaningful. BeginPlay already did this, but a pillar that
@@ -274,28 +301,42 @@ void AGothicRotundaPillar::EnableBlockingVolume()
         Overlaps, Origin, FQuat::Identity, ObjParams,
         FCollisionShape::MakeBox(Extent), QueryParams) && Overlaps.Num() > 0;
 
-    if (bOccupied && BlockingVolumeAttempts < 20)
+    // The retry budget, spelled out rather than left as a bare "< 20". The last
+    // PIE pass watched this tick past attempt 14 at 2Hz with no visible end to
+    // it, because nothing in the log said what the ceiling was or how close it
+    // was getting. A deferral loop should always be able to answer "and then
+    // what?" — this one gives up after BlockingVolumeMaxWaitSeconds and says so
+    // at Warning, once.
+    const int32 MaxAttempts = FMath::Max(1,
+        FMath::CeilToInt(BlockingVolumeMaxWaitSeconds / BlockingVolumeRetryInterval));
+
+    if (bOccupied && BlockingVolumeAttempts < MaxAttempts)
     {
         ++BlockingVolumeAttempts;
         UE_LOG(LogTemp, Verbose,
-            TEXT("RotundaPillar[%s]: blocking volume still occupied by a pawn — deferring activation (attempt %d)"),
-            *GetName(), BlockingVolumeAttempts);
+            TEXT("RotundaPillar[%s]: blocking volume still occupied by a pawn — deferring activation "
+                 "(attempt %d of %d, %.1fs of %.1fs elapsed)"),
+            *GetName(), BlockingVolumeAttempts, MaxAttempts,
+            BlockingVolumeAttempts * BlockingVolumeRetryInterval, BlockingVolumeMaxWaitSeconds);
 
         GetWorldTimerManager().SetTimer(
             BlockingVolumeTimer, this,
             &AGothicRotundaPillar::EnableBlockingVolume,
-            0.5f, false);
+            BlockingVolumeRetryInterval, false);
         return;
     }
 
     if (bOccupied)
     {
-        // Four seconds of a pawn refusing to leave. Enabling anyway would risk
-        // ejecting it, so the nav blocker stays off; a walkable zone is a much
-        // cheaper failure than a player launched out of the arena.
+        // The full wait, and the pawn is still standing in it. Enabling anyway
+        // would risk ejecting them, so the nav blocker stays off permanently for
+        // this pillar; a walkable zone is a much cheaper failure than a player
+        // launched out of the arena. No further timer is scheduled — this is the
+        // end of the line, not another deferral.
         UE_LOG(LogTemp, Warning,
-            TEXT("RotundaPillar[%s]: pawn never cleared the blocking volume — leaving it disabled rather than ejecting them"),
-            *GetName());
+            TEXT("RotundaPillar[%s]: pawn never cleared the blocking volume after %.1fs (%d attempts) — "
+                 "leaving it disabled rather than ejecting them. That zone stays walkable for the rest of the fight."),
+            *GetName(), BlockingVolumeMaxWaitSeconds, MaxAttempts);
         return;
     }
 

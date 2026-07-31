@@ -82,6 +82,10 @@ public:
      * This gates the attack task — NOT the approach distance.
      * The enemy holds at EngageDistance, then the attack task
      * checks this before lunging.
+     *
+     * Measured HORIZONTALLY (XY only). Capsule half-heights differ per creature
+     * and put a permanent floor under any 3D pawn-to-pawn distance; see the
+     * implementation.
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|AI")
     bool IsTargetInAttackRange() const;
@@ -117,16 +121,22 @@ protected:
     TObjectPtr<UBehaviorTree> BehaviorTreeAsset;
 
     /**
-     * Standard melee attack range (cm).
+     * Standard melee attack range (cm), measured HORIZONTALLY.
      * This is the "can I attack" gate, not the approach distance.
      * Should be SMALLER than PreferredEngageDistance — the attack's
      * lunge animation covers the gap.
+     *
+     * Horizontal because actor locations sit at capsule centres: two pawns in
+     * contact on the same floor are still |HalfHeightA - HalfHeightB| apart in
+     * 3D. Tuning this against a 3D measurement means every creature's reach
+     * silently changes whenever its capsule does.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI|Attack")
     float MeleeAttackRange = 200.f;
 
     /**
-     * Distance the enemy holds from the target before attacking (cm).
+     * Distance the enemy holds from the target before attacking (cm),
+     * measured HORIZONTALLY like every other range in the engagement model.
      * Set this per-tier in Blueprint children:
      *   Thrall: ~250   (close but not on top)
      *   Retained: ~350 (deliberate, measured)

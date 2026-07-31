@@ -262,8 +262,18 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
         return;
     }
 
+    // HORIZONTAL distance. MinRange/MaxRange on the entries are authored against
+    // the reach of an animation — the Bestial Lucid's Claw band is 120-160uu —
+    // and an actor's location is its capsule CENTRE, so a 3D measurement carries
+    // a constant |HalfHeightA - HalfHeightB| offset that has nothing to do with
+    // how far apart the two creatures are on the floor. Her capsule going 88 ->
+    // 253 put a 165uu floor under that number: at 150uu of real contact the 3D
+    // distance read 327uu, outside every band in the pool, and this service
+    // logged "nothing eligible (5 entries, all gated)" for the whole encounter.
+    //
+    // A range band must describe the world, not the rig.
     const float DistanceToTarget = Target
-        ? FVector::Dist(Pawn->GetActorLocation(), Target->GetActorLocation())
+        ? FVector::Dist2D(Pawn->GetActorLocation(), Target->GetActorLocation())
         : -1.f;
 
     // Score every entry, skip anything not ready/out of range, accumulate a

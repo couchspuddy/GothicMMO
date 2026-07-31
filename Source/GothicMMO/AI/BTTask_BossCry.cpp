@@ -72,7 +72,12 @@ EBTNodeResult::Type UBTTask_BossCry::ExecuteTask(
     {
         if (!Player) continue;
 
-        const float Distance = FVector::Dist(BossLocation, Player->GetActorLocation());
+        // Horizontal, like the cone test immediately below it — this is a
+        // shockwave across the floor, not a sphere. Measured in 3D it shrank
+        // with the boss's capsule: her actor origin sits 253uu up against the
+        // player's 88uu, so a nominal StaggerRadius lost most of a metre of
+        // effective reach purely because she got taller.
+        const float Distance = FVector::Dist2D(BossLocation, Player->GetActorLocation());
         if (Distance > StaggerRadius) continue;
 
         // Cone check — is the player within the frontal cone?

@@ -10,7 +10,6 @@
 #include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Float.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
 #include "GameFramework/Pawn.h"
@@ -33,15 +32,12 @@ UGothicBTService_CombatSync::UGothicBTService_CombatSync()
     TargetActorKey.AddObjectFilter(this,
         GET_MEMBER_NAME_CHECKED(UGothicBTService_CombatSync, TargetActorKey),
         AActor::StaticClass());
-    DistanceToTargetKey.AddFloatFilter(this,
-        GET_MEMBER_NAME_CHECKED(UGothicBTService_CombatSync, DistanceToTargetKey));
     InAttackRangeKey.AddBoolFilter(this,
         GET_MEMBER_NAME_CHECKED(UGothicBTService_CombatSync, InAttackRangeKey));
     TargetLocationKey.AddVectorFilter(this,
         GET_MEMBER_NAME_CHECKED(UGothicBTService_CombatSync, TargetLocationKey));
 
     // The optional keys are optional — "None" means "don't write it."
-    DistanceToTargetKey.AllowNoneAsValue(true);
     InAttackRangeKey.AllowNoneAsValue(true);
     TargetLocationKey.AllowNoneAsValue(true);
 }
@@ -53,7 +49,6 @@ void UGothicBTService_CombatSync::InitializeFromAsset(UBehaviorTree& Asset)
     if (UBlackboardData* BBAsset = GetBlackboardAsset())
     {
         TargetActorKey.ResolveSelectedKey(*BBAsset);
-        DistanceToTargetKey.ResolveSelectedKey(*BBAsset);
         InAttackRangeKey.ResolveSelectedKey(*BBAsset);
         TargetLocationKey.ResolveSelectedKey(*BBAsset);
 
@@ -87,6 +82,51 @@ void UGothicBTService_CombatSync::OnBecomeRelevant(UBehaviorTreeComponent& Owner
 void UGothicBTService_CombatSync::ValidateConfiguration(UBehaviorTreeComponent& OwnerComp) const
 {
     APawn* Pawn = OwnerComp.GetAIOwner() ? OwnerComp.GetAIOwner()->GetPawn() : nullptr;
+
+    // ── Nobody writes over a config input ────────────────────────────────────
+    //
+    // The keys the controller writes at OnPossess are the tree's INPUTS: the
+    // creature's tuning, pushed into the Blackboard once. A service that writes
+    // a computed value into one of them destroys the tuning silently and leaves
+    // behind a key that looks authored and behaves like a sensor — which is
+    // exactly how DistanceToTargetKey → AttackRange survived a full encounter.
+    // The export is gone; this makes sure the remaining selectors cannot be
+    // pointed at the same trap from the editor dropdown.
+    static const FName ConfigOwnedKeys[] =
+    {
+        GothicBBKeys::AttackRange,
+        GothicBBKeys::EngageDistance,
+        GothicBBKeys::PatrolOrigin,
+        GothicBBKeys::StaggerDelay,
+    };
+
+    auto WarnIfConfigKey = [Pawn](const FBlackboardKeySelector& Selector, const TCHAR* SelectorName)
+    {
+        if (Selector.IsNone())
+        {
+            return;
+        }
+
+        for (const FName& Reserved : ConfigOwnedKeys)
+        {
+            if (Selector.SelectedKeyName == Reserved)
+            {
+                UE_LOG(LogTemp, Error,
+                    TEXT("CombatSync[%s]: %s is pointed at '%s', which AGothicEnemyAIController writes as "
+                         "CONFIG at OnPossess. This service would overwrite that tuning value every tick — "
+                         "repoint it at a key the tree owns, or set it to None."),
+                    *GetNameSafe(Pawn), SelectorName, *Reserved.ToString());
+                return;
+            }
+        }
+    };
+
+    WarnIfConfigKey(InAttackRangeKey,  TEXT("InAttackRangeKey"));
+    WarnIfConfigKey(TargetLocationKey, TEXT("TargetLocationKey"));
+    for (const FGothicAbilityReadinessSync& Entry : AbilitiesToSync)
+    {
+        WarnIfConfigKey(Entry.ReadyKey, TEXT("an ability ReadyKey"));
+    }
 
     // Config validation, same philosophy as ValidateBlackboardKeys: turn silent
     // misconfiguration into a loud error. A tag that matches no granted ability
@@ -245,12 +285,6 @@ void UGothicBTService_CombatSync::TickNode(UBehaviorTreeComponent& OwnerComp,
 
     if (Target)
     {
-        if (!DistanceToTargetKey.IsNone())
-        {
-            const float Dist = FVector::Dist(Pawn->GetActorLocation(), Target->GetActorLocation());
-            BB->SetValue<UBlackboardKeyType_Float>(DistanceToTargetKey.GetSelectedKeyID(), Dist);
-        }
-
         if (!TargetLocationKey.IsNone())
         {
             BB->SetValue<UBlackboardKeyType_Vector>(

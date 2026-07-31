@@ -196,6 +196,27 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena|Visuals")
     TObjectPtr<UMaterialInterface> CrackedMaterial;
 
+    /**
+     * How often EnableBlockingVolume re-checks whether a pawn has stepped out
+     * of the blocking volume (seconds).
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena")
+    float BlockingVolumeRetryInterval = 0.5f;
+
+    /**
+     * Total time the blocking volume will wait for a pawn to clear it before
+     * giving up for good (seconds).
+     *
+     * There has to be a ceiling. Switching the volume on under a standing pawn
+     * ejects them, so waiting is right — but waiting forever is a retry loop
+     * with no failure state, and that is what it looked like in the log: 2Hz
+     * deferrals still going past attempt 14 with no stated bound. At the end of
+     * this window the volume stays disabled and a single Warning explains that
+     * the zone is now permanently walkable.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena")
+    float BlockingVolumeMaxWaitSeconds = 10.f;
+
     // -------------------------------------------------------------------------
     // Blueprint events for VFX/SFX
     // -------------------------------------------------------------------------
