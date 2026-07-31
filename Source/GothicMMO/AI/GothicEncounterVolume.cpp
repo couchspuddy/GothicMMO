@@ -311,6 +311,10 @@ TArray<AGothicEnemyBase*> AGothicEncounterVolume::SpawnWaveFromPoints(
                 {
                     NewEnemy->SetPackID(Point->PackID);
                 }
+                if (Point->bSuppressLootDrop)
+                {
+                    NewEnemy->SetSuppressLootDrop(true);
+                }
                 Spawned.Add(NewEnemy);
             }
         }

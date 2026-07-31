@@ -147,6 +147,11 @@ public:
     /** Public read access for encounter volume Selah accumulation. */
     float GetSelahAwardAmount() const { return SelahAwardAmount; }
     TSubclassOf<UGameplayEffect> GetSelahGainEffect() const { return SelahGainEffect; }
+
+    /** Spawner hook — wave-spawned enemies can't be hand-edited in the level, so
+     *  the spawn point's loot suppression is stamped here post-spawn. The flag is
+     *  only read at death, so post-BeginPlay assignment is safe. */
+    void SetSuppressLootDrop(bool bSuppress) { bSuppressLootDrop = bSuppress; }
     
     /** Multicast RPC — server broadcasts hit feedback to all clients. */
     UFUNCTION(NetMulticast, Unreliable)
