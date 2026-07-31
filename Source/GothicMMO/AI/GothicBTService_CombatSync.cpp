@@ -2,6 +2,7 @@
 
 #include "AI/GothicBTService_CombatSync.h"
 #include "AI/GothicEnemyAIController.h"
+#include "AI/GothicEnemyBase.h"
 #include "AIController.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
@@ -195,6 +196,51 @@ void UGothicBTService_CombatSync::TickNode(UBehaviorTreeComponent& OwnerComp,
     {
         Target = Cast<AActor>(
             BB->GetValue<UBlackboardKeyType_Object>(TargetActorKey.GetSelectedKeyID()));
+
+        // ── Pawn → Blackboard target recovery ────────────────────────────────
+        //
+        // AGothicEnemyBase::SetCombatTarget writes the pawn's CombatTarget and
+        // forwards to AGothicEnemyAIController::SetBlackboardTarget. That
+        // forward used to early-return whenever the Blackboard did not exist
+        // yet — and aggro routinely fires before the BT starts. The result was
+        // a boss who knew who she was fighting (pawn side) while every BT task
+        // that resolves TargetActor saw an empty key: reproduced as
+        // ComputeRepositionPoint logging "TargetActorKey resolved but returned
+        // no actor" on every single tick, for the whole encounter.
+        //
+        // The controller now caches and flushes that early call, but this is
+        // the continuous net: the two sources of truth are reconciled every
+        // service tick, so ANY path that sets the pawn's target without
+        // reaching the Blackboard self-heals within one Interval instead of
+        // failing for the rest of the fight.
+        if (!Target)
+        {
+            if (const AGothicEnemyBase* Enemy = Cast<AGothicEnemyBase>(Pawn))
+            {
+                if (AActor* PawnTarget = Enemy->GetCombatTarget())
+                {
+                    Target = PawnTarget;
+
+                    // Route through the controller rather than writing the one
+                    // key directly: bIsInCombat, bCanSeeTarget, TargetLocation,
+                    // the focus lock and the stagger roll all belong to the
+                    // same transition, and half a transition is its own bug.
+                    if (AGothicEnemyAIController* GothicAIC = Cast<AGothicEnemyAIController>(AIC))
+                    {
+                        GothicAIC->SetBlackboardTarget(PawnTarget);
+                    }
+                    else
+                    {
+                        BB->SetValue<UBlackboardKeyType_Object>(
+                            TargetActorKey.GetSelectedKeyID(), PawnTarget);
+                    }
+
+                    UE_LOG(LogTemp, Verbose,
+                        TEXT("CombatSync[%s]: TargetActor key was empty while the pawn held combat target %s — synced"),
+                        *GetNameSafe(Pawn), *PawnTarget->GetName());
+                }
+            }
+        }
     }
 
     if (Target)

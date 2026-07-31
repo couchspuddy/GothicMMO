@@ -6,6 +6,8 @@
 #include "AbilitySystem/GothicGameplayTags.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AI/GothicEnemyBase.h"
+#include "AI/AnimNotifyState_MeleeHitbox.h"
+#include "AI/GothicMeleeHitboxComponent.h"
 #include "Abilities/Tasks/AbilityTask_PlayMontageAndWait.h"
 #include "Abilities/Tasks/AbilityTask_WaitGameplayEvent.h"
 #include "Animation/AnimMontage.h"
@@ -91,6 +93,45 @@ void UGothicGameplayAbility::OnMontageCancel()
     EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 }
 
+bool UGothicGameplayAbility::IsHitboxDrivenMelee() const
+{
+    if (CachedHitboxDrivenMelee >= 0)
+    {
+        return CachedHitboxDrivenMelee != 0;
+    }
+
+    CachedHitboxDrivenMelee = 0;
+
+    if (!MontageToPlay)
+    {
+        return false;
+    }
+
+    // Enemies only. The player's abilities damage through traces they own and
+    // must never be second-guessed by this.
+    const AGothicEnemyBase* Enemy = Cast<AGothicEnemyBase>(GetAvatarActorFromActorInfo());
+    if (!Enemy || !Enemy->GetMeleeHitbox())
+    {
+        return false;
+    }
+
+    for (const FAnimNotifyEvent& Notify : MontageToPlay->Notifies)
+    {
+        if (Notify.NotifyStateClass
+            && Notify.NotifyStateClass->IsA(UAnimNotifyState_MeleeHitbox::StaticClass()))
+        {
+            CachedHitboxDrivenMelee = 1;
+
+            UE_LOG(LogTemp, Verbose,
+                TEXT("%s on %s: montage '%s' drives the melee hitbox — graph-side direct damage suppressed"),
+                *GetName(), *Enemy->GetName(), *MontageToPlay->GetName());
+            break;
+        }
+    }
+
+    return CachedHitboxDrivenMelee != 0;
+}
+
 void UGothicGameplayAbility::ApplyDamageToTarget(
     AActor* Target,
     TSubclassOf<UGameplayEffect> DamageEffect,
@@ -99,6 +140,14 @@ void UGothicGameplayAbility::ApplyDamageToTarget(
     bool bWasVital)
 {
     if (!Target || !DamageEffect)
+    {
+        return;
+    }
+
+    // The swing's hitbox is already the authority on who this attack hits and
+    // from how far. Applying here as well is the second helping of damage the
+    // Claw was serving from ~430uu away. See the header.
+    if (!bUseDirectDamageFallback || IsHitboxDrivenMelee())
     {
         return;
     }

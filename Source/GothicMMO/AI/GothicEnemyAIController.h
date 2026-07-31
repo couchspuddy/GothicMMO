@@ -168,6 +168,19 @@ protected:
     
 
 private:
+    /**
+     * The target SetBlackboardTarget was asked to write while there was no
+     * Blackboard to write it to.
+     *
+     * Aggro can fire before the BT starts — the encounter volume wakes the boss
+     * on overlap, and OnPossess/RunBehaviorTree has not necessarily happened
+     * yet. The old early-return dropped that call on the floor: the pawn-side
+     * CombatTarget stuck, the key stayed empty forever, and every task that
+     * resolves TargetActor failed for the rest of the fight. Held here and
+     * flushed the moment the Blackboard exists.
+     */
+    TWeakObjectPtr<AActor> PendingBlackboardTarget;
+
     /** Cached patrol spawn point — enemy returns here when leash breaks. */
     FVector PatrolOrigin;
 

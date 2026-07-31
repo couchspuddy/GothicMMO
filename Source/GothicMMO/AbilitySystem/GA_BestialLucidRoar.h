@@ -68,4 +68,17 @@ private:
     void OnWindupElapsed();
 
     FTimerHandle WindupTimerHandle;
+
+    /**
+     * World time the ability activated, so PerformRoarStun can report how long
+     * the telegraph actually lasted.
+     *
+     * The gap between activation and application is the whole design of this
+     * ability — it is the window the player leaves in — and it was completely
+     * unmeasurable: three separate paths reach the stun (montage hit window,
+     * windup timer, the degenerate zero-delay case), each with its own timing,
+     * and none of them said anything. "The roar feels undodgeable" was not a
+     * checkable claim.
+     */
+    double ActivationTimeSeconds = 0.0;
 };

@@ -22,6 +22,8 @@ void UGA_BestialLucidRoar::ActivateAbility(
 {
     Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
 
+    ActivationTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+
     if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
     {
         EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
@@ -102,6 +104,18 @@ void UGA_BestialLucidRoar::OnMontageHitWindow(FGameplayEventData Payload)
 void UGA_BestialLucidRoar::PerformRoarStun()
 {
     AActor* Avatar = GetAvatarActorFromActorInfo();
+    if (!Avatar)
+    {
+        return;
+    }
+
+    // How long the player actually had. Three paths reach this function with
+    // three different telegraph lengths (montage hit-window frame, WindupDelay
+    // timer, or nothing at all when both are unset), and which one ran is not
+    // otherwise visible from a log. Verbose so it costs nothing until someone
+    // is asking the question.
+    const double TelegraphSeconds =
+        GetWorld() ? GetWorld()->GetTimeSeconds() - ActivationTimeSeconds : 0.0;
 
     TArray<AActor*> IgnoreActors;
     IgnoreActors.Add(Avatar);
@@ -136,4 +150,10 @@ void UGA_BestialLucidRoar::PerformRoarStun()
         }
     }
 
+    UE_LOG(LogTemp, Verbose,
+        TEXT("Roar[%s]: stun landed %.2fs after activation (%s path, WindupDelay %.2f) — "
+             "%d of %d players in %.0fuu radius"),
+        *Avatar->GetName(), TelegraphSeconds,
+        MontageToPlay ? TEXT("montage hit-window") : TEXT("windup timer"),
+        WindupDelay, PlayersHit, Overlapping.Num(), StunRadius);
 }

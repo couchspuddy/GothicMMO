@@ -117,6 +117,57 @@ protected:
     // Centralized damage application
     // -------------------------------------------------------------------------
 
+    // -------------------------------------------------------------------------
+    // The legacy direct-damage path
+    //
+    // Melee abilities in this project have two ways to hurt somebody, and for a
+    // while several of them used both at once:
+    //
+    //   1. The anim-notify hitbox. UAnimNotifyState_MeleeHitbox opens a
+    //      UGothicMeleeHitboxComponent across the swing's active frames, and
+    //      anything overlapping it takes damage. This is the real, spatial,
+    //      dodgeable one — it has a reach, an arc, and a window.
+    //
+    //   2. ApplyDamageToTarget called straight from the ability graph. No
+    //      trace, no reach, no arc: if the ability activated, the target is
+    //      damaged, wherever they are standing.
+    //
+    // BP_GA_BestialLucid_Claw does both. PIE: the boss landed clean hits at
+    // ~430uu — far outside any claw — and a single swing paid out as a burst
+    // (225 HP in 0.66s across six applications, 22s among them appearing
+    // twice). The second 22 is the graph's copy of the first.
+    //
+    // So the fallback now switches itself off wherever the hitbox is genuinely
+    // wired: if THIS ability's montage carries the hitbox notify state AND the
+    // avatar is an enemy that actually has a hitbox component, the graph's
+    // direct application is a duplicate by construction and is dropped. The
+    // decision is made per ability instance from the assets themselves, so an
+    // ability whose montage has no notify — or has no montage at all, like
+    // BP_GA_FeralPounce — keeps its only means of dealing damage.
+    //
+    // Player abilities cannot be affected: the check requires an
+    // AGothicEnemyBase avatar, and GA_Fire / GA_Slicer / GA_HuntersStrike run
+    // on the player.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Set false to suppress ApplyDamageToTarget unconditionally, whatever the
+     * montage does. Only needed for an ability that damages from its graph and
+     * ALSO drives a hitbox by some route this class cannot see — the charge,
+     * for instance, whose sweep lives in C++ rather than in a notify.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Ability|Damage")
+    bool bUseDirectDamageFallback = true;
+
+    /**
+     * True when this ability's montage opens a melee hitbox on this avatar, so
+     * graph-side damage would double up. Resolved once per activation and
+     * cached — InstancingPolicy is InstancedPerExecution, so "once per
+     * activation" is once per instance.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Ability|Damage")
+    bool IsHitboxDrivenMelee() const;
+
     /**
      * THE way an ability damages a target. Every damage site routes through
      * here — GA_Fire, GA_Slicer, GA_HuntersStrike, and every future kit.
@@ -150,4 +201,8 @@ protected:
         float DamageValue = 1.0f,
         FVector ImpactPoint = FVector::ZeroVector,
         bool bWasVital = false);
+
+private:
+    /** Tri-state cache for IsHitboxDrivenMelee: -1 unresolved, 0 no, 1 yes. */
+    mutable int8 CachedHitboxDrivenMelee = -1;
 };
