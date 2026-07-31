@@ -761,6 +761,50 @@ private:
     FDelegateHandle SelahChangedHandle;
     FDelegateHandle SuperMeterChangedHandle;
 
+    // -------------------------------------------------------------------------
+    // Stun — making State.Stunned real for the player
+    //
+    // The boss's Roar and Cry land GE_Stun_BestialLucid on the PlayerState ASC,
+    // and until now that tag only sat in the ActivationBlockedTags of GA_Fire
+    // and GA_HuntersStrike — a "stunned" player kept running, sprinting and
+    // repositioning freely, so the stun read as broken. This mirrors
+    // AGothicEnemyBase::HandleStunTagChanged for a player-controlled pawn:
+    // movement mode is cut on the server, move INPUT is ignored on the
+    // controller, and look input is deliberately left alone — a stunned player
+    // can still watch the boss wind up, they just cannot leave.
+    //
+    // Same lifetime rules as the HUD attribute delegates above: the ASC lives
+    // on the PlayerState and outlives the pawn, InitGASFromPlayerState runs
+    // twice per pawn, so bind is remove-then-add and EndPlay unbinds.
+    // -------------------------------------------------------------------------
+
+    /** Idempotent: unbinds first, so repeat init calls cannot stack registrations. */
+    void BindStunTagListener();
+
+    /** Removes the stun listener and releases any move-input ignore it applied. */
+    void UnbindStunTagListener();
+
+    /** State.Stunned was added to or fully removed from the ASC. */
+    void HandleStunTagChanged(const FGameplayTag CallbackTag, int32 NewCount);
+
+    /** Releases the move-input ignore on whichever controller received it. */
+    void ClearStunMoveInputIgnore();
+
+    /** The ASC the stun handle belongs to — weak for the same reason as
+     *  BoundHUDAttributeASC: it can outlive or predecease this pawn. */
+    TWeakObjectPtr<UGothicAbilitySystemComponent> BoundStunTagASC;
+
+    FDelegateHandle StunTagChangedHandle;
+
+    /**
+     * The controller whose move input the stun suppressed. SetIgnoreMoveInput
+     * is ref-counted and the CONTROLLER survives a respawn — a pawn that dies
+     * stunned and never pays the decrement back would leave the next pawn
+     * permanently unable to move. Tracked so the release always goes to the
+     * controller that took the ignore, even across an unpossess.
+     */
+    TWeakObjectPtr<AController> StunMoveIgnoredController;
+
     /** See GetConsecutiveHits. Transient — a streak should not survive a respawn. */
     UPROPERTY(Transient)
     int32 ConsecutiveWeaponHits = 0;

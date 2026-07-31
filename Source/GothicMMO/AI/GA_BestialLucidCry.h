@@ -99,4 +99,12 @@ private:
 
     /** Track spawned Thralls so we can cap them. */
     TArray<TWeakObjectPtr<AActor>> SpawnedCryThralls;
+
+    /**
+     * World time at activation, for PerformCry's telegraph log — the same
+     * instrumentation the Roar carries, and for the same reason: three paths
+     * reach the stun with three different telegraph lengths, and which one ran
+     * is not otherwise visible from a log. See GA_BestialLucidRoar.h.
+     */
+    double ActivationTimeSeconds = 0.0;
 };
