@@ -49,6 +49,11 @@ void AGothicRotundaPillar::BeginPlay()
     CurrentHealth = MaxHealth;
     CurrentState = EPillarState::Healthy;
 
+    // Drop the damage volume onto the floor under the pillar. Done once here so
+    // it is correct (and debug-drawable) from the start of the level rather
+    // than only at the moment of collapse.
+    PositionCollapseDamageVolumeFromMeshBase();
+
     // Force blocking volume to start hidden and disabled
     // regardless of how it was placed in the editor
     if (BlockingVolumeActor)
@@ -56,6 +61,49 @@ void AGothicRotundaPillar::BeginPlay()
         BlockingVolumeActor->SetActorHiddenInGame(true);
         BlockingVolumeActor->SetActorEnableCollision(false);
     }
+}
+
+void AGothicRotundaPillar::PositionCollapseDamageVolumeFromMeshBase()
+{
+    if (!CollapseDamageVolume || !PillarMesh)
+    {
+        return;
+    }
+
+    // World-space bounds of the mesh as it actually sits in the level —
+    // placement Z, actor scale and mesh pivot all already folded in. Nothing
+    // here is allowed to assume where the origin is relative to the geometry;
+    // that assumption is precisely what broke.
+    const FBoxSphereBounds MeshBounds = PillarMesh->Bounds;
+
+    if (MeshBounds.BoxExtent.IsNearlyZero())
+    {
+        // No static mesh assigned. Fall back to the actor origin so the volume
+        // is at least somewhere defensible, and say so — a silent guess here is
+        // how the original bug stayed invisible for so long.
+        UE_LOG(LogTemp, Warning,
+            TEXT("RotundaPillar[%s]: PillarMesh has no bounds — collapse volume left at the actor origin (Z %.0f)"),
+            *GetName(), GetActorLocation().Z);
+        return;
+    }
+
+    const float BaseZ      = MeshBounds.Origin.Z - MeshBounds.BoxExtent.Z;
+    const float HalfHeight = FMath::Max(1.f, CollapseVolumeHeight * 0.5f);
+
+    // Scale is neutralised deliberately. The volume is attached to PillarMesh,
+    // so it inherits the root's scale — and the Rotunda pillars are scaled
+    // (3,3,20), which would silently turn a 400uu-tall box into an 8000uu one.
+    // Working in world units means the numbers on the tuning properties are the
+    // numbers in the level.
+    CollapseDamageVolume->SetWorldScale3D(FVector::OneVector);
+    CollapseDamageVolume->SetBoxExtent(
+        FVector(CollapseVolumeHalfWidth, CollapseVolumeHalfWidth, HalfHeight), false);
+    CollapseDamageVolume->SetWorldLocation(
+        FVector(MeshBounds.Origin.X, MeshBounds.Origin.Y, BaseZ + HalfHeight));
+
+    UE_LOG(LogTemp, Verbose,
+        TEXT("RotundaPillar[%s]: collapse volume spans Z %.0f-%.0f (mesh base %.0f, actor origin %.0f)"),
+        *GetName(), BaseZ, BaseZ + CollapseVolumeHeight, BaseZ, GetActorLocation().Z);
 }
 
 bool AGothicRotundaPillar::ApplyPillarDamage(float DamageAmount)
@@ -124,17 +172,23 @@ void AGothicRotundaPillar::TransitionToState(EPillarState NewState)
 
 void AGothicRotundaPillar::BeginCollapseWarning()
 {
-    // The pillar itself is gone the instant it breaks — that IS the first half
-    // of the tell. What is still overhead, and still harmless, is the ceiling.
-    if (PillarMesh)
-    {
-        PillarMesh->SetVisibility(false);
-        PillarMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-    }
-
     bCollapseDamageApplied = false;
 
+    // The mesh STAYS. It used to be hidden right here, one line before the
+    // warning event fired — so BP_RotundaPillar's OnPillarCollapseWarning
+    // dutifully swapped in the ember-red cracked material and painted it onto
+    // an invisible mesh. The telegraph existed and was literally impossible to
+    // see; the first thing the player knew about a collapse was the damage.
+    //
+    // The stressed, glowing pillar IS the tell, and it has to be on screen for
+    // the whole of WarningDuration. It goes away at impact, in
+    // FinishCeilingCollapse, together with the slab and the damage.
     OnPillarCollapseWarning();
+
+    // Re-derive the damage footprint now, while the mesh is still standing and
+    // its bounds are meaningful. BeginPlay already did this, but a pillar that
+    // was moved or rescaled at runtime would otherwise damage its old floor.
+    PositionCollapseDamageVolumeFromMeshBase();
 
     if (WarningDuration <= 0.f)
     {
@@ -152,6 +206,17 @@ void AGothicRotundaPillar::BeginCollapseWarning()
 
 void AGothicRotundaPillar::FinishCeilingCollapse()
 {
+    // ── The pillar goes ──────────────────────────────────────────────────
+    // Moved here from BeginCollapseWarning. It stood, cracked and glowing,
+    // for the whole warning window; it disappears on the same frame the slab
+    // lands, so the column giving way and the ceiling arriving read as one
+    // event instead of two unrelated ones.
+    if (PillarMesh)
+    {
+        PillarMesh->SetVisibility(false);
+        PillarMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    }
+
     // ── The slab lands ───────────────────────────────────────────────────
     if (CeilingMesh)
     {

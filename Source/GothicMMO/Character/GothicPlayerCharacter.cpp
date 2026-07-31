@@ -283,72 +283,9 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         }
     }
 
-    // HUD attribute delegates
-    if (IsLocallyControlled() && AbilitySystemComponent)
-    {
-        // Health delegate — drives the health bar fill and number.
-        AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-            UGothicAttributeSet::GetHealthAttribute()).AddLambda(
-            [this](const FOnAttributeChangeData& Data)
-            {
-                if (!IsLocallyControlled()) return;
-
-                APlayerController* PC = GetWorld()->GetFirstPlayerController();
-                if (!PC) return;
-
-                AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
-                if (GothicHUD && AttributeSet)
-                {
-                    GothicHUD->UpdateHealth(Data.NewValue, AttributeSet->GetMaxHealth());
-                }
-
-                // Taking damage is a combat action — enters/refreshes combat state
-                // so Steadfast fills even during purely defensive play.
-                if (Data.NewValue < Data.OldValue)
-                {
-                    if (UGothicCombatStateComponent* Combat = FindComponentByClass<UGothicCombatStateComponent>())
-                    {
-                        Combat->NotifyCombatAction();
-                    }
-                }
-            });
-
-        // Selah delegate
-        AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-    UGothicAttributeSet::GetSelahAttribute()).AddLambda(
-    [this](const FOnAttributeChangeData& Data)
-    {
-        if (!IsLocallyControlled()) return;
-
-
-        APlayerController* PC = GetWorld()->GetFirstPlayerController();
-        if (!PC) return;
-
-        AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
-        if (GothicHUD)
-        {
-            GothicHUD->UpdateSelah(Data.NewValue);
-        }
-    });
-
-        // Super meter delegate
-        AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-            UGothicAttributeSet::GetSuperMeterAttribute()).AddLambda(
-            [this](const FOnAttributeChangeData& Data)
-            {
-                if (!IsLocallyControlled()) return;
-
-                APlayerController* PC = GetWorld()->GetFirstPlayerController();
-                if (!PC) return;
-
-                AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
-                if (GothicHUD)
-                {
-                    GothicHUD->UpdateSuperMeter(Data.NewValue, AttributeSet->GetMaxSuperMeter());
-                }
-            });
-
-    }
+    // HUD attribute delegates. Idempotent — see BindHUDAttributeDelegates for
+    // why that matters when this function runs twice per pawn.
+    BindHUDAttributeDelegates();
 
     // Bind to inventory equipment changes so weapon slots update when gear is equipped
     // Guarded: PossessedBy + OnRep_PlayerState both call InitGASFromPlayerState
@@ -384,6 +321,141 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
             Inventory->GrantStartingItems();
         }
     }
+}
+
+void AGothicPlayerCharacter::BindHUDAttributeDelegates()
+{
+    // Remove first, always. InitGASFromPlayerState is reached from BOTH
+    // PossessedBy and OnRep_PlayerState, so this runs twice for every pawn that
+    // is ever spawned — the duplicated "InputComponent not yet available"
+    // warning a few lines up is the same double-entry seen from another angle.
+    // Without the remove, every life registered two copies of each lambda and
+    // the HUD was written twice per attribute change.
+    UnbindHUDAttributeDelegates();
+
+    if (!IsLocallyControlled() || !AbilitySystemComponent)
+    {
+        return;
+    }
+
+    BoundHUDAttributeASC = AbilitySystemComponent;
+
+    // Health delegate — drives the health bar fill and number.
+    HealthChangedHandle = AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+        UGothicAttributeSet::GetHealthAttribute()).AddLambda(
+        [this](const FOnAttributeChangeData& Data)
+        {
+            if (!IsLocallyControlled()) return;
+
+            APlayerController* PC = GetWorld()->GetFirstPlayerController();
+            if (!PC) return;
+
+            AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
+            if (GothicHUD && AttributeSet)
+            {
+                GothicHUD->UpdateHealth(Data.NewValue, AttributeSet->GetMaxHealth());
+            }
+
+            // Taking damage is a combat action — enters/refreshes combat state
+            // so Steadfast fills even during purely defensive play.
+            if (Data.NewValue < Data.OldValue)
+            {
+                if (UGothicCombatStateComponent* Combat = FindComponentByClass<UGothicCombatStateComponent>())
+                {
+                    Combat->NotifyCombatAction();
+                }
+            }
+        });
+
+    // Selah delegate
+    SelahChangedHandle = AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+        UGothicAttributeSet::GetSelahAttribute()).AddLambda(
+        [this](const FOnAttributeChangeData& Data)
+        {
+            if (!IsLocallyControlled()) return;
+
+            APlayerController* PC = GetWorld()->GetFirstPlayerController();
+            if (!PC) return;
+
+            AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
+            if (GothicHUD)
+            {
+                GothicHUD->UpdateSelah(Data.NewValue);
+            }
+        });
+
+    // Super meter delegate
+    SuperMeterChangedHandle = AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+        UGothicAttributeSet::GetSuperMeterAttribute()).AddLambda(
+        [this](const FOnAttributeChangeData& Data)
+        {
+            if (!IsLocallyControlled()) return;
+
+            APlayerController* PC = GetWorld()->GetFirstPlayerController();
+            if (!PC) return;
+
+            AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
+            if (GothicHUD && AttributeSet)
+            {
+                GothicHUD->UpdateSuperMeter(Data.NewValue, AttributeSet->GetMaxSuperMeter());
+            }
+        });
+
+    UE_LOG(LogTemp, Verbose,
+        TEXT("GothicPlayerCharacter[%s]: HUD attribute delegates bound to ASC %s"),
+        *GetName(), *GetNameSafe(AbilitySystemComponent));
+}
+
+void AGothicPlayerCharacter::UnbindHUDAttributeDelegates()
+{
+    UGothicAbilitySystemComponent* ASC = BoundHUDAttributeASC.Get();
+    if (!ASC)
+    {
+        // Either nothing was ever bound, or the ASC itself is already gone —
+        // in which case its delegate lists went with it and there is nothing
+        // to detach from. Clear the handles either way so a later rebind
+        // cannot try to remove them from a different ASC.
+        HealthChangedHandle.Reset();
+        SelahChangedHandle.Reset();
+        SuperMeterChangedHandle.Reset();
+        BoundHUDAttributeASC.Reset();
+        return;
+    }
+
+    if (HealthChangedHandle.IsValid())
+    {
+        ASC->GetGameplayAttributeValueChangeDelegate(
+            UGothicAttributeSet::GetHealthAttribute()).Remove(HealthChangedHandle);
+        HealthChangedHandle.Reset();
+    }
+
+    if (SelahChangedHandle.IsValid())
+    {
+        ASC->GetGameplayAttributeValueChangeDelegate(
+            UGothicAttributeSet::GetSelahAttribute()).Remove(SelahChangedHandle);
+        SelahChangedHandle.Reset();
+    }
+
+    if (SuperMeterChangedHandle.IsValid())
+    {
+        ASC->GetGameplayAttributeValueChangeDelegate(
+            UGothicAttributeSet::GetSuperMeterAttribute()).Remove(SuperMeterChangedHandle);
+        SuperMeterChangedHandle.Reset();
+    }
+
+    BoundHUDAttributeASC.Reset();
+}
+
+void AGothicPlayerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    // THE respawn crash fix. The ASC lives on the PlayerState and survives this
+    // pawn; the lambdas bound to it capture `this`. Leaving them attached means
+    // the first attribute change after the dead pawn is collected calls into
+    // freed memory. Unbinding here is what makes the pawn's death final as far
+    // as the ASC is concerned.
+    UnbindHUDAttributeDelegates();
+
+    Super::EndPlay(EndPlayReason);
 }
 
 void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)

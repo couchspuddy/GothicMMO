@@ -43,6 +43,14 @@ public:
     virtual void PossessedBy(AController* NewController) override;
     virtual void OnRep_PlayerState() override;
     virtual void Tick(float DeltaTime) override;
+
+    /**
+     * Unbinds the HUD attribute delegates.
+     *
+     * This is not housekeeping — it is the fix for a reproducible respawn crash.
+     * See UnbindHUDAttributeDelegates.
+     */
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     virtual void GetLifetimeReplicatedProps(
         TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -711,6 +719,47 @@ private:
     bool bHUDReady = false;
     bool bAbilitiesGranted = false;
     bool bInventoryBound = false;
+
+    // -------------------------------------------------------------------------
+    // HUD attribute delegates — lifetime
+    //
+    // The player's ASC lives on the PlayerState, so it OUTLIVES this pawn: a
+    // respawn destroys the pawn and hands the same ASC to a new one. Three HUD
+    // lambdas used to be bound to that ASC's attribute-change delegates
+    // capturing `this` (the pawn), with no handles kept and nothing ever
+    // unbinding them. After the dead pawn was collected, the next attribute
+    // change on the surviving ASC called into freed memory — an access
+    // violation inside the health lambda, reproduced twice in PIE.
+    //
+    // Worse, InitGASFromPlayerState runs TWICE per pawn (PossessedBy and
+    // OnRep_PlayerState both call it — the doubled "InputComponent not yet
+    // available" warning in the log is the same double-entry), so each life
+    // registered two copies of every lambda and left two dangling.
+    //
+    // Both halves are closed by the same pair of functions: bind is
+    // remove-then-add so it is idempotent however many times init runs, and
+    // EndPlay removes them so nothing survives the pawn. Handles + explicit
+    // Remove is the pattern already used for ASC delegates elsewhere in this
+    // codebase — see AGothicBossAIController_BestialLucid::OnUnPossess.
+    // -------------------------------------------------------------------------
+
+    /** Idempotent: unbinds first, so repeat calls cannot stack registrations. */
+    void BindHUDAttributeDelegates();
+
+    /** Removes every HUD attribute delegate from the ASC they were bound to. */
+    void UnbindHUDAttributeDelegates();
+
+    /**
+     * The ASC the handles below belong to. Weak because it lives on the
+     * PlayerState and can legitimately outlive — or predecease — this pawn, and
+     * removing a handle from the wrong ASC is a silent no-op that would leave
+     * the real one dangling.
+     */
+    TWeakObjectPtr<UGothicAbilitySystemComponent> BoundHUDAttributeASC;
+
+    FDelegateHandle HealthChangedHandle;
+    FDelegateHandle SelahChangedHandle;
+    FDelegateHandle SuperMeterChangedHandle;
 
     /** See GetConsecutiveHits. Transient — a streak should not survive a respawn. */
     UPROPERTY(Transient)

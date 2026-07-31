@@ -109,7 +109,14 @@ protected:
     UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Gothic|Arena")
     TObjectPtr<UStaticMeshComponent> CeilingMesh;
 
-    /** Damage volume active during ceiling collapse. */
+    /**
+     * Damage volume active during ceiling collapse.
+     *
+     * Its placement is COMPUTED, not authored — see
+     * PositionCollapseDamageVolumeFromMeshBase. The constructor's relative
+     * offset is only a starting value; anything set here in the editor is
+     * overwritten at BeginPlay.
+     */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Arena")
     TObjectPtr<UBoxComponent> CollapseDamageVolume;
 
@@ -169,6 +176,19 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena")
     float CollapseDamage = 80.f;
 
+    /**
+     * How far up from the pillar's mesh BASE the collapse damage volume
+     * reaches (cm). Anything standing on the floor under the falling section
+     * has to fall inside this, so it wants to comfortably clear a player
+     * capsule rather than hug it.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena")
+    float CollapseVolumeHeight = 400.f;
+
+    /** Half-width of the collapse damage volume's square footprint (cm). */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena")
+    float CollapseVolumeHalfWidth = 200.f;
+
     /** GE applied to players caught in collapse. Uses Data.Damage SetByCaller. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena")
     TSubclassOf<UGameplayEffect> CollapseDamageEffect;
@@ -212,6 +232,24 @@ private:
     FTimerHandle BlockingVolumeTimer;
 
     void TransitionToState(EPillarState NewState);
+
+    /**
+     * Puts the collapse damage volume on the floor, under the pillar.
+     *
+     * It cannot be authored as a fixed offset from the root. PillarMesh IS the
+     * root and its pivot is the mesh's CENTRE (see the PillarMesh comment
+     * above and the constructor), so the actor origin sits at half the pillar's
+     * scaled height. The Rotunda's pillars are placed at Z=800 over a Z~-110
+     * floor at (3,3,20) scale, which put the constructor's root-relative
+     * +/-300Z box at Z 500-1100 — a slab of empty air roughly nine metres above
+     * anybody's head. The collapse was unmissable and undodgeable at the same
+     * time: it could never hit anyone.
+     *
+     * So derive it instead: take the mesh's world bounds, find the bottom, and
+     * sit a CollapseVolumeHeight box on top of that. Correct at any pillar
+     * height, any scale, any placement Z, with nothing to keep in sync.
+     */
+    void PositionCollapseDamageVolumeFromMeshBase();
 
     /** Break the pillar, fire the tell, and arm the impact timer. No damage. */
     void BeginCollapseWarning();

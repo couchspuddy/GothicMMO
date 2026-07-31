@@ -40,6 +40,20 @@ void AGothicEnemyAIController::OnPossess(APawn* InPawn)
         }
     }
 
+    // Flush any target that arrived before the tree did. Aggro is not
+    // synchronised with possession — an encounter volume can call
+    // SetCombatTarget on a pawn whose controller has no Blackboard yet — and
+    // before this the call was simply lost. Done AFTER RunBehaviorTree so the
+    // bIsInCombat=false written above cannot stomp it.
+    if (AActor* Pending = PendingBlackboardTarget.Get())
+    {
+        PendingBlackboardTarget.Reset();
+        UE_LOG(LogTemp, Verbose,
+            TEXT("GothicEnemyAIController[%s]: flushing target %s cached before the Blackboard existed"),
+            *GetName(), *Pending->GetName());
+        SetBlackboardTarget(Pending);
+    }
+
     GetWorldTimerManager().SetTimer(
         LeashCheckTimer,
         this,
@@ -65,8 +79,17 @@ void AGothicEnemyAIController::OnUnPossess()
 
 void AGothicEnemyAIController::SetBlackboardTarget(AActor* NewTarget)
 {
-    if (!Blackboard || !NewTarget)
+    if (!NewTarget)
     {
+        return;
+    }
+
+    if (!Blackboard)
+    {
+        // Not a failure — just early. Hold it and let OnPossess push it once
+        // RunBehaviorTree has created the Blackboard. GothicBTService_CombatSync
+        // is the second, continuous safety net for the same race.
+        PendingBlackboardTarget = NewTarget;
         return;
     }
 
