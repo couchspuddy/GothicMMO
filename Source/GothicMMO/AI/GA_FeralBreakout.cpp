@@ -6,6 +6,7 @@
 #include "AI/GothicEnemyBase.h"
 #include "AI/GothicEnemySpawnPoint.h"
 #include "AI/GothicEncounterVolume.h"
+#include "AI/AGothicFeralRetainedController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "GameFramework/Character.h"
@@ -104,9 +105,31 @@ void UGA_FeralBreakout::PerformBreakout()
                 //
                 // Measured before this: she travelled ~200uu of a ~650uu leap
                 // and her Z never moved off 642 -- a shove, not a leap.
+                //
+                // 3. StopMovement is a single instant, and the behaviour tree
+                //    goes right on running: it re-issues Move To toward the
+                //    player on the very next tick, and in MOVE_Falling that is
+                //    spent as air control against the launch. Measured with the
+                //    player standing OPPOSITE the leap direction: full +322uu of
+                //    height, 7-13uu of horizontal travel -- straight up, landing
+                //    where she stood. Hence BeginLeapFlight, which pauses the
+                //    brain and zeroes AirControl until she lands.
                 if (AAIController* AIC = Cast<AAIController>(MeChar->GetController()))
                 {
                     AIC->StopMovement();
+
+                    if (AGothicFeralRetainedController* FeralAIC =
+                            Cast<AGothicFeralRetainedController>(AIC))
+                    {
+                        FeralAIC->BeginLeapFlight();
+                    }
+                    else
+                    {
+                        UE_LOG(LogTemp, Warning,
+                            TEXT("FeralBreakout[%s]: controller is %s, not AGothicFeralRetainedController "
+                                 "— the leap is unguarded and her AI will steer her out of the arc."),
+                            *GetNameSafe(Avatar), *GetNameSafe(AIC));
+                    }
                 }
                 if (UCharacterMovementComponent* Move = MeChar->GetCharacterMovement())
                 {
