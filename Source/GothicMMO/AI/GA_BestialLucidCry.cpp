@@ -9,6 +9,8 @@
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Engine/World.h"
+#include "TimerManager.h"
+#include "Sound/SoundBase.h"
 
 UGA_BestialLucidCry::UGA_BestialLucidCry()
 {
@@ -31,17 +33,67 @@ void UGA_BestialLucidCry::ActivateAbility(
 
     if (PlayOptionalMontage())
     {
-        // Stun + spawn fires at the montage hit window
+        // Stun + spawn fires at the montage hit window — the montage is the
+        // windup on that path.
         return;
     }
 
-    // No montage — instant fallback
-    if (GetOwningActorFromActorInfo()->HasAuthority())
+    if (!GetOwningActorFromActorInfo()->HasAuthority())
     {
-        PerformCry();
+        EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
+        return;
     }
 
-    EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
+    // No montage — cry out first, stun after. Same structure as Roar: the
+    // ability stays active across the delay because InstancedPerExecution
+    // instances only live as long as the activation, and a timer outliving its
+    // own ability object fires into nothing.
+    if (AActor* Avatar = GetAvatarActorFromActorInfo())
+    {
+        if (CryCueSound)
+        {
+            UGameplayStatics::PlaySoundAtLocation(
+                Avatar, CryCueSound, Avatar->GetActorLocation());
+        }
+    }
+
+    OnStunWindup();
+
+    UWorld* World = GetWorld();
+    if (WindupDelay <= 0.f || !World)
+    {
+        PerformCry();
+        EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
+        return;
+    }
+
+    World->GetTimerManager().SetTimer(
+        WindupTimerHandle, this,
+        &UGA_BestialLucidCry::OnWindupElapsed,
+        WindupDelay, false);
+}
+
+void UGA_BestialLucidCry::OnWindupElapsed()
+{
+    PerformCry();
+
+    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+}
+
+void UGA_BestialLucidCry::EndAbility(
+    const FGameplayAbilitySpecHandle Handle,
+    const FGameplayAbilityActorInfo* ActorInfo,
+    const FGameplayAbilityActivationInfo ActivationInfo,
+    bool bReplicateEndAbility,
+    bool bWasCancelled)
+{
+    // Interrupted mid-windup — she never finished the cry, so nothing lands.
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().ClearTimer(WindupTimerHandle);
+    }
+
+    Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
 
 void UGA_BestialLucidCry::OnMontageHitWindow(FGameplayEventData Payload)
@@ -86,12 +138,21 @@ void UGA_BestialLucidCry::PerformCry()
 
 
     // ── Spawn Thralls ────────────────────────────────────────────────
-
+    // Off by configuration (MaxCryThralls defaults to 0), not by deletion.
     SpawnCryThralls();
 }
 
 void UGA_BestialLucidCry::SpawnCryThralls()
 {
+    // The single gate. At 0 the Cry is a pure stun and this returns before
+    // touching spawn points, before the "no spawn points tagged" warning, and
+    // before any allocation — nothing about the disabled path costs anything
+    // or complains about level setup that intentionally doesn't exist.
+    if (MaxCryThralls <= 0)
+    {
+        return;
+    }
+
     UWorld* World = GetWorld();
     if (!World) return;
 

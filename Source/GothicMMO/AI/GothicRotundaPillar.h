@@ -55,9 +55,10 @@ public:
      * Phase 2 opener that drops the pillar the boss just moved to. The pillars
      * carry that tag, so this is the seam that connects Wall Pound to the pillar
      * collapse system; before it existed Wall Pound activated and collapsed
-     * nothing. Reuses the ordinary destruction path, so the ceiling drops, the
-     * collapse volume deals its 80 to anyone underneath, and the arena manager's
-     * OnPillarDestroyed bookkeeping all fire exactly as a combat kill would.
+     * nothing. Reuses the ordinary destruction path, so the warning fires, the
+     * ceiling drops WarningDuration later taking 30% of the pool from anyone
+     * still underneath, and the arena manager's OnPillarDestroyed bookkeeping
+     * all fire exactly as a combat kill would.
      * No-op if already destroyed.
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Arena")
@@ -127,9 +128,44 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena")
     float CrackedThreshold = 0.5f;
 
+    /**
+     * The telegraph. Time between the pillar breaking (OnPillarCollapseWarning)
+     * and the ceiling actually landing (OnPillarCollapse + damage).
+     *
+     * Before this existed the collapse was undodgeable in the worst possible
+     * way: damage was applied at pillar-death time and the slab visibly
+     * teleported down 1.5s LATER, so the player took the hit from a ceiling
+     * that was still overhead and saw the ceiling land on empty floor. The two
+     * halves now happen together, at the end of this window, and this window is
+     * the player's whole opportunity to leave.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena")
+    float WarningDuration = 1.75f;
+
+    /**
+     * Settle time AFTER impact before BlockingVolumeActor goes live.
+     *
+     * No longer gates the ceiling drop (WarningDuration does). Kept as the
+     * debris-settling delay because the blocking volume must not switch on
+     * inside a pawn — see EnableBlockingVolume.
+     */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena")
     float CollapseDuration = 1.5f;
 
+    /**
+     * Collapse damage as a fraction of the VICTIM'S OWN MaxHealth. This is the
+     * primary knob: 0.30 means the ceiling always costs 30% of your pool, at
+     * any gear level, which is what makes it read as a fixed threat rather than
+     * a number that quietly becomes irrelevant as MaxHealth grows.
+     *
+     * The SetByCaller magnitude is pre-compensated for the victim's Defense so
+     * the POST-pipeline result lands on the fraction exactly — the pillar has no
+     * ASC, so it contributes +0 AttackPower and only -Defense has to be undone.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena")
+    float CollapseDamageFraction = 0.30f;
+
+    /** Flat fallback, used only for targets whose MaxHealth can't be read. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Arena")
     float CollapseDamage = 80.f;
 
@@ -147,6 +183,18 @@ protected:
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Arena")
     void OnPillarCracked();
 
+    /**
+     * The tell. Fires the instant the pillar breaks, WarningDuration before the
+     * ceiling lands. Implement the dust plume, the groan of stressed stone, the
+     * decal on the floor under the falling section — anything that tells the
+     * player which patch of ground is about to become lethal.
+     *
+     * Nothing damages anyone at this point. That is the entire purpose.
+     */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Arena")
+    void OnPillarCollapseWarning();
+
+    /** The impact cue. Fires WHEN the slab lands, together with the damage. */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Arena")
     void OnPillarCollapse();
 
@@ -154,8 +202,25 @@ private:
     float CurrentHealth = 0.f;
     EPillarState CurrentState = EPillarState::Healthy;
 
+    /** Guards the once-per-collapse damage pass. */
+    bool bCollapseDamageApplied = false;
+
+    /** Retry counter for the deferred blocking-volume activation. */
+    int32 BlockingVolumeAttempts = 0;
+
+    FTimerHandle CollapseWarningTimer;
+    FTimerHandle BlockingVolumeTimer;
+
     void TransitionToState(EPillarState NewState);
-    void BeginCeilingCollapse();
+
+    /** Break the pillar, fire the tell, and arm the impact timer. No damage. */
+    void BeginCollapseWarning();
+
+    /** Impact: slab drops, damage lands, OnPillarCollapse fires. All one frame. */
     void FinishCeilingCollapse();
-    void ApplyCollapseDamageToPlayersInZone();
+
+    /** Deferred, and refuses to switch on while a pawn is standing inside it. */
+    void EnableBlockingVolume();
+
+    void ApplyCollapseDamageAtImpact();
 };

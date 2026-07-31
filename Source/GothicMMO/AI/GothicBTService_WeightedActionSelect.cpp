@@ -291,11 +291,48 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
         TotalWeight += Score;
     }
 
-    // Nothing eligible — leave ChosenAction untouched rather than force a
-    // bad pick. The tree's own fallback (Move To, same as the boss's root
-    // Selector already does) takes over gracefully.
+    // Nothing eligible — everything on cooldown, everything out of range.
+    //
+    // This used to return without writing, on the theory that leaving the key
+    // alone was honest degradation. It is the opposite: the key is sticky, so
+    // the LAST pick stays in it forever and the tree keeps running that branch.
+    // Measured on the Bestial Lucid — once she rolled "Reposition" and then hit
+    // a tick with nothing eligible, ChosenAction read "Reposition" for the rest
+    // of the fight. Every ability came off cooldown into a Blackboard that
+    // still said reposition, so she paced. Permanently.
+    //
+    // Falling back to a movement entry is safe in a way that falling back to an
+    // ability is not: it has no cooldown to be wrong about and no range gate to
+    // violate, so it is always a legal thing to be doing while waiting for the
+    // pool to reopen. If the pool has no such entry, clear the key instead —
+    // an empty ChosenAction fails every equality decorator and the tree's own
+    // Selector fallback takes over, which is what the old comment claimed
+    // happened but could not, because the key was never empty.
     if (TotalWeight <= 0.f)
     {
+        const FGothicWeightedActionEntry* Fallback = Actions.FindByPredicate(
+            [this](const FGothicWeightedActionEntry& E)
+            {
+                return E.ActionID == FallbackActionID && !E.AbilityTag.IsValid();
+            });
+
+        const FName NewAction = Fallback ? Fallback->ActionID : NAME_None;
+
+        if (CurrentAction != NewAction)
+        {
+            UE_LOG(LogTemp, Verbose,
+                TEXT("WeightedActionSelect[%s]: nothing eligible (%d entries, all gated) — "
+                     "'%s' -> '%s' rather than freezing the key"),
+                *GetNameSafe(Pawn), Actions.Num(),
+                *CurrentAction.ToString(), *NewAction.ToString());
+
+            BB->SetValue<UBlackboardKeyType_Name>(ChosenActionKey.GetSelectedKeyID(), NewAction);
+            if (Memory)
+            {
+                Memory->LastDecisionTime = Now;
+            }
+        }
+
         return;
     }
 

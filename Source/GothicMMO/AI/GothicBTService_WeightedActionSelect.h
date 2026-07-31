@@ -134,6 +134,22 @@ protected:
     UPROPERTY(EditAnywhere, Category = "Selection")
     float ValidationGraceSeconds = 1.f;
 
+    /**
+     * What to fall back to when NOTHING in the pool is eligible.
+     *
+     * Must name a MOVEMENT entry — one with no AbilityTag. An ability-backed
+     * fallback would be a lie by construction: the only reason we are here is
+     * that every ability failed its cooldown or range gate, so naming one would
+     * re-assert the thing we just measured to be false. Entries with an
+     * AbilityTag are ignored by the lookup for exactly that reason.
+     *
+     * If no matching entry exists, ChosenAction is CLEARED instead, which fails
+     * every downstream equality decorator and hands control to the tree's own
+     * Selector fallback.
+     */
+    UPROPERTY(EditAnywhere, Category = "Selection")
+    FName FallbackActionID = FName("Approach");
+
     /** Runs once per branch activation, ValidationGraceSeconds after it becomes relevant. */
     void ValidateConfiguration(UBehaviorTreeComponent& OwnerComp) const;
 
@@ -141,9 +157,9 @@ private:
     /**
      * Computes eligible entries' final scores, rolls a weighted pick, and
      * writes the winner. If total weight is 0 — nothing ready, nothing in
-     * range — the key is left untouched rather than forced to a bad answer;
-     * the tree's own fallback (Move To) handles that gracefully, same
-     * honest-degradation principle as GothicBTTask_ActivateAbilityByTag.
+     * range — it writes FallbackActionID, or clears the key if that entry
+     * doesn't exist. It never leaves the key alone: a Blackboard Name key is
+     * sticky, so "leave it untouched" means "run the previous pick forever."
      *
      * Gated at the top: won't overwrite ChosenAction while the current pick
      * is still genuinely running (ability-backed: IsActive() on the ASC;
