@@ -44,6 +44,13 @@ void AGothicWorldPickup::BeginPlay()
     InteractionSphere->OnComponentBeginOverlap.AddDynamic(
         this, &AGothicWorldPickup::OnOverlapBegin);
 
+    // Designer-placed pickups: roll the assigned definition so the actor works
+    // without the code-side InitializePickup call that spawned drops get.
+    if (HasAuthority() && PlacedItemDef && !HeldItem.IsValid())
+    {
+        InitializePickup(PlacedItemDef->RollInstance());
+    }
+
     // No despawn timer — items persist until collected
 }
 
@@ -130,6 +137,15 @@ bool AGothicWorldPickup::TryCollect(AActor* Collector)
 
     if (Inventory->AddItem(HeldItem))
     {
+        // Opt-in per placed pickup, and only into an EMPTY slot — this never
+        // overrides an equip the player made deliberately (see AddItem for why
+        // blanket auto-equip was removed).
+        if (bAutoEquipIfSlotEmpty
+            && !Inventory->IsSlotEquipped(HeldItem.Definition->EquipSlot))
+        {
+            Inventory->EquipItem(HeldItem.InstanceID);
+        }
+
         bCollected = true;
         Destroy();
         return true;

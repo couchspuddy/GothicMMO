@@ -1359,15 +1359,18 @@ void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
         return;
     }
 
-    ActiveWeaponIndex = NewIndex;
+    // Refuse before committing the index — swapping into an empty slot would
+    // leave the player with empty hands, and with the sidearm-only start the
+    // Piece and Rig slots are legitimately empty until those weapons are found.
     const UGothicWeaponData* NewWeapon = WeaponSlots[NewIndex].WeaponData;
-
     if (!NewWeapon)
     {
-        UE_LOG(LogTemp, Warning, TEXT("SwapWeapon: Slot %d has no WeaponData assigned"), NewIndex);
-        WeaponMeshComponent->SetStaticMesh(nullptr);
+        UE_LOG(LogTemp, Verbose, TEXT("SwapWeapon: Slot %d has no WeaponData — keeping slot %d"),
+            NewIndex, ActiveWeaponIndex);
         return;
     }
+
+    ActiveWeaponIndex = NewIndex;
 
     // A swap abandons any in-progress conversion — the cost was tied to the old weapon's tier
     EndSteadfastHold();

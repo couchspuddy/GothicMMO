@@ -210,6 +210,14 @@ protected:
     TObjectPtr<UGothicLootTable> LootTable;
 
     /**
+     * When true this enemy never drops loot, regardless of LootTable.
+     * EditAnywhere on purpose: set it per placed instance (e.g. the Palewood
+     * tutorial enemies) while the shared loot table assets stay untouched.
+     */
+    UPROPERTY(EditAnywhere, Category = "Gothic|Enemy")
+    bool bSuppressLootDrop = false;
+
+    /**
      * Halts or resumes this enemy when State.Stunned is gained or lost.
      *
      * State.Stunned previously did nothing to an enemy. It drove an animation
