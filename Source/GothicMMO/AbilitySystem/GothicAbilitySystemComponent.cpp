@@ -2,6 +2,7 @@
 
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
+#include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffect.h"
 
 UGothicAbilitySystemComponent::UGothicAbilitySystemComponent()
@@ -238,6 +239,35 @@ void UGothicAbilitySystemComponent::ApplyEffectToASC(
     AActor* SourceActor)
 {
     if (!TargetASC || !EffectClass) return;
+
+    // The context has to be built from the SOURCE. This used to call
+    // TargetASC->MakeEffectContext() and apply to self, which named the VICTIM as
+    // its own instigator: any GE routed through here that reads source AttackPower
+    // or attribution would have read the target's. Inert only because the one
+    // caller's GE (GE_Stun_Shock) has no modifiers.
+    UAbilitySystemComponent* SourceASC =
+        UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(SourceActor);
+
+    if (SourceASC)
+    {
+        FGameplayEffectContextHandle Context = MakeDamageContext(SourceASC, SourceActor);
+        FGameplayEffectSpecHandle Spec = SourceASC->MakeOutgoingSpec(EffectClass, 1.f, Context);
+        if (Spec.IsValid())
+        {
+            SourceASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
+        }
+        return;
+    }
+
+    // No source ASC to name — every caller today passes a real pawn avatar
+    // (GA_Fire, GA_BestialLucidRoar, GA_BestialLucidCry, GA_FeralBreakout), so
+    // this is the "environment applied it" path rather than a normal one. Fall
+    // back to the self-application shape, but say so rather than pretending the
+    // target instigated it.
+    UE_LOG(LogTemp, Warning,
+        TEXT("ApplyEffectToASC: no ASC on source %s — applying %s with no instigator"),
+        SourceActor ? *SourceActor->GetName() : TEXT("null"),
+        *EffectClass->GetName());
 
     FGameplayEffectContextHandle Context = TargetASC->MakeEffectContext();
     Context.AddSourceObject(SourceActor);

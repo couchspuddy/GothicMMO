@@ -2,6 +2,7 @@
 
 #include "AbilitySystem/GA_HuntersStrike.h"
 #include "AbilitySystem/GothicAttributeSet.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "AI/GothicEnemyBase.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "DrawDebugHelpers.h"
@@ -137,8 +138,8 @@ void UGA_HuntersStrike::PerformMeleeTrace()
             {
                 UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(
                     Spec,
-                    FGameplayTag::RequestGameplayTag(FName("Data.SuperMeter")),
-                    15.f);
+                    GothicTags::Data_SuperMeter,
+                    SuperGainOnHit);
 
                 GetAbilitySystemComponentFromActorInfo()->ApplyGameplayEffectSpecToSelf(
                     *Spec.Data.Get());

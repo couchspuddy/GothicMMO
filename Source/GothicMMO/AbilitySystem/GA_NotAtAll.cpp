@@ -2,6 +2,7 @@
 
 #include "AbilitySystem/GA_NotAtAll.h"
 #include "AbilitySystem/GA_Reckoning.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffect.h"
@@ -35,6 +36,15 @@ void UGA_NotAtAll::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
         .FindOrAdd(KillEventTag)
         .AddUObject(this, &UGA_NotAtAll::OnKillConfirmed);
 
+    // Say out loud that the size rule is off rather than letting an authored 0.25
+    // bonus read as a working mechanic. No Enemy.Size.* tag exists yet.
+    if (!LargeEnemyTag.IsValid() && LargeEnemyStunChanceBonus != 0.f)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("GA_NotAtAll: LargeEnemyStunChanceBonus is %.2f but LargeEnemyTag is unset — ")
+            TEXT("the large-enemy stun bonus is inert. Author a size tag on the enemies to enable it."),
+            LargeEnemyStunChanceBonus);
+    }
 }
 
 void UGA_NotAtAll::OnKillConfirmed(const FGameplayEventData* Payload)
@@ -50,6 +60,22 @@ void UGA_NotAtAll::OnKillConfirmed(const FGameplayEventData* Payload)
         return;
     }
 
+
+    // "Eliminating a stunned enemy extends The Reckoning" — the header's second
+    // design line. Every piece of it was already built and authored
+    // (ReckoningExtensionPerStunnedKill 1.5, GA_Reckoning::ExtendReckoningDuration,
+    // BP_GA_Reckoning.MaxExtendedDuration 12 against BaseDuration 6) except this
+    // call, so the cap was unreachable and the extension never happened. Checked
+    // BEFORE the new stuns go out, so the kill that caused the stun does not also
+    // count as a stunned kill.
+    if (const UAbilitySystemComponent* KilledASC =
+            UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(KilledActor))
+    {
+        if (KilledASC->HasMatchingGameplayTag(GothicTags::State_Stunned))
+        {
+            TryExtendActiveReckoning(ReckoningExtensionPerStunnedKill);
+        }
+    }
 
     ApplyStunToNearbyEnemies(KilledActor);
 }
@@ -107,39 +133,45 @@ void UGA_NotAtAll::ApplyStunToNearbyEnemies(AActor* KilledActor)
 
             }
 
-            // If this candidate was already stunned AND Reckoning is active,
-            // and this overlap check is itself catching a stunned-kill scenario,
-            // extension should be triggered from the enemy's death handler
-            // calling TryExtendActiveReckoning — see header note. This function
-            // only handles applying new stuns from the triggering kill.
+            // This function only applies new stuns. The Reckoning extension for
+            // killing an already-stunned enemy is handled in OnKillConfirmed,
+            // before this runs.
         }
     }
 }
 
 
 bool UGA_NotAtAll::TryExtendActiveReckoning(float ExtensionAmount)
+{
+    if (!CachedASC)
     {
-        if (!CachedASC || !ReckoningActiveTag.IsValid())
-        {
-            return false;
-        }
-
-        if (!CachedASC->HasMatchingGameplayTag(ReckoningActiveTag))
-        {
-            return false;
-        }
-
-        for (const FGameplayAbilitySpec& Spec : CachedASC->GetActivatableAbilities())
-        {
-            if (UGA_Reckoning* Reckoning = Cast<UGA_Reckoning>(Spec.GetPrimaryInstance()))
-            {
-                Reckoning->ExtendReckoningDuration(ExtensionAmount);
-                return true;
-            }
-        }
-
         return false;
     }
+
+    // An unauthored ReckoningActiveTag used to make this return false before it
+    // did anything. State.Reckoning is the tag GE_ReckoningState grants, so fall
+    // back to it rather than silently doing nothing.
+    const FGameplayTag ActiveTag = ReckoningActiveTag.IsValid()
+        ? ReckoningActiveTag
+        : GothicTags::State_Reckoning;
+
+    if (!CachedASC->HasMatchingGameplayTag(ActiveTag))
+    {
+        return false;
+    }
+
+    for (const FGameplayAbilitySpec& Spec : CachedASC->GetActivatableAbilities())
+    {
+        if (UGA_Reckoning* Reckoning = Cast<UGA_Reckoning>(Spec.GetPrimaryInstance()))
+        {
+            Reckoning->ExtendReckoningDuration(ExtensionAmount);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void UGA_NotAtAll::EndAbility(const FGameplayAbilitySpecHandle Handle,
     const FGameplayAbilityActorInfo* ActorInfo,
     const FGameplayAbilityActivationInfo ActivationInfo,

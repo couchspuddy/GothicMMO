@@ -64,17 +64,28 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "NotAtAll")
     float StunRadius = 400.f;
 
-    /** Tag identifying "large" enemies for the increased stun chance rule. */
+    /**
+     * Tag identifying "large" enemies for the increased stun chance rule.
+     *
+     * UNAUTHORED AND INERT: BP_GA_NotAtAll leaves this None, and no Enemy.Size.*
+     * tag exists in DefaultGameplayTags.ini or on any enemy, so
+     * LargeEnemyStunChanceBonus has never been able to apply. Kept rather than
+     * deleted because the size rule is stated design — but turning it on means
+     * choosing a tag and tagging the enemies, which is content work, not a code
+     * fix. ActivateAbility logs a warning while it is in this state.
+     */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "NotAtAll")
     FGameplayTag LargeEnemyTag;
 
-    /** Additional stun chance applied to enemies carrying LargeEnemyTag. */
+    /** Additional stun chance applied to enemies carrying LargeEnemyTag. Inert until that tag exists. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "NotAtAll")
     float LargeEnemyStunChanceBonus = 0.25f;
 
-    /** Tag identifying an enemy as currently stunned — used to check Reckoning extension eligibility. */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "NotAtAll")
-    FGameplayTag StunnedStateTag;
+    // StunnedStateTag was removed. It was authored State.Staggered, a tag with zero
+    // readers project-wide, and was never referenced from the .cpp. The stunned check
+    // now uses GothicTags::State_Stunned directly — the tag GE_Stagger actually
+    // grants — because there is exactly one correct value and making it authorable
+    // only recreated the drift.
 
     /** Tag identifying that The Reckoning is currently active on this character. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "NotAtAll")

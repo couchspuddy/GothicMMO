@@ -5,6 +5,7 @@
 #include "GothicMMO.h"                          // ECC_Weapon
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"   // AttackPower scalar
+#include "AbilitySystem/GothicGameplayTags.h"   // Data_SuperMeter
 #include "AI/GothicEnemyBase.h"
 #include "AI/GothicVitalPointComponent.h"
 #include "Character/GothicPlayerCharacter.h"
@@ -445,6 +446,29 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         bReckoningForced ? TEXT("yes") : TEXT("no"),
         bReadAmplified   ? TEXT("yes") : TEXT("no"),
         bOversurged      ? TEXT("yes") : TEXT("no"));
+
+    // Super meter on a LANDED hit. Applied here rather than on activation so a
+    // miss builds nothing -- the weapon assets have authored
+    // SuperGainOnHitEffect since they were written, but nothing read it, so
+    // shooting was worth zero super and melee/kills were the only sources.
+    // Same SetByCaller contract as GA_HuntersStrike.
+    if (WeaponData && WeaponData->SuperGainOnHitEffect && WeaponData->SuperGainOnHit > 0.f)
+    {
+        FGameplayEffectContextHandle SuperContext =
+            UGothicAbilitySystemComponent::MakeDamageContext(SourceASC, Char);
+
+        FGameplayEffectSpecHandle SuperSpec =
+            SourceASC->MakeOutgoingSpec(WeaponData->SuperGainOnHitEffect, 1.f, SuperContext);
+
+        if (SuperSpec.IsValid())
+        {
+            SuperSpec.Data->SetSetByCallerMagnitude(
+                GothicTags::Data_SuperMeter, WeaponData->SuperGainOnHit);
+
+            // To SELF: the meter belongs to the shooter, not the thing shot.
+            SourceASC->ApplyGameplayEffectSpecToSelf(*SuperSpec.Data.Get());
+        }
+    }
 
     // Stun rolls independently of Oversurge -- they are separate hooks and a
     // single shot is allowed to do both.
