@@ -152,8 +152,16 @@ void UGothicVitalPointComponent::ShiftVitalPoint()
     }
 
     // Move to the pre-committed destination, then roll the NEXT one BEFORE
-    // broadcasting — GA_Read's shift handler immediately re-queries
-    // GetNextVitalWorldLocation, so the new prediction has to exist by then.
+    // broadcasting, so no listener can observe a NextVitalIndex that still points
+    // at the vital that just became current.
+    //
+    // The previous text justified this by "GA_Read's shift handler immediately
+    // re-queries GetNextVitalWorldLocation" — which contradicted the comment forty
+    // lines up in TickComponent, and that one is the accurate one.
+    // GetNextVitalWorldLocation has ZERO callers; the Read/telegraph path was
+    // removed in the redesign. The ordering is kept because it is the invariant a
+    // pre-committed prediction is supposed to have, not because anything currently
+    // depends on it.
     ActiveVitalIndex  = NextVitalIndex;
     AccumulatedDamage = 0.f;
     RollNextVitalIndex();

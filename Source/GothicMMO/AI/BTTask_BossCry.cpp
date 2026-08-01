@@ -115,6 +115,13 @@ EBTNodeResult::Type UBTTask_BossCry::ExecuteTask(
         }
     }
 
+    // PlayersStaggered was counted and then discarded. It is the one number that
+    // separates "the Cry fired but nobody was in the cone" from "the Cry fired and
+    // the stagger did not land" — the open playtest question on this ability.
+    UE_LOG(LogTemp, Verbose,
+        TEXT("BossCry[%s]: staggered %d of %d player(s) within %.0fuu / %.0fdeg"),
+        *BossChar->GetName(), PlayersStaggered, Players.Num(),
+        StaggerRadius, StaggerConeHalfAngle);
 
     return EBTNodeResult::Succeeded;
 }

@@ -90,11 +90,19 @@ public:
     void NotifyDamageTaken(float DamageAmount);
 
     /**
-     * Cosmetic teardown on death. Destroys the shimmer and kills the shift
-     * timer. Call from PlayDeathCosmetics — that path runs on EVERY machine
-     * (server via OnDeath, clients via MulticastOnDeath), which is exactly
-     * the set of machines that own a shimmer instance. Without this, corpses
-     * glow for the full CorpseLifetime.
+     * Cosmetic teardown on death. Destroys the shimmer, blanks the amber overlay
+     * and kills the shift timer.
+     *
+     * Called from AGothicEnemyBase::OnDeath_Implementation. The previous text here
+     * said "call from PlayDeathCosmetics" — a function that has never existed in
+     * this project — and consequently NOTHING called it at all: corpses glowed and
+     * kept shifting their vital point for the full CorpseLifetime.
+     *
+     * NOTE the remaining gap: OnDeath is the SERVER path, so on a dedicated-server
+     * build remote clients still hold a live shimmer until the corpse is destroyed.
+     * Closing that needs a multicast death cosmetic hook on AGothicCharacterBase,
+     * which does not exist yet. Standalone and listen-host play — everything this
+     * project currently runs — is fully covered.
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|VitalPoint")
     void HandleOwnerDeath();

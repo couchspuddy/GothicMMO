@@ -3,6 +3,8 @@
 #include "AI/GothicMeleeHitboxComponent.h"
 #include "AI/GothicEnemyBase.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
+#include "AbilitySystem/GothicGameplayTags.h"
+#include "Character/GothicCharacterBase.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
 #include "GameplayTagContainer.h"
@@ -41,8 +43,36 @@ void UGothicMeleeHitboxComponent::EnableHitbox()
 {
     bHitboxActive = true;
     AlreadyHitThisSwing.Empty();
+    PruneDamageStamps();
     SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 
+}
+
+void UGothicMeleeHitboxComponent::PruneDamageStamps()
+{
+    // LastDamagedTime only ever grew: one entry per (actor, hitbox) pair for the
+    // whole session, with dead actors' weak pointers left behind as permanent
+    // rubble. Nothing reads a stamp older than HasRecentlyDamaged's window, so
+    // anything past DamageStampHorizon is pure leak.
+    //
+    // Pruned at the start of a swing rather than on a timer: it is the only moment
+    // the map is about to be written to, so the cost lands where the work already
+    // is and an idle enemy pays nothing.
+    const UWorld* World = GetWorld();
+    if (!World)
+    {
+        return;
+    }
+
+    const double Now = World->GetTimeSeconds();
+
+    for (auto It = LastDamagedTime.CreateIterator(); It; ++It)
+    {
+        if (!It.Key().IsValid() || (Now - It.Value()) > DamageStampHorizon)
+        {
+            It.RemoveCurrent();
+        }
+    }
 }
 
 void UGothicMeleeHitboxComponent::DisableHitbox()
@@ -107,10 +137,45 @@ void UGothicMeleeHitboxComponent::OnHitboxOverlap(
         return;
     }
 
-    // Check immunity tags (dead, invulnerable, etc.)
+    // ── The dead take no swings ──────────────────────────────────────────────
+    //
+    // ImmunityTags is authored data and it is EMPTY on both shipping enemy
+    // Blueprints, so the old `ImmunityTags.Num() > 0 && ...` guard short-circuited
+    // to "nothing is immune to anything". A player mid-death still took the swing,
+    // and so did an Accursed already killed by an earlier hit in the same window.
+    //
+    // State.Dead is not tuning, it is a rule, so it is enforced unconditionally
+    // here instead of depending on whoever remembers to fill the container in.
+    // ImmunityTags stays as the per-enemy extension point ON TOP of that floor.
+    //
+    // Enforced in the hitbox rather than in the damage path deliberately.
+    // UGothicAttributeSet::PostGameplayEffectExecute is the shared choke point for
+    // EVERY damage source in Vigil, and a blanket "the dead take no damage" rule
+    // there would also silence overkill accounting, any damage-over-time already
+    // ticking on a corpse, and any future post-mortem effect — a far larger
+    // behavioural change than this defect justifies. The hitbox is the narrowest
+    // place that fixes exactly "enemy melee should not connect with a corpse".
+    if (TargetASC->HasMatchingGameplayTag(GothicTags::State_Dead))
+    {
+        return;
+    }
+
     if (ImmunityTags.Num() > 0 && TargetASC->HasAnyMatchingGameplayTags(ImmunityTags))
     {
         return;
+    }
+
+    // Health-zero targets that have not been tagged yet. State.Dead is added by
+    // AGothicCharacterBase::OnDeath, which runs out of PostGameplayEffectExecute
+    // once the killing blow has resolved — so two swings landing in the same frame
+    // can both see an untagged corpse. IsAlive reads the attribute directly and
+    // closes that window.
+    if (const AGothicCharacterBase* TargetChar = Cast<AGothicCharacterBase>(OtherActor))
+    {
+        if (!TargetChar->IsAlive())
+        {
+            return;
+        }
     }
 
     // Get the owning enemy's ASC for the damage context

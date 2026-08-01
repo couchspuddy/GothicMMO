@@ -74,7 +74,22 @@ void UBTService_ApproachSpeed::TickNode(
         // Inside decel zone — interpolate linearly from full to min
         // At DecelDist: Alpha = 0 → full speed
         // At EngageDist: Alpha = 1 → min speed
-        const float Alpha = 1.f - ((DistToTarget - EngageDist) / (DecelDist - EngageDist));
+        //
+        // The band width is guarded because it is Blueprint data, not a constant.
+        // Today's CDOs are safe (500 against 300 and 150), but a child that sets
+        // ApproachDecelDistance equal to PreferredEngageDistance divides by zero
+        // here and writes an inf/NaN MaxWalkSpeed straight into the movement
+        // component — which does not throw, it just makes the pawn stop obeying
+        // physics. A degenerate band means there is no ramp to interpolate along,
+        // so the correct answer is the far end of it: full speed.
+        const float BandWidth = DecelDist - EngageDist;
+        if (BandWidth <= KINDA_SMALL_NUMBER)
+        {
+            OwnerChar->GetCharacterMovement()->MaxWalkSpeed = FullSpeed;
+            return;
+        }
+
+        const float Alpha = 1.f - ((DistToTarget - EngageDist) / BandWidth);
         const float SpeedMult = FMath::Lerp(1.f, MinMult, Alpha);
         OwnerChar->GetCharacterMovement()->MaxWalkSpeed = FullSpeed * SpeedMult;
     }

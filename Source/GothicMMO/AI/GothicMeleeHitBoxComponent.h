@@ -102,8 +102,22 @@ private:
      * When each actor was last damaged by this hitbox (world seconds).
      * Survives DisableHitbox — HasRecentlyDamaged has to answer honestly for a
      * graph-side call that arrives a frame or two after the window closed.
+     *
+     * Bounded by PruneDamageStamps, called at the top of every swing.
      */
     TMap<TWeakObjectPtr<const AActor>, double> LastDamagedTime;
+
+    /**
+     * How long a damage stamp is worth keeping (seconds).
+     *
+     * Not a tuning knob — a bookkeeping horizon. The only reader is
+     * HasRecentlyDamaged, whose largest caller-supplied window is 1s, so 10 is
+     * an order of magnitude of slack over anything that can be asked for.
+     */
+    static constexpr double DamageStampHorizon = 10.0;
+
+    /** Drops expired and stale-weak-pointer entries from LastDamagedTime. */
+    void PruneDamageStamps();
 
     UFUNCTION()
     void OnHitboxOverlap(

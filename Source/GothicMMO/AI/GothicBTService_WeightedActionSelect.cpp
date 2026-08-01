@@ -360,12 +360,26 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
     }
 
     float Roll = FMath::FRandRange(0.f, TotalWeight);
+
+    // LastEligible is the fallthrough answer, and it is not defensive padding.
+    // TotalWeight is accumulated by repeated float addition while Roll is drawn
+    // against that sum, so on the last entry the running remainder can sit a few
+    // ULPs above Scores[i] purely from rounding. The loop then exits WITHOUT
+    // writing — and ChosenAction is sticky, so the enemy silently keeps running
+    // whatever branch it picked last time. That is the same "frozen key" failure
+    // the TotalWeight <= 0 case above was rewritten to kill, arriving by a
+    // narrower door. Landing on the last eligible entry is exactly what an
+    // exact-arithmetic roll of TotalWeight would have selected.
+    int32 LastEligible = INDEX_NONE;
+
     for (int32 i = 0; i < Actions.Num(); ++i)
     {
         if (Scores[i] <= 0.f)
         {
             continue;
         }
+
+        LastEligible = i;
 
         if (Roll <= Scores[i])
         {
@@ -378,6 +392,16 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
         }
 
         Roll -= Scores[i];
+    }
+
+    if (Actions.IsValidIndex(LastEligible))
+    {
+        BB->SetValue<UBlackboardKeyType_Name>(
+            ChosenActionKey.GetSelectedKeyID(), Actions[LastEligible].ActionID);
+        if (Memory)
+        {
+            Memory->LastDecisionTime = Now;
+        }
     }
 }
 

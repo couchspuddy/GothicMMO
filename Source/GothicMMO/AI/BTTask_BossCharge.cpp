@@ -61,6 +61,8 @@ EBTNodeResult::Type UBTTask_BossCharge::ExecuteTask(
     Memory->ChargeStartLocation = BossChar->GetActorLocation();
     Memory->DistanceTraveled = 0.f;
     Memory->bImpacted = false;
+    Memory->bStaggerStarted = false;
+    Memory->StaggerTimer.Invalidate();
     Memory->NumHitPawns = 0;
     FMemory::Memzero(Memory->HitPawns, sizeof(Memory->HitPawns));
 
@@ -91,12 +93,22 @@ void UBTTask_BossCharge::TickTask(
 
     if (!BossChar)
     {
+        // Nothing to restore MaxWalkSpeed on — the pawn this task overrode is
+        // already gone. AbortTask covers the case that matters (the tree pulling
+        // the branch out from under a live boss).
         FinishLatentTask(OwnerComp, EBTNodeResult::Failed);
         return;
     }
 
+    // The punish window is running on its own timer and the boss is standing
+    // still. Everything below — movement, run-over damage, impact detection —
+    // belongs to the charge proper and must not re-run during the stagger.
+    if (Memory->bStaggerStarted)
+    {
+        return;
+    }
+
     // Move the boss along the locked direction
-    const FVector Movement = Memory->ChargeDirection * ChargeSpeed * DeltaSeconds;
     BossChar->AddMovementInput(Memory->ChargeDirection, 1.f);
     Memory->DistanceTraveled = FVector::Dist(
         BossChar->GetActorLocation(), Memory->ChargeStartLocation);
@@ -153,15 +165,29 @@ void UBTTask_BossCharge::TickTask(
         BossChar->GetCharacterMovement()->StopMovementImmediately();
         BossChar->GetCharacterMovement()->MaxWalkSpeed = Memory->DefaultWalkSpeed;
 
-        // Stagger timer — task finishes after the punish window
-        FTimerHandle StaggerTimer;
+        // Latch BEFORE arming, and keep the handle in node memory. The old code
+        // did neither: bImpacted stayed true while TickTask kept running, so a new
+        // stagger timer was armed EVERY FRAME of the punish window and every one
+        // of them called FinishLatentTask on an already-finished task. The handle
+        // was a local, so none of them could be cancelled either.
+        Memory->bStaggerStarted = true;
+
+        // Weak, not a raw `&OwnerComp` capture: the timer outlives this tick by
+        // StaggerDuration, and a boss destroyed inside that window would leave the
+        // lambda finishing a task through a dangling UBehaviorTreeComponent&.
+        TWeakObjectPtr<UBehaviorTreeComponent> WeakOwnerComp(&OwnerComp);
+
         FTimerDelegate StaggerDelegate;
-        StaggerDelegate.BindLambda([&OwnerComp, this]()
+        StaggerDelegate.BindLambda([WeakOwnerComp, this]()
         {
-            FinishLatentTask(OwnerComp, EBTNodeResult::Succeeded);
+            if (UBehaviorTreeComponent* Comp = WeakOwnerComp.Get())
+            {
+                FinishLatentTask(*Comp, EBTNodeResult::Succeeded);
+            }
         });
+
         BossChar->GetWorldTimerManager().SetTimer(
-            StaggerTimer, StaggerDelegate, StaggerDuration, false);
+            Memory->StaggerTimer, StaggerDelegate, StaggerDuration, false);
 
         return;
     }
@@ -174,6 +200,45 @@ void UBTTask_BossCharge::TickTask(
         BossChar->GetCharacterMovement()->MaxWalkSpeed = Memory->DefaultWalkSpeed;
         FinishLatentTask(OwnerComp, EBTNodeResult::Succeeded);
     }
+}
+
+EBTNodeResult::Type UBTTask_BossCharge::AbortTask(
+    UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
+{
+    FBTBossChargeMemory* Memory = CastInstanceNodeMemory<FBTBossChargeMemory>(NodeMemory);
+
+    AAIController* AIC = OwnerComp.GetAIOwner();
+    ACharacter* BossChar = AIC ? Cast<ACharacter>(AIC->GetPawn()) : nullptr;
+
+    if (BossChar && Memory)
+    {
+        // Put the speed back. ExecuteTask overwrites MaxWalkSpeed with ChargeSpeed
+        // and only the two success paths restored it, so any abort — an observer
+        // decorator flipping, a phase transition, the leash breaking — left the
+        // boss sprinting at charge speed for the rest of the fight.
+        //
+        // Guarded on > 0 because a zeroed memory block is what an abort before
+        // ExecuteTask ever ran would hand us, and writing 0 would freeze her solid.
+        if (Memory->DefaultWalkSpeed > 0.f)
+        {
+            BossChar->GetCharacterMovement()->MaxWalkSpeed = Memory->DefaultWalkSpeed;
+        }
+        BossChar->GetCharacterMovement()->StopMovementImmediately();
+
+        if (Memory->StaggerTimer.IsValid())
+        {
+            BossChar->GetWorldTimerManager().ClearTimer(Memory->StaggerTimer);
+        }
+    }
+
+    if (Memory)
+    {
+        Memory->bStaggerStarted = false;
+        Memory->bImpacted = false;
+        Memory->StaggerTimer.Invalidate();
+    }
+
+    return EBTNodeResult::Aborted;
 }
 
 void UBTTask_BossCharge::ApplyChargeDamage(

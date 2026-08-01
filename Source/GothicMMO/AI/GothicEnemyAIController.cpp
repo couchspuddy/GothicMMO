@@ -7,6 +7,7 @@
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "AI/GothicEnemyBase.h"
+#include "Character/GothicCharacterBase.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
@@ -105,6 +106,10 @@ void AGothicEnemyAIController::OnUnPossess()
 {
     Super::OnUnPossess();
     GetWorldTimerManager().ClearTimer(LeashCheckTimer);
+
+    // A regroup pause has no meaning without a pawn, and leaving it armed would
+    // resume a tree this controller no longer drives.
+    GetWorldTimerManager().ClearTimer(RegroupPauseTimer);
 
     // Restore default speed in case decel was active when unpossessed
     if (APawn* UnpossessedPawn = GetPawn())
@@ -249,6 +254,10 @@ void AGothicEnemyAIController::CheckLeash()
         return;
     }
 
+    // Release a target that has stopped being one, before any leash maths runs
+    // against it.
+    DropTargetIfNoLongerFightable();
+
     if (Blackboard && Blackboard->GetValueAsBool(GothicBBKeys::bIsInCombat))
     {
         // HORIZONTAL, like every other range in this class. A 3D leash measured
@@ -284,6 +293,66 @@ void AGothicEnemyAIController::CheckLeash()
             Blackboard->SetValueAsVector(GothicBBKeys::TargetLocation, Target->GetActorLocation());
         }
     }
+}
+
+bool AGothicEnemyAIController::IsFightableTarget(const AActor* Actor)
+{
+    if (!IsValid(Actor))
+    {
+        return false;
+    }
+
+    // Only characters carry health. Anything else that got written into the key
+    // is taken at face value — this function's job is to catch corpses and
+    // destroyed actors, not to second-guess what a designer aimed the tree at.
+    if (const AGothicCharacterBase* Char = Cast<const AGothicCharacterBase>(Actor))
+    {
+        return Char->IsAlive();
+    }
+
+    return true;
+}
+
+void AGothicEnemyAIController::DropTargetIfNoLongerFightable()
+{
+    // BreakLeash was the ONLY caller of ClearCombatTarget in the whole project.
+    // Nothing released the target when it died, when it was destroyed, or when a
+    // dead player respawned into a new pawn — so an enemy held a pointer to a
+    // corpse until the leash happened to break, and if the fight stayed inside
+    // LeashRange it held it forever.
+    //
+    // The visible consequence is AGothicEncounterVolume::IsAnyMemberEngaged, which
+    // derives "this fight is already running" from GetCombatTarget(): a roster that
+    // engaged once read engaged forever and HandleTriggerBeginOverlap could never
+    // re-aggro it. That is precisely the bAggroTriggered latch the rewrite deleted,
+    // reintroduced through a different door.
+    //
+    // Evaluated on the 2s leash tick rather than off a death delegate because one
+    // test then covers all three ways a target stops being valid, on every enemy,
+    // with no per-target binding to keep in step.
+    AActor* BBTarget = GetTargetActor();
+
+    AGothicEnemyBase* Enemy = Cast<AGothicEnemyBase>(GetPawn());
+    AActor* PawnTarget = Enemy ? Enemy->GetCombatTarget() : nullptr;
+
+    if (!BBTarget && !PawnTarget)
+    {
+        return; // the disengaged steady state — nothing latched, nothing to do
+    }
+
+    // Either half still holding a live target keeps the engagement.
+    // GothicBTService_CombatSync reconciles the two at 5Hz, so clearing while one
+    // of them is valid would simply be undone on the next service tick.
+    if (IsFightableTarget(BBTarget) || IsFightableTarget(PawnTarget))
+    {
+        return;
+    }
+
+    UE_LOG(LogTemp, Verbose,
+        TEXT("GothicEnemyAIController[%s]: combat target is gone (blackboard=%s, pawn=%s) — disengaging"),
+        *GetNameSafe(GetPawn()), *GetNameSafe(BBTarget), *GetNameSafe(PawnTarget));
+
+    ClearCombatTarget();
 }
 
 FPathFollowingRequestResult AGothicEnemyAIController::MoveTo(
@@ -522,19 +591,42 @@ void AGothicEnemyAIController::OnLeashReset()
 
 void AGothicEnemyAIController::EnterRegroupPause(float Duration)
 {
-    if (UBehaviorTreeComponent* BTComp =
-        Cast<UBehaviorTreeComponent>(GetBrainComponent()))
+    UBehaviorTreeComponent* BTComp = Cast<UBehaviorTreeComponent>(GetBrainComponent());
+    if (!BTComp)
     {
-        BTComp->PauseLogic(TEXT("PackRegroup"));
+        return;
+    }
 
-        FTimerHandle RegroupTimer;
-        GetWorldTimerManager().SetTimer(RegroupTimer, [BTComp]()
-        {
-            if (BTComp)
-            {
-                BTComp->ResumeLogic(TEXT("PackRegroup"));
-            }
-        }, Duration, false);
+    // One pause at a time. Two pack members dying inside PackRegroupDuration used
+    // to arm two independent timers, and the first to fire resumed the tree while
+    // the second pause was still nominally running.
+    GetWorldTimerManager().ClearTimer(RegroupPauseTimer);
 
+    BTComp->PauseLogic(TEXT("PackRegroup"));
+
+    // Bound to THIS, not to a lambda capturing a raw UBehaviorTreeComponent*.
+    //
+    // The old form was crash-shaped in two ways at once. The handle was a LOCAL,
+    // so the timer could neither be cancelled nor cleared when the controller or
+    // pawn was destroyed; and the lambda captured the brain component by raw
+    // pointer, which `if (BTComp)` then tested for null rather than for validity —
+    // a pack member dying inside the window dereferenced a dangling pointer. A
+    // UObject-bound timer is dropped automatically when its object goes away, and
+    // the member handle makes the pause cancellable.
+    GetWorldTimerManager().SetTimer(
+        RegroupPauseTimer,
+        this,
+        &AGothicEnemyAIController::EndRegroupPause,
+        FMath::Max(0.01f, Duration),
+        false);
+}
+
+void AGothicEnemyAIController::EndRegroupPause()
+{
+    // Re-resolved rather than captured: the brain component this controller owns
+    // at resume time is the only one it is safe to talk to.
+    if (UBehaviorTreeComponent* BTComp = Cast<UBehaviorTreeComponent>(GetBrainComponent()))
+    {
+        BTComp->ResumeLogic(TEXT("PackRegroup"));
     }
 }
