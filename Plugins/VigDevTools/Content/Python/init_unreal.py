@@ -48,6 +48,10 @@ _TOOLSETS = (
     ("vigil_combat_toolset", "VigilCombatDrive"),
     ("vig_blackboard_tools", "VigBlackboardTools"),
     ("vig_encounter_tools", "VigEncounterTools"),
+    # Asset editors, not PIE observers: these two work on the BT and montage
+    # assets themselves and do not need (or check for) a running game world.
+    ("vig_bt_edit_tools", "VigBTEditTools"),
+    ("vig_anim_notify_tools", "VigAnimNotifyTools"),
 )
 # vig_gas_tools is deliberately NOT registered: attributes, active effects,
 # granted abilities and owned tags are already covered by the engine's own
