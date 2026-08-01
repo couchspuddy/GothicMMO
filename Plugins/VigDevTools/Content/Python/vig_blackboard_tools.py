@@ -675,6 +675,15 @@ def _los_trace(world, pawn, target, cone):
     engine's own trace ignores the listener actor via a query param this route
     reproduces with an ignore list. Treat a disagreement with the engine's
     stimulus record as the trace being wrong, not the engine.
+
+    EVERY `blocked` VALUE THIS EVER REPORTED BEFORE 2026-07 WAS WRONG. The old
+    code read `(bool(hit), None)` when line_trace_single did not return a
+    tuple -- and on this build it never does, it returns a bare FHitResult. A
+    UE struct defines no __bool__, so bool() on it is unconditionally True:
+    this reported blocked=True on every call it ever made, whether or not
+    anything was in the way. It now goes through common.line_trace, which reads
+    FHitResult.bBlockingHit, and reports the observed binding shape alongside
+    the result.
     """
     if cone.get("verdict") != "IN_CONE":
         return {"skipped": "cone test did not pass; the engine never traces in "
@@ -689,25 +698,22 @@ def _los_trace(world, pawn, target, cone):
                          % (type(exc).__name__, exc)}
 
     try:
-        hit = unreal.SystemLibrary.line_trace_single(
+        blocked, result, shape = common.line_trace(
             world,
             unreal.Vector(eye[0], eye[1], eye[2]),
             target.get_actor_location(),
             visibility,
-            False,
-            [pawn],
-            unreal.DrawDebugTrace.NONE,
-            True)
+            ignore_actors=[pawn])
     except Exception as exc:
         return {"error": "line_trace_single failed: %s: %s"
                          % (type(exc).__name__, exc)}
 
-    blocked, result = (hit[0], hit[1]) if isinstance(hit, tuple) else (bool(hit), None)
     row = {
         "channel": "Visibility (%s) -- assumed equal to the AI system's "
                    "DefaultSightCollisionChannel (ECC_Visibility)"
                    % visibility_note,
-        "blocked": bool(blocked),
+        "blocked": blocked,
+        "trace_return_shape": shape,
     }
     if blocked and result is not None:
         row["blocking_actor"] = common.try_read(
