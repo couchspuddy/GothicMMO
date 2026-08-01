@@ -8,6 +8,7 @@
 #include "NiagaraComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "TimerManager.h"
+#include "GothicMMO.h"
 
 UGothicVitalPointComponent::UGothicVitalPointComponent()
 {
@@ -237,7 +238,29 @@ bool UGothicVitalPointComponent::IsVitalPointHit(const FVector& HitWorldLocation
     // has no idea who is shooting it.
     const float EffectiveRadius = FMath::Max(0.f, HitDetectionRadius + BonusRadius);
 
-    return Distance <= EffectiveRadius;
+    const bool bIsHit = Distance <= EffectiveRadius;
+
+    // Logged unconditionally because the only callers are the per-shot damage path
+    // in GA_Fire and the offline combat probe — nothing ticks this. The numbers
+    // matter more than the verdict: "vital: false" never explained anything, so the
+    // impact point, the vital's location AT TEST TIME, the measured distance and the
+    // threshold's two halves all go out on one line. BonusRadius reads 0 today
+    // (VitalPointRadius is a stat nothing rolls) and seeing that zero explicitly is
+    // itself the answer to "was the shooter's radius bonus applied?".
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VitalGeometry: %s vital[%d] impact=%s vital=%s dist=%.1f threshold=%.1f "
+             "(HitDetectionRadius=%.1f + BonusRadius=%.1f) => %s"),
+        GetOwner() ? *GetOwner()->GetName() : TEXT("<no owner>"),
+        ActiveVitalIndex,
+        *HitWorldLocation.ToCompactString(),
+        *CurrentLocation.ToCompactString(),
+        Distance,
+        EffectiveRadius,
+        HitDetectionRadius,
+        BonusRadius,
+        bIsHit ? TEXT("VITAL") : TEXT("body"));
+
+    return bIsHit;
 }
 
 void UGothicVitalPointComponent::OnShiftTimerFired()
