@@ -186,8 +186,24 @@ protected:
     float FallbackRoundsPerMinute = 171.f;
 
     /**
+     * Noise loudness used when the pawn has no weapon data to read — same fallback
+     * role as Damage, TraceRange and FallbackRoundsPerMinute above. A weapon with a
+     * data asset always wins via UGothicWeaponData::FireNoiseLoudness, which is
+     * where the meaning of the number is documented.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire", meta = (ClampMin = "0.0", UIMax = "3.0"))
+    float FallbackFireNoiseLoudness = 1.f;
+
+    /**
      * Server-only. Traces on ECC_Weapon (the mesh, not the capsule), resolves the
      * vital point, applies damage, and multicasts impact feedback.
      */
     void PerformFireTrace(AGothicPlayerCharacter* Char);
+
+    /**
+     * Server-only. Reports the gunshot to the AI hearing sense so enemies that
+     * cannot SEE the shot still learn about it. Runs on every shot, before the
+     * trace and independent of it — a missed shot is exactly as loud as a hit.
+     */
+    void ReportFireNoise(AGothicPlayerCharacter* Char) const;
 };

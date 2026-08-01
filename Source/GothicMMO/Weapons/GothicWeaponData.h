@@ -140,6 +140,32 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire")
     float TraceRange = 5000.f;
 
+    /**
+     * How loud this weapon is to the Accursed. GA_Fire reports a hearing stimulus
+     * at the shooter on every shot; this is the Loudness passed to
+     * UAISense_Hearing::ReportNoiseEvent.
+     *
+     * It is NOT a distance. Loudness MULTIPLIES each listener's own HearingRange
+     * (AISense_Hearing::Update compares DistToSoundSq against
+     * HearingRangeSq * Loudness^2), so the audible radius of a shot is
+     * ListenerHearingRange * Loudness, per listener.
+     *
+     * 1.0 is therefore "audible at exactly the range the listener is configured
+     * to hear" — 800 cm for everything deriving from AGothicEnemyBase. That is
+     * the only value derivable from the existing configuration rather than
+     * invented, so it is the default and no weapon is quieter or louder until
+     * someone authors it.
+     *
+     * For reference when tuning: 1.875 would make a shot audible at 1500 cm,
+     * matching the enemy's SightRadius; 2.5 would match the 2000 cm
+     * LoseSightRadius. A Sawed-Off wanting to be heard across a street and a
+     * Derringer wanting to stay quiet are exactly what this field is for.
+     *
+     * Zero silences the weapon entirely.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire", meta = (ClampMin = "0.0", UIMax = "3.0"))
+    float FireNoiseLoudness = 1.f;
+
     // -------------------------------------------------------------------------
     // Shock — the electrical repeater's two hooks. Both default to off, so every
     // ordinary weapon is unaffected and this stays a property of the one Rig

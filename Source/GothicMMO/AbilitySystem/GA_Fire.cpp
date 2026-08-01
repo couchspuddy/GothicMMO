@@ -13,6 +13,7 @@
 #include "Animation/AnimMontage.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
+#include "Perception/AISense_Hearing.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 
@@ -156,9 +157,13 @@ void UGA_Fire::ActivateAbility(
         OnFireCosmetic();
     }
 
-    // Authoritative half — the server alone decides what was hit and for how much.
+    // Authoritative half — the server alone decides what was hit and for how much,
+    // and the server alone owns the perception system, so the noise is reported here
+    // rather than alongside the cosmetics. Reported BEFORE the trace so a shot that
+    // hits nothing is still just as loud.
     if (HasAuthority(&ActivationInfo))
     {
+        ReportFireNoise(Char);
         PerformFireTrace(Char);
     }
 
@@ -214,6 +219,48 @@ void UGA_Fire::ApplyCooldown(
         FGameplayTag::RequestGameplayTag(FName("Data.Cooldown")), FireInterval);
 
     ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, Spec);
+}
+
+void UGA_Fire::ReportFireNoise(AGothicPlayerCharacter* Char) const
+{
+    if (!Char)
+    {
+        return;
+    }
+
+    const UGothicWeaponData* WeaponData = Char->GetActiveWeaponData();
+    const float Loudness = WeaponData ? WeaponData->FireNoiseLoudness : FallbackFireNoiseLoudness;
+
+    // A weapon can be authored silent. Skip rather than report a zero-loudness
+    // event the sense would discard anyway.
+    if (Loudness <= 0.f)
+    {
+        return;
+    }
+
+    // The shooter, not the weapon mesh, and not the camera:
+    //
+    //   - Instigator MUST be the pawn. It becomes the perceived actor on the
+    //     listener's side, which is the actor OnPerceptionUpdated hands to
+    //     SetCombatTarget. Passing the ability, the weapon mesh, or nullptr would
+    //     make enemies aggro onto something that is not the player (or, for
+    //     nullptr, onto nothing while still burning the stimulus).
+    //   - The location is the pawn's, not the camera's or the muzzle's. The
+    //     weapon is hand-socket attached and has no guaranteed muzzle socket, and
+    //     at an 800 cm audible radius the tens of centimetres between eye, hand
+    //     and root are noise in the arithmetic, not signal.
+    //
+    // MaxRange is deliberately 0 — "no absolute limit". That leaves each
+    // listener's own HearingRange as the authority on how far it can hear, which
+    // is where the 800 cm on AGothicEnemyBase is configured. Passing a range here
+    // would silently override that per-enemy tuning from the shooter's side.
+    UAISense_Hearing::ReportNoiseEvent(
+        Char->GetWorld(),
+        Char->GetActorLocation(),
+        Loudness,
+        Char,
+        /*MaxRange=*/0.f,
+        FName(TEXT("Gunshot")));
 }
 
 void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
