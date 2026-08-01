@@ -221,15 +221,12 @@ void AGothicEnemyBase::BeginPlay()
         }
     }
 
-    if (AbilitySystemComponent && AttributeSet)
-    {
-        AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
-            UGothicAttributeSet::GetHealthAttribute()).AddLambda(
-            [this](const FOnAttributeChangeData& Data)
-            {
-                // Health changed — Blueprint widget can poll this
-            });
-    }
+    // A Health attribute-change delegate was registered here with an empty lambda
+    // body ("Blueprint widget can poll this"). It cost a delegate binding and a
+    // callback on every damage instance to do nothing, and it read as if health
+    // changes were being handled. The health bar is driven from
+    // MulticastOnHit -> RegisterEnemyHealthBar; nothing needed this. Removed
+    // rather than filled in — there is no second consumer to write for.
 }
 
 void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
@@ -251,6 +248,14 @@ void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
 
             if (bSensed)
             {
+                // Re-sensing the current target cancels a forget already counting
+                // down — stepping back out from behind a pillar must not cost the
+                // engagement.
+                if (Actor == CombatTarget)
+                {
+                    GetWorldTimerManager().ClearTimer(ForgetTargetTimer);
+                }
+
                 // Health bars are now the HUD's canvas system (screen-projected,
                 // player-facing), driven by RegisterEnemyHealthBar on hit — not
                 // the old world-space HealthBarWidget, which never faced the
@@ -258,7 +263,74 @@ void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
                 SetCombatTarget(Actor);
                 break;
             }
+
+            // Stimulus expired (SetMaxAge 5) or the actor left LoseSightRadius.
+            // Before this, OnPerceptionUpdated ONLY ever set a target — there was
+            // no lost-perception path at all, and the leash timer was the single
+            // route out of combat in the whole AI stack.
+            if (Actor == CombatTarget)
+            {
+                HandleTargetPerceptionLost();
+            }
         }
+    }
+}
+
+void AGothicEnemyBase::HandleTargetPerceptionLost()
+{
+    if (!bForgetTargetOnPerceptionLoss || !HasAuthority())
+    {
+        return;
+    }
+
+    // Already counting down — do not restart the clock on every expiring stimulus,
+    // or an enemy that keeps half-sensing the player never reaches the deadline.
+    if (GetWorldTimerManager().IsTimerActive(ForgetTargetTimer))
+    {
+        return;
+    }
+
+    GetWorldTimerManager().SetTimer(
+        ForgetTargetTimer,
+        this,
+        &AGothicEnemyBase::ForgetTargetIfStillUnseen,
+        FMath::Max(0.1f, TargetForgetSeconds),
+        false);
+}
+
+void AGothicEnemyBase::ForgetTargetIfStillUnseen()
+{
+    if (!CombatTarget)
+    {
+        return;
+    }
+
+    // Re-ask perception rather than trusting the timer to have been cancelled.
+    // The cancel above only fires on an OnPerceptionUpdated that names THIS actor;
+    // asking directly is the answer that cannot go stale.
+    FActorPerceptionBlueprintInfo Info;
+    if (PerceptionComponent && PerceptionComponent->GetActorsPerception(CombatTarget, Info))
+    {
+        for (const FAIStimulus& Stimulus : Info.LastSensedStimuli)
+        {
+            if (Stimulus.WasSuccessfullySensed())
+            {
+                return;
+            }
+        }
+    }
+
+    UE_LOG(LogTemp, Verbose,
+        TEXT("GothicEnemyBase[%s]: target %s unseen for %.1fs — forgetting"),
+        *GetName(), *GetNameSafe(CombatTarget), TargetForgetSeconds);
+
+    if (AGothicEnemyAIController* GothicAIC = Cast<AGothicEnemyAIController>(GetController()))
+    {
+        GothicAIC->ClearCombatTarget();
+    }
+    else
+    {
+        ClearCombatTarget();
     }
 }
 
@@ -442,6 +514,39 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
             // stopping montages here cannot interrupt the death animation itself.
             Anim->StopAllMontages(0.15f);
         }
+    }
+
+    // Drop the combat latch on the way down.
+    //
+    // Nothing but AGothicEnemyAIController::BreakLeash ever called
+    // ClearCombatTarget, so a corpse kept pointing at whoever it had been fighting
+    // for its whole CorpseLifetime — and CombatSync, which reconciles the pawn
+    // latch back into the Blackboard at 5Hz, was free to re-publish that target
+    // into a tree that had not stopped ticking yet. Routed through the controller
+    // so BOTH halves go (pawn latch, Blackboard keys, focus lock, walk speed);
+    // the pawn-only fallback covers an enemy that died unpossessed.
+    if (AGothicEnemyAIController* GothicAIC = Cast<AGothicEnemyAIController>(GetController()))
+    {
+        GothicAIC->ClearCombatTarget();
+    }
+    else
+    {
+        ClearCombatTarget();
+    }
+
+    // Kill the vital shimmer and the amber overlay glow, and stop the shift timer.
+    //
+    // UGothicVitalPointComponent::HandleOwnerDeath had ZERO callers. Its own header
+    // says "call from PlayDeathCosmetics" — a function that does not exist in this
+    // project — so corpses kept glowing and kept shifting their vital point for the
+    // full CorpseLifetime. This is the death path that does exist.
+    //
+    // Cosmetic-only work, but called unconditionally: the component itself already
+    // decides what it owns per net mode (a dedicated server never spawned a
+    // shimmer, and the timer it clears is server-side).
+    if (VitalPointComponent)
+    {
+        VitalPointComponent->HandleOwnerDeath();
     }
 
     if (AAIController* AIC = Cast<AAIController>(GetController()))

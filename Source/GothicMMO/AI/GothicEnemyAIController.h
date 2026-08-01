@@ -224,9 +224,16 @@ protected:
      * Should be larger than the perception LoseSightRadius.
      *
      * Measured HORIZONTALLY from PatrolOrigin, like every other range in this
-     * class — see IsTargetInAttackRange for why. Unchanged at 3000 (~8.5x the
-     * 350uu reposition orbit, 10x the 300uu engage distance): it was already the
-     * tuned value, and the leash never failing had nothing to do with its size.
+     * class — see IsTargetInAttackRange for why. 3000 was already the tuned C++
+     * default, and the leash never failing had nothing to do with its size.
+     *
+     * The ratios that used to be quoted here ("~8.5x the reposition orbit, 10x
+     * the engage distance") described the C++ CDO and NOTHING ELSE, which made
+     * them wrong everywhere they mattered. Blueprint children override both
+     * numbers: the Bestial Lucid runs LeashRange 10000 against a
+     * PreferredEngageDistance of 150 — a ratio of ~67x, not 10x — and the
+     * reposition radius is a property of the tree, not of this class (boss 350,
+     * Thrall 450). Read the values off the Blueprint, not off this comment.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI")
     float LeashRange = 3000.f;
@@ -350,6 +357,25 @@ private:
     /** Periodic check to see if the target escaped the leash range. */
     FTimerHandle LeashCheckTimer;
     void CheckLeash();
+
+    /**
+     * True when Actor is still worth fighting: valid, and alive if it is a
+     * AGothicCharacterBase. Static because it asks nothing of this controller.
+     */
+    static bool IsFightableTarget(const AActor* Actor);
+
+    /**
+     * Clears the engagement when neither the Blackboard key nor the pawn latch
+     * still holds a fightable target. Run from CheckLeash — see its body for why
+     * this exists at all (nothing but BreakLeash ever cleared a combat target).
+     */
+    void DropTargetIfNoLongerFightable();
+
+    /** Handle for the pack-regroup BT pause. Member, so the pause is cancellable. */
+    FTimerHandle RegroupPauseTimer;
+
+    /** Resumes the behaviour tree after EnterRegroupPause. */
+    void EndRegroupPause();
 
     /** True from BreakLeash until the enemy is home (or the failsafe fires). */
     bool bLeashReturning = false;

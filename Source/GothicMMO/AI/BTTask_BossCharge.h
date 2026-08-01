@@ -24,6 +24,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/EngineTypes.h"
 #include "BehaviorTree/BTTaskNode.h"
 #include "BTTask_BossCharge.generated.h"
 
@@ -46,6 +47,19 @@ public:
     virtual void TickTask(
         UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory,
         float DeltaSeconds) override;
+
+    /**
+     * Unwinds the charge when the tree aborts it (observer abort, branch change,
+     * the boss dying mid-run).
+     *
+     * There was no override at all, and ExecuteTask overwrites MaxWalkSpeed with
+     * ChargeSpeed — so an aborted charge left the boss permanently at 1200cm/s
+     * with nothing on any code path to put it back. Also cancels the stagger
+     * timer, which would otherwise fire FinishLatentTask into a task the tree has
+     * already moved on from.
+     */
+    virtual EBTNodeResult::Type AbortTask(
+        UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
 
     virtual uint16 GetInstanceMemorySize() const override;
     virtual FString GetStaticDescription() const override;
@@ -115,6 +129,25 @@ struct FBTBossChargeMemory
     float DistanceTraveled;
     float DefaultWalkSpeed;
     bool bImpacted;
+
+    /**
+     * Latched once the post-impact stagger timer has been armed.
+     *
+     * bImpacted alone was not enough: TickTask keeps running until that timer
+     * fires, and the impact branch re-entered every frame of the window, arming a
+     * NEW stagger timer each time. Every one of them then called FinishLatentTask
+     * on a task that had already finished.
+     */
+    bool bStaggerStarted;
+
+    /**
+     * The armed stagger timer, so an abort can cancel it.
+     *
+     * Safe in this zero-initialised memory block for the same reason the raw
+     * pointers above are: FTimerHandle is a trivially copyable, trivially
+     * destructible wrapper over a uint64 with no lifetime of its own.
+     */
+    FTimerHandle StaggerTimer;
 
     /**
      * Who this charge has already hit.

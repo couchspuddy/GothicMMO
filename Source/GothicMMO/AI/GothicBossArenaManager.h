@@ -17,6 +17,21 @@
 
 class AGothicRotundaPillar;
 
+/**
+ * Fires when a pillar falls, carrying the new aggression multiplier and the new
+ * standing-pillar count.
+ *
+ * The escalation curve had NO consumer of any kind: OnPillarDestroyed computed
+ * the multiplier into a local and returned, and GetAggressionMultiplier had zero
+ * callers project-wide — so destroying pillars changed nothing whatsoever about
+ * the boss. This is the reachable half of the fix. What the multiplier should
+ * actually SCALE is a design decision that has not been made (see the comment on
+ * OnPillarDestroyed), so the value is broadcast where a Blueprint can act on it
+ * today rather than being silently spent on a mechanic nobody chose.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
+    FOnArenaAggressionChanged, float, NewAggressionMultiplier, int32, PillarsRemaining);
+
 UCLASS()
 class GOTHICMMO_API AGothicBossArenaManager : public AActor
 {
@@ -46,6 +61,10 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Gothic|Arena")
     bool AnyPillarsRemaining() const { return GetPillarsRemaining() > 0; }
+
+    /** Broadcast on every pillar loss with the recomputed aggression multiplier. */
+    UPROPERTY(BlueprintAssignable, Category = "Gothic|Arena")
+    FOnArenaAggressionChanged OnArenaAggressionChanged;
 
 protected:
     virtual void BeginPlay() override;

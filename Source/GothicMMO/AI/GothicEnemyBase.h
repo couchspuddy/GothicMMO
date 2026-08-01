@@ -312,6 +312,40 @@ protected:
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|Combat")
     bool bRetaliationOverridesCurrentTarget = false;
 
+    /**
+     * Whether losing sight of the combat target for TargetForgetSeconds drops it.
+     *
+     * DEFAULT FALSE, and that is a design decision waiting on a playtest rather
+     * than a value derived from anything measurable — see the note below.
+     *
+     * The mechanism exists because OnPerceptionUpdated had no lost-perception path
+     * at all: it only ever SET targets, which left the leash timer as the single
+     * route out of combat in the entire AI stack. But turning it on is not
+     * obviously correct. The perception config is LoseSightRadius 2000 with
+     * SetMaxAge 5, and the fights this would run in are pillared arenas — the
+     * Rotunda above all. Every time the player breaks line of sight behind a
+     * pillar the stimulus expires, so an eager forget would have the Bestial Lucid
+     * disengage from a player standing ten metres away with a column between them.
+     *
+     * The two disengage routes that ARE unambiguously correct — the target dying,
+     * and this enemy dying — run unconditionally and do not depend on this flag.
+     * The leash already covers "the player left the arena".
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|Combat")
+    bool bForgetTargetOnPerceptionLoss = false;
+
+    /**
+     * How long the target may go unsensed before it is dropped (seconds).
+     *
+     * 8 is a floor, not a tuning result: the sight config's own SetMaxAge is 5, so
+     * anything at or below that would fire on the stimulus expiry itself and make
+     * the delay meaningless. It wants a playtest behind a pillar before it is
+     * trusted — measure how long a real LOS break lasts in the Rotunda and set
+     * this above the worst case.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|Combat")
+    float TargetForgetSeconds = 8.f;
+
 private:
     UPROPERTY()
     TObjectPtr<AActor> CombatTarget;
@@ -322,6 +356,15 @@ private:
 
     UFUNCTION()
     void OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors);
+
+    /** Arms the forget countdown when the current target stops being sensed. */
+    void HandleTargetPerceptionLost();
+
+    /** Countdown expiry — drops the target if perception still cannot see it. */
+    void ForgetTargetIfStillUnseen();
+
+    /** Handle for the lost-perception forget countdown. */
+    FTimerHandle ForgetTargetTimer;
 
     /** Delayed destruction after death animation plays out. */
     void DestroyCorpse();
