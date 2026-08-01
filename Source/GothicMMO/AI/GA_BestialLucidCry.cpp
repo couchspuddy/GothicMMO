@@ -25,6 +25,8 @@ void UGA_BestialLucidCry::ActivateAbility(
 {
     Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
 
+    ActivationTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+
     if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
     {
         EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
@@ -108,6 +110,11 @@ void UGA_BestialLucidCry::PerformCry()
 {
     AActor* Avatar = GetAvatarActorFromActorInfo();
 
+    // How long the player actually had — same measurement as the Roar's, so
+    // the two stuns can be compared from one log. See PerformRoarStun.
+    const double TelegraphSeconds =
+        GetWorld() ? GetWorld()->GetTimeSeconds() - ActivationTimeSeconds : 0.0;
+
     // ── AOE Stun (same as Roar) ──────────────────────────────────────
 
     TArray<AActor*> IgnoreActors;
@@ -136,6 +143,12 @@ void UGA_BestialLucidCry::PerformCry()
         }
     }
 
+    UE_LOG(LogTemp, Verbose,
+        TEXT("Cry[%s]: stun landed %.2fs after activation (%s path, WindupDelay %.2f) — "
+             "%d of %d players in %.0fuu radius"),
+        *Avatar->GetName(), TelegraphSeconds,
+        MontageToPlay ? TEXT("montage hit-window") : TEXT("windup timer"),
+        WindupDelay, PlayersHit, Overlapping.Num(), StunRadius);
 
     // ── Spawn Thralls ────────────────────────────────────────────────
     // Off by configuration (MaxCryThralls defaults to 0), not by deletion.

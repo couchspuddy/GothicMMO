@@ -287,6 +287,10 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     // why that matters when this function runs twice per pawn.
     BindHUDAttributeDelegates();
 
+    // Make State.Stunned actually stop the player — same idempotency rules.
+    // See HandleStunTagChanged.
+    BindStunTagListener();
+
     // Bind to inventory equipment changes so weapon slots update when gear is equipped
     // Guarded: PossessedBy + OnRep_PlayerState both call InitGASFromPlayerState
     if (!bInventoryBound)
@@ -446,6 +450,125 @@ void AGothicPlayerCharacter::UnbindHUDAttributeDelegates()
     BoundHUDAttributeASC.Reset();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Stun — State.Stunned stops the player, not just the player's abilities
+// ═══════════════════════════════════════════════════════════════════════════
+
+void AGothicPlayerCharacter::BindStunTagListener()
+{
+    // Remove first, always — InitGASFromPlayerState runs twice per pawn
+    // (PossessedBy and OnRep_PlayerState), and a doubled registration would
+    // double-count the controller's ref-counted move-input ignore.
+    UnbindStunTagListener();
+
+    if (!AbilitySystemComponent)
+    {
+        return;
+    }
+
+    // Registered on server AND owning client — the two halves of the handler
+    // live on different machines. Copies the registration pattern from
+    // AGothicEnemyBase::BeginPlay, plus the handle bookkeeping the enemy does
+    // not need: its ASC dies with it, ours lives on the PlayerState and would
+    // keep calling the OLD pawn's handler between its death and its GC.
+    BoundStunTagASC = AbilitySystemComponent;
+    StunTagChangedHandle = AbilitySystemComponent->RegisterGameplayTagEvent(
+        FGameplayTag::RequestGameplayTag(FName("State.Stunned")),
+        EGameplayTagEventType::NewOrRemoved)
+        .AddUObject(this, &AGothicPlayerCharacter::HandleStunTagChanged);
+}
+
+void AGothicPlayerCharacter::UnbindStunTagListener()
+{
+    // Whatever else happens, the controller gets its move input back. It
+    // survives the pawn, so an ignore left behind by a pawn that died stunned
+    // would arrive on the respawned pawn as a player who can never move again.
+    ClearStunMoveInputIgnore();
+
+    UGothicAbilitySystemComponent* ASC = BoundStunTagASC.Get();
+    if (ASC && StunTagChangedHandle.IsValid())
+    {
+        ASC->RegisterGameplayTagEvent(
+            FGameplayTag::RequestGameplayTag(FName("State.Stunned")),
+            EGameplayTagEventType::NewOrRemoved).Remove(StunTagChangedHandle);
+    }
+
+    StunTagChangedHandle.Reset();
+    BoundStunTagASC.Reset();
+}
+
+void AGothicPlayerCharacter::HandleStunTagChanged(const FGameplayTag CallbackTag, int32 NewCount)
+{
+    const bool bStunned = NewCount > 0;
+
+    // Server half — movement mode. CharacterMovement replicates it, so cutting
+    // it here is what stops the pawn everywhere. Mirrors
+    // AGothicEnemyBase::HandleStunTagChanged, minus the AI brain pause a
+    // player-controlled pawn does not have.
+    if (HasAuthority())
+    {
+        if (UCharacterMovementComponent* Move = GetCharacterMovement())
+        {
+            if (bStunned)
+            {
+                // StopMovementImmediately alone is not enough — held input
+                // would re-issue velocity on the next tick, so the mode has to
+                // go too.
+                Move->StopMovementImmediately();
+                Move->SetMovementMode(MOVE_None);
+            }
+            else if (!AbilitySystemComponent ||
+                     !AbilitySystemComponent->HasMatchingGameplayTag(
+                         FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
+            {
+                // Restore — but never over the death path. OnDeath's
+                // DisableMovement also parks the pawn in MOVE_None, and a
+                // player who dies mid-stun still has the 2s stun GE ticking on
+                // the PlayerState ASC; its expiry lands here and must not put
+                // a corpse back on its feet.
+                Move->SetMovementMode(MOVE_Walking);
+            }
+        }
+    }
+
+    // Input half — runs wherever the controller lives, which on a dedicated
+    // server is the owning client (the tag replicates to it). Move input only:
+    // abilities are already blocked by the tag, and LOOK stays free on purpose,
+    // because a stunned player watching the boss wind up is the entire point of
+    // a telegraphed stun. Ignoring input rather than just zeroing the mode also
+    // covers the owning client, where AddMovementInput would otherwise keep
+    // feeding a prediction the server has to fight.
+    if (bStunned)
+    {
+        // Controller can legitimately be null here — the respawn window — in
+        // which case there is no input to ignore and MOVE_None already holds.
+        if (AController* StunController = GetController())
+        {
+            StunController->SetIgnoreMoveInput(true);
+            StunMoveIgnoredController = StunController;
+        }
+    }
+    else
+    {
+        ClearStunMoveInputIgnore();
+    }
+
+    UE_LOG(LogTemp, Verbose, TEXT("Stun[%s]: %s"),
+        *GetName(), bStunned ? TEXT("halted") : TEXT("resumed"));
+}
+
+void AGothicPlayerCharacter::ClearStunMoveInputIgnore()
+{
+    // Paid back on the controller that took it, not whoever GetController()
+    // returns now — SetIgnoreMoveInput is ref-counted per controller, and an
+    // unpossess between add and remove would otherwise strand the count at 1.
+    if (AController* StunController = StunMoveIgnoredController.Get())
+    {
+        StunController->SetIgnoreMoveInput(false);
+    }
+    StunMoveIgnoredController.Reset();
+}
+
 void AGothicPlayerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
     // THE respawn crash fix. The ASC lives on the PlayerState and survives this
@@ -454,6 +577,11 @@ void AGothicPlayerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
     // freed memory. Unbinding here is what makes the pawn's death final as far
     // as the ASC is concerned.
     UnbindHUDAttributeDelegates();
+
+    // Same lifetime problem, same fix — and this one also pays back the
+    // controller's move-input ignore, which would otherwise outlive the pawn
+    // and freeze the respawned one. See UnbindStunTagListener.
+    UnbindStunTagListener();
 
     Super::EndPlay(EndPlayReason);
 }
