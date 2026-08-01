@@ -26,6 +26,83 @@ PROBE_DIR = "VigilMCP"
 
 
 # --------------------------------------------------------------------------
+# Python-name resolution for engine classes
+#
+# THE SCRIPTNAME TRAP
+# -------------------
+# A UCLASS may carry meta=(ScriptName="..."), and PyGenUtil renames the class
+# in the Python bindings to that value. The C++ name then does not exist in
+# Python at all -- getattr raises AttributeError, which reads exactly like "the
+# engine does not have this feature" and has now cost this harness two rounds
+# of misdiagnosis.
+#
+# Confirmed instances in play here:
+#   UAIBlueprintHelperLibrary      -> unreal.AIHelperLibrary
+#                                     (AIBlueprintHelperLibrary.h:25)
+#   UAbilitySystemBlueprintLibrary -> unreal.AbilitySystemLibrary
+#   UBlueprintGameplayTagLibrary   -> unreal.GameplayTagLibrary
+#
+# Rather than hard-code one spelling and fail opaquely, resolve() takes every
+# candidate spelling and, on total failure, raises an error carrying the actual
+# contents of dir(unreal) that look related. The next person to hit a rename
+# gets the answer in the error text instead of another investigation.
+# --------------------------------------------------------------------------
+
+_class_cache = {}
+
+
+def resolve_class(candidates, purpose, hint_tokens=()):
+    """The first name in `candidates` that exists on `unreal`. Never returns None.
+
+    Args:
+        candidates: Python name spellings to try, most likely first.
+        purpose: What the caller wanted it for, quoted back in the error.
+        hint_tokens: Substrings used to list near-misses out of dir(unreal)
+            when nothing resolves, so a rename is diagnosable from the error
+            alone without an editor session.
+
+    Raises:
+        LookupError: Naming every candidate tried and every near-miss found.
+    """
+    key = tuple(candidates)
+    cached = _class_cache.get(key)
+    if cached is not None:
+        return cached
+
+    for name in candidates:
+        obj = getattr(unreal, name, None)
+        if obj is not None:
+            _class_cache[key] = obj
+            return obj
+
+    tokens = tuple(hint_tokens) or tuple(candidates[:1])
+    near = sorted(
+        n for n in dir(unreal)
+        if not n.startswith("_") and any(t in n for t in tokens))
+    raise LookupError(
+        "None of %s exist on this build's `unreal` module, so %s is "
+        "unavailable. This is usually a meta=(ScriptName=\"...\") rename, not a "
+        "missing feature -- check the UCLASS line in the engine header. "
+        "Related names that DO exist: %s"
+        % (list(candidates), purpose,
+           ", ".join(near) if near else "(none matching %s)" % list(tokens)))
+
+
+def ai_helper_library():
+    """UAIBlueprintHelperLibrary's Python binding.
+
+    ScriptName="AIHelperLibrary" (AIBlueprintHelperLibrary.h:25), so
+    unreal.AIBlueprintHelperLibrary does NOT exist. The C++ spelling is kept as
+    a fallback candidate purely so a future engine build that drops the meta
+    keeps working.
+    """
+    return resolve_class(
+        ("AIHelperLibrary", "AIBlueprintHelperLibrary"),
+        "AI spawning and blackboard access",
+        hint_tokens=("AIHelper", "AIBlueprint", "AIController"))
+
+
+# --------------------------------------------------------------------------
 # World access
 # --------------------------------------------------------------------------
 
@@ -193,6 +270,12 @@ def blackboard(actor):
     UFUNCTION, AIBlueprintHelperLibrary.h:52-53) and the BlueprintReadOnly
     `Blackboard` UPROPERTY (AIController.h:146-147).
 
+    NOTE: that helper is `unreal.AIHelperLibrary` in Python, not
+    `unreal.AIBlueprintHelperLibrary` -- see resolve_class above. The old
+    spelling raised AttributeError inside the try/except below, which silently
+    dropped the two BEST paths in this chain and left only the UPROPERTY
+    fallbacks doing the work.
+
     vig_blackboard_tools._blackboard learned this the hard way and keeps its own
     copy of the chain; this one exists so the probe and the encounter tools do
     not each re-derive it.
@@ -203,10 +286,12 @@ def blackboard(actor):
     except Exception:
         controller = None
 
-    attempts = [lambda: unreal.AIBlueprintHelperLibrary.get_blackboard(actor)]
+    helper = ai_helper_library()
+
+    attempts = [lambda: helper.get_blackboard(actor)]
     if controller is not None:
         attempts += [
-            lambda: unreal.AIBlueprintHelperLibrary.get_blackboard(controller),
+            lambda: helper.get_blackboard(controller),
             lambda: controller.get_editor_property("blackboard"),
             lambda: controller.get_component_by_class(unreal.BlackboardComponent),
         ]

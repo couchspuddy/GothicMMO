@@ -194,6 +194,50 @@ _SIGHT_FIELDS = (
 
 _AFFILIATION_FIELDS = ("detect_enemies", "detect_neutrals", "detect_friendlies")
 
+# Fields on the abstract base, so every sense config carries them
+# (AISenseConfig.h:23-35). bStartsEnabled loses its leading b in Python.
+_BASE_SENSE_FIELDS = ("max_age", "starts_enabled", "debug_color")
+
+# Per-config-class fields, cited to the engine headers. Anything NOT listed here
+# is still reported -- see _reflected_fields -- but listing the known ones keeps
+# the important values in a stable order with stable names.
+#
+# Hearing was the gap that made this rewrite necessary: it reported as a bare
+# {"class": "AISenseConfig_Hearing"} with no range at all, which made a live
+# HearingRange unreadable through MCP and stalled the gunfire-noise
+# investigation (configured 800, measured 400-700uu effective).
+_SENSE_CONFIG_FIELDS = {
+    # AISenseConfig_Sight.h
+    "AISenseConfig_Sight": _SIGHT_FIELDS,
+    # AISenseConfig_Hearing.h:26-38
+    "AISenseConfig_Hearing": ("hearing_range",) + _BASE_SENSE_FIELDS,
+    # AISenseConfig_Damage.h:19-20 -- Implementation only, no tunables
+    "AISenseConfig_Damage": _BASE_SENSE_FIELDS,
+    # AISenseConfig_Touch.h:18-19 -- affiliation only
+    "AISenseConfig_Touch": _BASE_SENSE_FIELDS,
+    # AISenseConfig_Team.h / AISenseConfig_Prediction.h -- base fields only
+    "AISenseConfig_Team": _BASE_SENSE_FIELDS,
+    "AISenseConfig_Prediction": _BASE_SENSE_FIELDS,
+}
+
+# Config classes carrying an FAISenseAffiliationFilter DetectionByAffiliation.
+# Sight: AISenseConfig_Sight.h. Hearing: AISenseConfig_Hearing.h:37-38.
+# Touch: AISenseConfig_Touch.h:18-19.
+_AFFILIATION_CLASSES = (
+    "AISenseConfig_Sight", "AISenseConfig_Hearing", "AISenseConfig_Touch")
+
+# LoSHearingRange / bUseLoSHearing are deprecated as of 5.2
+# (AISenseConfig_Hearing.h:29-35). They are deliberately NOT named in the table
+# above: their Python spellings are a snake_case guess, and a guessed name that
+# misses reads as "field absent" rather than "name wrong". The reflective sweep
+# below reports them under whatever name the bindings actually use, which is the
+# only spelling worth trusting.
+
+# Names the reflective sweep should not report as config data.
+_REFLECTION_NOISE = frozenset((
+    "implementation",  # TSubclassOf; serialises as a long path and says nothing
+))
+
 
 class PerceptionReadError(RuntimeError):
     """A perception read failed. Raised rather than reported as an empty list."""
@@ -208,12 +252,88 @@ def _sense_class(name):
     return cls
 
 
+def _affiliation(config):
+    """DetectionByAffiliation as a plain dict, or an error object."""
+    affil = common.try_read(
+        lambda c=config: c.get_editor_property("detection_by_affiliation"))
+    if isinstance(affil, dict):
+        return affil  # already an error object from try_read
+    if affil is None:
+        return {"error": "detection_by_affiliation read as None"}
+    return {
+        f: common.try_read(lambda a=affil, ff=f: a.get_editor_property(ff))
+        for f in _AFFILIATION_FIELDS
+    }
+
+
+def _reflected_fields(config, already_reported):
+    """Everything else the config object exposes, by reflection.
+
+    The per-class tables above are curated and therefore always behind the
+    engine. This sweep is the backstop: it walks the bindings' own property
+    descriptors so a field nobody thought to list still reaches the report. Any
+    field whose name is already covered by the table is skipped so the curated
+    ordering wins.
+
+    Reflection over dir() rather than a UStruct walk because the Python bindings
+    only create descriptors for BlueprintVisible/EditAnywhere UPROPERTYs, which
+    is exactly the set that get_editor_property can serve.
+    """
+    extra = {}
+    try:
+        names = dir(config)
+    except Exception as exc:
+        return {"_reflection_error": "%s: %s" % (type(exc).__name__, exc)}
+
+    for name in names:
+        if name.startswith("_") or name in already_reported:
+            continue
+        if name in _REFLECTION_NOISE:
+            continue
+        # Property descriptors live on the TYPE, so methods are filtered by
+        # looking there rather than at the instance.
+        #
+        # NOT isinstance(..., property): PyGenUtil binds UPROPERTYs through
+        # PyGetSetDef, which surfaces as `getset_descriptor`, and `property` is
+        # a different type entirely. Testing for `property` matches nothing and
+        # would have made this whole sweep a silent no-op -- exactly the
+        # silent-empty failure this module exists to avoid. The durable test is
+        # "a descriptor that is not callable".
+        descriptor = getattr(type(config), name, None)
+        if descriptor is None or callable(descriptor):
+            continue
+        if not hasattr(descriptor, "__get__"):
+            continue
+        extra[name] = common.try_read(
+            lambda c=config, f=name: c.get_editor_property(f))
+
+    if not extra:
+        # Distinguish "nothing left over" from "the sweep silently matched
+        # nothing because the descriptor test is wrong again".
+        extra["_reflection"] = (
+            "swept %d attribute(s) on %s; no readable properties beyond the "
+            "curated fields above" % (len(names), type(config).__name__))
+    return extra
+
+
 def _sense_configs(perception):
     """The component's live SensesConfig, field by field.
 
     SensesConfig is EditDefaultsOnly+Instanced on UAIPerceptionComponent, so it
     reads through get_editor_property. A sense that is present but unreadable
     shows as an error object; it is never omitted.
+
+    THIS READS THE LIVE INSTANCE, NOT THE CDO. That distinction is the whole
+    point of the tool: placed enemies freeze their overrides at placement and
+    drift from the C++ constructor, and placed Thralls have been observed
+    reporting SightConfig detect_neutrals true against a constructor default of
+    false. A CDO read would have reported the constructor's value and been
+    wrong about the running game.
+
+    Every sense gets the same treatment now. Hearing used to come back as a bare
+    {"class": "AISenseConfig_Hearing"} with no range field, which meant the live
+    HearingRange simply could not be read through MCP -- the gap that left a
+    configured 800 vs. measured 400-700uu effective radius undiagnosable.
     """
     try:
         configs = list(perception.get_editor_property("senses_config") or [])
@@ -228,23 +348,48 @@ def _sense_configs(perception):
             out.append({"error": "null entry in SensesConfig"})
             continue
         cls_name = config.get_class().get_name()
-        row = {"class": cls_name}
+        row = {"class": cls_name, "_source": "live instance, not CDO"}
+
+        fields = _SENSE_CONFIG_FIELDS.get(cls_name)
+        if fields is None:
+            # Unknown sense class: no curated table, so the sweep carries it
+            # alone. Say so rather than letting it look like a thin config.
+            row["_fields_note"] = (
+                "No curated field table for %s in _SENSE_CONFIG_FIELDS; every "
+                "value below came from reflection." % cls_name)
+            fields = _BASE_SENSE_FIELDS
+
+        for field in fields:
+            row[field] = common.try_read(
+                lambda c=config, f=field: c.get_editor_property(f))
+
+        if cls_name in _AFFILIATION_CLASSES:
+            row["detection_by_affiliation"] = _affiliation(config)
+
         if cls_name == "AISenseConfig_Sight":
-            for field in _SIGHT_FIELDS:
-                row[field] = common.try_read(
-                    lambda c=config, f=field: c.get_editor_property(f))
-            affil = common.try_read(
-                lambda c=config: c.get_editor_property("detection_by_affiliation"))
-            row["detection_by_affiliation"] = {
-                f: common.try_read(lambda a=affil, ff=f: a.get_editor_property(ff))
-                for f in _AFFILIATION_FIELDS
-            } if not isinstance(affil, dict) else affil
             row["_fov_note"] = (
                 "peripheral_vision_angle_degrees is a HALF-angle: the sense "
                 "digests it as cos(angle) and compares it to the dot product "
                 "(AISense_Sight.cpp:119, AIHelpers.cpp:74). 90 means a 180-degree "
                 "total FOV.")
+        elif cls_name == "AISenseConfig_Hearing":
+            row["_range_note"] = (
+                "hearing_range is NOT the effective radius. "
+                "UAISense_Hearing::Update tests "
+                "DistSq > HearingRangeSq * Square(ClampedLoudness) "
+                "(AISense_Hearing.cpp:147), so the effective radius is "
+                "hearing_range * Loudness -- a noise reported at Loudness 0.5 "
+                "against a hearing_range of 800 is heard at 400uu. A second cap "
+                "applies when the event carries its own MaxRange > 0: "
+                "DistSq > Square(MaxRange * ClampedLoudness) "
+                "(AISense_Hearing.cpp:152). Both Loudness and MaxRange are "
+                "arguments to ReportNoiseEvent (AISense_Hearing.cpp:80), so "
+                "read this value together with the gunfire ReportNoiseEvent "
+                "call site before concluding the config is wrong.")
+
+        row.update(_reflected_fields(config, set(row)))
         out.append(row)
+
     if not out:
         raise PerceptionReadError(
             "%s has an EMPTY SensesConfig -- it is registered as a listener for "
