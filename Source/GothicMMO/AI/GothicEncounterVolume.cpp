@@ -97,7 +97,15 @@ void AGothicEncounterVolume::HandleTriggerBeginOverlap(
 {
     // bReplicates is false, so this actor exists independently on every machine and
     // this overlap fires locally on clients too. Aggro is a server decision.
-    if (!HasAuthority() || bAggroTriggered)
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    // The encounter is over — its roster is dead or its reward already paid. A
+    // re-entry after that must not walk a list of corpses handing out targets.
+    // (IsComplete is the same test that gates the Selah collect.)
+    if (bRewarded || IsComplete())
     {
         return;
     }
@@ -108,15 +116,44 @@ void AGothicEncounterVolume::HandleTriggerBeginOverlap(
         return;
     }
 
-    bAggroTriggered = true;
+    // The fight is already running: leave it alone. This is what the old
+    // bAggroTriggered latch was protecting — the difference is that this answer
+    // goes back to false once the roster disengages, so the volume re-arms.
+    if (IsAnyMemberEngaged())
+    {
+        return;
+    }
 
+    int32 AggroedCount = 0;
     for (AGothicEnemyBase* Enemy : EncounterEnemies)
     {
-        if (Enemy)
+        // Living members only. SetCombatTarget on a corpse is harmless today but
+        // would re-populate a Blackboard key on an actor mid-death.
+        if (Enemy && Enemy->IsAlive())
         {
             Enemy->SetCombatTarget(Player);
+            ++AggroedCount;
         }
     }
+
+    // Worth a line: a re-entry that aggroes 0 of a living roster means every
+    // member refused the target, which in practice means they are all leashing
+    // home (IsAcceptingCombatTargets) — not that the trigger failed to fire.
+    UE_LOG(LogTemp, Verbose,
+        TEXT("Selah[%s]: trigger aggro — %d of %d roster member(s) took the target"),
+        *GetName(), AggroedCount, EncounterEnemies.Num());
+}
+
+bool AGothicEncounterVolume::IsAnyMemberEngaged() const
+{
+    for (const AGothicEnemyBase* Enemy : EncounterEnemies)
+    {
+        if (Enemy && Enemy->IsAlive() && Enemy->GetCombatTarget())
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 void AGothicEncounterVolume::HandleEnemyDied(AGothicEnemyBase* DeadEnemy)

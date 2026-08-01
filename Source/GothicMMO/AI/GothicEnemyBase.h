@@ -90,6 +90,29 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Enemy")
     AActor* GetCombatTarget() const { return CombatTarget; }
 
+    /**
+     * Damage retaliation — the acquisition source that does not depend on
+     * perception or on an encounter volume's trigger box.
+     *
+     * Called from UGothicAttributeSet::PostGameplayEffectExecute once damage has
+     * actually landed (post-evasion, post-mitigation), with the effect context's
+     * ORIGINAL INSTIGATOR AVATAR — the shooter's pawn, not its PlayerState, since
+     * UGothicAbilitySystemComponent::MakeDamageContext resolves the avatar.
+     *
+     * Nothing in any damage path set a combat target before this existed: an
+     * enemy could be shot to death without ever noticing it was being shot. That
+     * was masked while GothicBTService_CombatSync restored targets from the
+     * never-cleared pawn latch; once the leash made disengage real, an enemy that
+     * never perceived the player was inert no matter how much damage it took.
+     *
+     * Routes through SetCombatTarget deliberately, so retaliation is still
+     * refused while the controller is leashing home. Being shot in the back on
+     * the way to the anchor must not cancel a disengage — the leash is what makes
+     * the boss reach her anchor at all.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Enemy")
+    void NotifyDamagedBy(AActor* DamageInstigator);
+
     /** Returns the hitbox component for direct access from BT tasks if needed. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Combat")
     UGothicMeleeHitboxComponent* GetMeleeHitbox() const { return MeleeHitbox; }
@@ -270,6 +293,24 @@ protected:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Combat")
     float TurnRateDegrees = 300.f;
+
+    /**
+     * Whether taking damage from a NEW attacker switches this enemy off the
+     * target it is already fighting.
+     *
+     * Default false, derived from the acquisition problem this fix is for rather
+     * than from a combat-feel preference: the failure being repaired is an enemy
+     * with NO target, and false is the value that repairs exactly that and
+     * nothing else. True re-targets on every hit, which in co-op makes an enemy
+     * flip between two players at the rate they fire — at the player's measured
+     * ~39 DPS against Thralls that is several switches per second, and a pawn
+     * that re-picks its focus that often never closes on anyone.
+     *
+     * Retaliation always fires when the current target is null or already dead,
+     * regardless of this flag.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|Combat")
+    bool bRetaliationOverridesCurrentTarget = false;
 
 private:
     UPROPERTY()

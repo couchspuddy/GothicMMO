@@ -10,6 +10,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
 #include "Character/GothicCharacterBase.h"
+#include "AI/GothicEnemyBase.h"
 
 UGothicAttributeSet::UGothicAttributeSet()
 {
@@ -243,6 +244,22 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
                 SourceActor->FindComponentByClass<UGothicCombatStateComponent>())
             {
                 SourceCombatState->NotifyCombatAction();
+            }
+
+            // Damage is an aggro source. Placed here rather than in GA_Fire or in
+            // the melee hitbox so it covers EVERY damage path, for the same reason
+            // AttackPower is applied here — and because the two paths that DO set
+            // combat targets (perception, encounter trigger) can both be absent
+            // while an enemy is being shot to pieces.
+            //
+            // SourceActor is the original instigator's AVATAR, which
+            // UGothicAbilitySystemComponent::MakeDamageContext resolves to the
+            // player pawn — the actor an AI can path to and face. All remaining
+            // filtering (self-damage, enemy-on-enemy, dead instigator, target
+            // thrash) lives in NotifyDamagedBy, next to the state it reads.
+            if (AGothicEnemyBase* DamagedEnemy = Cast<AGothicEnemyBase>(TargetActor))
+            {
+                DamagedEnemy->NotifyDamagedBy(SourceActor);
             }
         }
 
