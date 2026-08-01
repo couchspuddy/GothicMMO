@@ -329,12 +329,23 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
     @staticmethod
     def spawn_enemy(class_path: str,
                     x: float, y: float, z: float,
-                    yaw: float = 0.0) -> str:
-        """Spawn an actor into the running PIE world at a fixed transform.
+                    yaw: float = 0.0,
+                    no_collision_fail: bool = True) -> str:
+        """Spawn a PAWN into the running PIE world at a fixed transform.
 
         Fixed transforms are the cheapest determinism you get -- an encounter
         that starts from the same geometry every run is comparable between runs
         even when AI behaviour is not.
+
+        A fresh spawn is also the only clean read of a class's INTENDED config:
+        placed instances freeze their overrides at placement and drift from the
+        C++ constructor. Spawn one next to a placed one and diff them before
+        trusting any config value read off a placed enemy.
+
+        Routes through UAIBlueprintHelperLibrary::SpawnAIFromClass, which also
+        spawns and possesses the default controller. Pawn classes only -- see
+        vigil_combat_driver.spawn for why the deferred-spawn route is
+        permanently unavailable from Python.
 
         Blueprint class paths need the _C suffix, e.g.
         "/Game/Blueprints/Enemies/BP_Enemy_FeralRetained.BP_Enemy_FeralRetained_C"
@@ -347,16 +358,22 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
             y: World Y.
             z: World Z. Spawn above the floor; capsules resolve downward.
             yaw: Facing in degrees.
+            no_collision_fail: True spawns even when the capsule overlaps
+                geometry. False refuses the spawn on any blocking overlap, which
+                is how you find out a spawn point is inside a wall.
 
         Returns:
             JSON with the spawned actor's name, to use as an actor label.
         """
         world = common.require_world()
-        actor = driver.spawn(world, class_path, (x, y, z), (0.0, yaw, 0.0))
+        actor = driver.spawn(world, class_path, (x, y, z), (0.0, yaw, 0.0),
+                             no_collision_fail=no_collision_fail)
         return common.as_json({
             "spawned": actor.get_name(),
             "class": common.try_read(lambda: actor.get_class().get_name()),
             "location": [x, y, z],
+            "controller": common.try_read(
+                lambda: actor.get_controller().get_name()),
             "note": "Use the spawned name as an actor label in scenarios.",
         })
 

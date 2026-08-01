@@ -72,8 +72,18 @@ class VigilPIETools(unreal.ToolsetDefinition):
                 unreal, "register_slate_post_tick_callback"),
             "GameplayStatics.get_time_seconds": hasattr(
                 unreal.GameplayStatics, "get_time_seconds"),
-            "GameplayStatics.begin_deferred_actor_spawn_from_class": hasattr(
-                unreal.GameplayStatics, "begin_deferred_actor_spawn_from_class"),
+            # Expected False, permanently: BeginDeferredActorSpawnFromClass is
+            # meta=(BlueprintInternalUseOnly="true") (GameplayStatics.h:65-67)
+            # and PyGenUtil.cpp:1621 excludes those from the Python bindings.
+            # Kept as a capability row so nobody rediscovers it as a bug.
+            "GameplayStatics.begin_deferred_actor_spawn_from_class (expected False)":
+                hasattr(unreal.GameplayStatics,
+                        "begin_deferred_actor_spawn_from_class"),
+            # The route spawn_enemy actually uses.
+            "AIBlueprintHelperLibrary.spawn_ai_from_class": hasattr(
+                unreal.AIBlueprintHelperLibrary, "spawn_ai_from_class"),
+            "AIPerceptionComponent.get_currently_perceived_actors": hasattr(
+                unreal.AIPerceptionComponent, "get_currently_perceived_actors"),
             "MathLibrary.find_look_at_rotation": hasattr(
                 unreal.MathLibrary, "find_look_at_rotation"),
         }
