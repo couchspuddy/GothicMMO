@@ -56,8 +56,9 @@ void AGothicEnemyAIController::OnPossess(APawn* InPawn)
     // leash distance maths, the Blackboard key written below, and above all the
     // MoveToLocation that walks the enemy home — treats PatrolOrigin as a
     // pathable goal, and a capsule-centre is not one. Retried in BreakLeash if
-    // the navmesh isn't ready this early.
-    EnsurePatrolOriginProjected();
+    // the navmesh isn't ready this early — which is the NORMAL case, so this
+    // attempt is quiet. See EnsurePatrolOriginProjected's header comment.
+    EnsurePatrolOriginProjected(/*bWarnOnFailure=*/false);
 
     // Cache the default walk speed so the decel service can restore it
     if (ACharacter* Char = Cast<ACharacter>(InPawn))
@@ -285,7 +286,25 @@ void AGothicEnemyAIController::CheckLeash()
     }
 }
 
-bool AGothicEnemyAIController::EnsurePatrolOriginProjected()
+FPathFollowingRequestResult AGothicEnemyAIController::MoveTo(
+    const FAIMoveRequest& MoveRequest, FNavPathSharedPtr* OutPath)
+{
+    // The walk home owns the pawn's movement until it finishes. See the header.
+    if (bLeashReturning && !bIssuingLeashReturnMove)
+    {
+        UE_LOG(LogTemp, Verbose,
+            TEXT("GothicEnemyAIController[%s]: refused a move request to %s — leash return in progress"),
+            *GetNameSafe(GetPawn()), *MoveRequest.GetGoalLocation().ToCompactString());
+
+        FPathFollowingRequestResult Refused;
+        Refused.Code = EPathFollowingRequestResult::Failed;
+        return Refused;
+    }
+
+    return Super::MoveTo(MoveRequest, OutPath);
+}
+
+bool AGothicEnemyAIController::EnsurePatrolOriginProjected(bool bWarnOnFailure)
 {
     if (bPatrolOriginProjected)
     {
@@ -312,12 +331,28 @@ bool AGothicEnemyAIController::EnsurePatrolOriginProjected()
 
     if (!NavSys->ProjectPointToNavigation(PatrolOrigin, Projected, PatrolOriginProjectionExtent, &AgentProps))
     {
-        UE_LOG(LogTemp, Warning,
-            TEXT("GothicEnemyAIController[%s]: could not project leash anchor %s onto the navmesh "
-                 "(extent %s) — keeping the raw location. The walk home will fail until this "
-                 "resolves; check navmesh coverage under the spawn point."),
+        // Only the BreakLeash retry is a real problem. The possess-time attempt
+        // failing means the navmesh wasn't built yet, and the retry fixes it —
+        // the old text claimed "the walk home will fail until this resolves",
+        // which was false for that caller and fired 19 times per PIE start.
+        // (Two calls rather than a ternary verbosity: UE_LOG pastes its verbosity
+        // argument into an ELogVerbosity:: token, so it cannot be an expression.)
+        const FString Detail = FString::Printf(
+            TEXT("GothicEnemyAIController[%s]: could not project leash anchor %s onto the navmesh (extent %s) — keeping the raw location."),
             *GetNameSafe(GetPawn()), *PatrolOrigin.ToCompactString(),
             *PatrolOriginProjectionExtent.ToCompactString());
+
+        if (bWarnOnFailure)
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("%s This is the leash-break retry, so the walk home will now use an "
+                     "unpathable goal — check navmesh coverage under the spawn point."), *Detail);
+        }
+        else
+        {
+            UE_LOG(LogTemp, Verbose,
+                TEXT("%s Expected this early on a dynamic navmesh; BreakLeash retries."), *Detail);
+        }
         return false;
     }
 
@@ -342,8 +377,13 @@ void AGothicEnemyAIController::RequestLeashReturnMove()
     // following looks identical to an enemy that simply chose not to move, and
     // that is precisely how a boss stood at speed 0 for the full 20s timeout,
     // 3861uu from her anchor, without a single line in the log.
-    const EPathFollowingRequestResult::Type Result =
-        MoveToLocation(PatrolOrigin, 50.f);
+    // Announce this one call as the leash return's own, so the MoveTo gate lets it
+    // through. Scoped — anything the request synchronously triggers is still gated.
+    const EPathFollowingRequestResult::Type Result = [this]()
+    {
+        TGuardValue<bool> OwnMoveScope(bIssuingLeashReturnMove, true);
+        return MoveToLocation(PatrolOrigin, 50.f);
+    }();
 
     if (Result == EPathFollowingRequestResult::Failed)
     {
@@ -371,8 +411,9 @@ void AGothicEnemyAIController::BreakLeash()
     }
 
     // Second chance at projection: on a dynamically-generated navmesh there is
-    // no guarantee the tiles under the spawn point existed at possess time.
-    EnsurePatrolOriginProjected();
+    // no guarantee the tiles under the spawn point existed at possess time. This
+    // is the attempt that matters, so a failure here warns.
+    EnsurePatrolOriginProjected(/*bWarnOnFailure=*/true);
 
     UE_LOG(LogTemp, Log, TEXT("GothicEnemyAIController[%s]: leash broken — disengaging and returning to anchor %s"),
         *GetNameSafe(GetPawn()), *PatrolOrigin.ToCompactString());
@@ -383,6 +424,22 @@ void AGothicEnemyAIController::BreakLeash()
     LeashReturnStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
 
     ClearCombatTarget();
+
+    // Clear the combat decision too, not just the target.
+    //
+    // ChosenAction is deliberately STICKY — GothicBTService_WeightedActionSelect
+    // returns without writing as soon as TargetActor is empty, precisely so the
+    // tree can degrade to its non-combat branches. But nothing was clearing the
+    // key on the way out, so the last pick survived the whole disengage: measured,
+    // ChosenAction read "Reposition" for the entire return in both runs, keeping
+    // an equality decorator satisfied and re-running the Reposition branch every
+    // frame against a null target (the source of the per-frame
+    // ComputeRepositionPoint failure spam). An empty key satisfies no equality
+    // decorator, which is what lets the tree's own Selector fallback take over.
+    if (Blackboard && Blackboard->GetKeyID(GothicBBKeys::ChosenAction) != FBlackboard::InvalidKey)
+    {
+        Blackboard->ClearValue(GothicBBKeys::ChosenAction);
+    }
 
     // Drop whatever the tree had in flight. A boss that leashes mid-swing should
     // not carry the swing home with her.

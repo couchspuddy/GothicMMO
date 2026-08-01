@@ -37,6 +37,7 @@ namespace GothicBBKeys
     static const FName AttackRange           = TEXT("AttackRange");            // float
     static const FName EngageDistance        = TEXT("EngageDistance");          // float — stop here, don't stand on player
     static const FName StaggerDelay          = TEXT("StaggerDelay");           // float — randomized per-enemy approach delay
+    static const FName ChosenAction          = TEXT("ChosenAction");           // FName — written by GothicBTService_WeightedActionSelect
 }
 
 UCLASS()
@@ -54,6 +55,32 @@ public:
 
     virtual void OnPossess(APawn* InPawn) override;
     virtual void OnUnPossess() override;
+
+    /**
+     * Movement authority gate for the leash return.
+     *
+     * While bLeashReturning is set, the ONLY move request this controller will
+     * accept is its own walk home. Everything else — a BT movement task, a
+     * Blueprint MoveTo, anything that reaches AAIController — is refused here.
+     *
+     * This is the fix for the measured mid-return stall. The Behavior Tree keeps
+     * ticking throughout the return (nothing stops it), and it does so with a
+     * cleared TargetActor and a stale ChosenAction, so it falls through its combat
+     * branches into whatever idle/patrol movement it has. AAIController::MoveTo
+     * ABORTS the active request before making a new one, so a single such task
+     * firing mid-return tears down the controller's path; the walk home then sits
+     * dead until TickLeashReturn's 2s recovery tick notices path following went
+     * Idle and re-issues. That is exactly the 1.25s dead stop observed at 680uu
+     * from the anchor in one of two runs — intermittent because it depends on the
+     * tree happening to reach a movement task during the walk.
+     *
+     * Refusing at this single choke point covers every mover at once and, unlike
+     * pausing the tree, carries no unwind obligation: the gate is a pure function
+     * of bLeashReturning, which already has all of its exits (arrival, timeout,
+     * unpossess) and cannot leave residual state behind if one is missed.
+     */
+    virtual FPathFollowingRequestResult MoveTo(const FAIMoveRequest& MoveRequest,
+        FNavPathSharedPtr* OutPath = nullptr) override;
 
     /**
      * Called by AGothicEnemyBase::SetCombatTarget when perception fires.
@@ -302,8 +329,17 @@ private:
      * Idempotent and safe to retry — called at possess time and again at
      * BreakLeash in case the navmesh wasn't generated yet on the first attempt.
      * Returns true if the anchor is now a pathable point.
+     *
+     * bWarnOnFailure separates the two callers, because only one of them is
+     * reporting a problem. The OnPossess attempt is EXPECTED to fail on a
+     * world-partition / dynamically-generated navmesh — the tiles under the spawn
+     * point are not guaranteed to exist that early, and every possessed AI in the
+     * level failed it at t=0 (19 identical warnings per PIE start). Nothing is
+     * broken at that point: the BreakLeash retry is what carries the fix, and it
+     * succeeds. So the possess-time attempt logs Verbose and the BreakLeash retry
+     * — where a failure genuinely does mean the enemy cannot path home — warns.
      */
-    bool EnsurePatrolOriginProjected();
+    bool EnsurePatrolOriginProjected(bool bWarnOnFailure);
 
     /** Issues the walk-home move request and logs a rejected one. */
     void RequestLeashReturnMove();
@@ -317,6 +353,13 @@ private:
 
     /** True from BreakLeash until the enemy is home (or the failsafe fires). */
     bool bLeashReturning = false;
+
+    /**
+     * Set only for the duration of the controller's own leash-return move request,
+     * so the MoveTo gate above can tell that one call apart from every other
+     * caller. Scoped with TGuardValue at the single call site.
+     */
+    bool bIssuingLeashReturnMove = false;
 
     /** World seconds the current return started, for LeashReturnTimeoutSeconds. */
     float LeashReturnStartTime = 0.f;
