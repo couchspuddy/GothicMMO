@@ -450,36 +450,219 @@ def _looks_like_hit_result(value):
         return True
     if isinstance(value, (bool, int, float, str, bytes, tuple, list, dict)):
         return False
+    # Duck-type route. NOT get_editor_property('blocking_hit') -- FHitResult
+    # exports no fields, so that test answered False for a genuine FHitResult.
+    # to_dict() sees the C++ layout regardless, so its keys are the test.
     try:
-        value.get_editor_property("blocking_hit")
+        row = value.to_dict()
     except Exception:
         return False
-    return True
+    return isinstance(row, dict) and all(k in row for k in _REQUIRED_HIT_KEYS)
+
+
+# --------------------------------------------------------------------------
+# Reading an FHitResult
+#
+# THE FIELD-ACCESS TRAP
+# ---------------------
+# FHitResult's members are NOT BlueprintReadWrite, so PyGenUtil exports ZERO
+# fields for the struct. That is engine behaviour, not a binding bug:
+#     <Struct 'HitResult' (0x...) {}>
+#     dir(hit) -> ['assign','cast','copy','export_text','get_editor_property',
+#                  'import_text','set_editor_properties','set_editor_property',
+#                  'static_struct','to_dict','to_tuple']
+# get_editor_property('blocking_hit') therefore raises "Failed to find property
+# 'blocking_hit'" and ALWAYS WILL. Attribute access likewise. Three successive
+# fixes to aim_at_vital tried those two routes and all three failed at runtime.
+#
+# The obvious next guess is the Break node, UGameplayStatics::BreakHitResult.
+# IT DOES NOT EXIST IN THIS BINDING. Measured 2026-08-01 in PIE:
+#     unreal.GameplayStatics.break_hit_result(hit)
+#     -> AttributeError: type object 'GameplayStatics' has no attribute
+#        'break_hit_result'
+# So the "canonical Blueprint route" is not available either, and any code
+# written against it (vigil_combat_driver._break_hit was) fails on first call.
+#
+# WHAT ACTUALLY WORKS: the struct's own to_dict() / to_tuple(). Those two are
+# generated from the struct's C++ layout rather than from its exported
+# properties, so they see all 18 members even though the property table is
+# empty and dir() lists nothing. Measured return of hit.to_dict() on a real
+# floor hit:
+#     {'blocking_hit': True, 'initial_overlap': False, 'time': 0.2112,
+#      'distance': 2112.15, 'location': Vector, 'impact_point': Vector,
+#      'normal': Vector, 'impact_normal': Vector, 'phys_mat': PhysicalMaterial,
+#      'hit_actor': StaticMeshActor, 'hit_component': StaticMeshComponent,
+#      'hit_bone_name': Name("None"), 'bone_name': Name("None"),
+#      'hit_item': -1, 'element_index': 0, 'face_index': -1,
+#      'trace_start': Vector, 'trace_end': Vector}
+# to_tuple() returns the same 18 values in that order.
+#
+# to_dict() is preferred because it is self-describing: it cannot silently
+# shift an index. to_tuple() is the fallback and its order is NOT taken on
+# faith -- the layout is selected by length and then ANCHOR-CHECKED against the
+# types it predicts, so a shifted layout raises with the observed per-index
+# type names instead of reading the physical material as the hit actor.
+# probe_trace_return_shape() reports which route won, so this never has to be
+# rediscovered from a failed run.
+# --------------------------------------------------------------------------
+
+# FHitResult members in to_tuple() order, confirmed against to_dict()'s keys on
+# this build. HitBoneName was added alongside BoneName in UE5; the 17-entry
+# layout is the pre-UE5 shape and is kept so a rollback is not silent.
+_BREAK_HIT_LAYOUTS = {
+    18: ("blocking_hit", "initial_overlap", "time", "distance", "location",
+         "impact_point", "normal", "impact_normal", "phys_mat", "hit_actor",
+         "hit_component", "hit_bone_name", "bone_name", "hit_item",
+         "element_index", "face_index", "trace_start", "trace_end"),
+    17: ("blocking_hit", "initial_overlap", "time", "distance", "location",
+         "impact_point", "normal", "impact_normal", "phys_mat", "hit_actor",
+         "hit_component", "bone_name", "hit_item", "element_index",
+         "face_index", "trace_start", "trace_end"),
+}
+
+# (index, accepted python types, what the layout says lives there). Vectors at
+# 4 and 5 are the discriminating anchors -- a shifted layout cannot pass them.
+# The numeric anchors accept int as well as bool/float because the binding is
+# free to widen a bool to int without the layout being wrong.
+_BREAK_HIT_ANCHORS = (
+    (0, (bool, int), "bBlockingHit"),
+    (1, (bool, int), "bInitialOverlap"),
+    (2, (float, int), "Time"),
+    (3, (float, int), "Distance"),
+    (4, (unreal.Vector,), "Location"),
+    (5, (unreal.Vector,), "ImpactPoint"),
+)
+
+
+def _field_type_names(fields):
+    return [type(f).__name__ for f in fields]
+
+
+_REQUIRED_HIT_KEYS = ("blocking_hit", "distance", "impact_point", "hit_actor",
+                      "hit_component", "bone_name")
+
+
+def _hit_row_from_dict(hit):
+    """to_dict() route. Self-describing, so no index arithmetic can go wrong."""
+    row = hit.to_dict()
+    if not isinstance(row, dict):
+        raise TraceReturnShapeError(
+            "FHitResult.to_dict() returned %s, not a dict." % describe_value(row))
+    missing = [k for k in _REQUIRED_HIT_KEYS if k not in row]
+    if missing:
+        raise TraceReturnShapeError(
+            "FHitResult.to_dict() is missing %s. Keys present: %s."
+            % (missing, sorted(row)))
+    return row, "to_dict"
+
+
+def _hit_row_from_sequence(fields, source):
+    """Positional route, shared by to_tuple() and the Break node. The layout is
+    selected by length and then anchor-checked, so a shifted layout raises with
+    the observed types rather than reading phys_mat as the hit actor."""
+    if not isinstance(fields, (tuple, list)):
+        raise TraceReturnShapeError(
+            "%s returned %s, not a tuple." % (source, describe_value(fields)))
+
+    layout = _BREAK_HIT_LAYOUTS.get(len(fields))
+    if layout is None:
+        raise TraceReturnShapeError(
+            "%s returned %d values; this harness knows the %s-value layouts. "
+            "Observed types by index: %s. Add the layout to _BREAK_HIT_LAYOUTS "
+            "in vigil_pie_common rather than indexing at the call site."
+            % (source, len(fields), sorted(_BREAK_HIT_LAYOUTS),
+               _field_type_names(fields)))
+
+    for index, accepted, declared in _BREAK_HIT_ANCHORS:
+        if not isinstance(fields[index], accepted):
+            raise TraceReturnShapeError(
+                "%s's %d-value layout does not match this build: index %d "
+                "should be %s (%s) and is %s. Observed types by index: %s. "
+                "Refusing to read fields off a layout that failed its anchor "
+                "check."
+                % (source, len(fields), index, declared,
+                   "/".join(t.__name__ for t in accepted),
+                   type(fields[index]).__name__, _field_type_names(fields)))
+    return dict(zip(layout, fields)), "%s/%d values" % (source, len(fields))
+
+
+def _hit_row_from_tuple(hit):
+    """FHitResult.to_tuple() route."""
+    return _hit_row_from_sequence(hit.to_tuple(), "to_tuple")
+
+
+def _hit_row_from_break_node(hit):
+    """UGameplayStatics::BreakHitResult. ABSENT on this build; kept for the
+    future one where PyGenUtil starts exporting it."""
+    break_node = getattr(unreal.GameplayStatics, "break_hit_result", None)
+    if break_node is None:
+        raise TraceReturnShapeError(
+            "GameplayStatics.break_hit_result does not exist in this binding "
+            "(measured 2026-08-01). Do not write new code against it.")
+    return _hit_row_from_sequence(break_node(hit), "break_hit_result")
+
+
+def break_hit(hit):
+    """FHitResult -> a plain dict, through whichever route this build has.
+
+    Raises TraceReturnShapeError naming every route it tried and why each one
+    failed, rather than guessing. `hit` of None is a caller error: None means
+    "no blocking hit" (see unpack_trace_result), so there is nothing to break.
+    """
+    if hit is None:
+        raise TraceReturnShapeError(
+            "break_hit(None): line_trace_single returns None for a clean miss "
+            "on this build, so the caller must check did_hit before breaking.")
+
+    row = None
+    route = None
+    attempts = []
+    for label, reader in (("to_dict", _hit_row_from_dict),
+                          ("to_tuple", _hit_row_from_tuple),
+                          ("GameplayStatics.break_hit_result",
+                           _hit_row_from_break_node)):
+        try:
+            row, route = reader(hit)
+            break
+        except Exception as exc:
+            attempts.append("%s (%s: %s)" % (label, type(exc).__name__, exc))
+
+    if row is None:
+        raise TraceReturnShapeError(
+            "could not read %s by any known route. Tried: %s. The struct "
+            "exports no properties at all (its members are not "
+            "BlueprintReadWrite), so get_editor_property and attribute access "
+            "are not options either; dir() shows: %s."
+            % (describe_value(hit), attempts,
+               sorted(n for n in dir(hit) if not n.startswith("_"))))
+
+    return {
+        "blocking_hit": bool(row["blocking_hit"]),
+        "initial_overlap": bool(row.get("initial_overlap", False)),
+        "time": float(row.get("time", 0.0)),
+        "distance": float(row["distance"]),
+        "location": row.get("location"),
+        "impact_point": row["impact_point"],
+        "normal": row.get("normal"),
+        "impact_normal": row.get("impact_normal"),
+        "actor": row["hit_actor"],
+        "component": row["hit_component"],
+        "bone": str(row["bone_name"]),
+        "trace_start": row.get("trace_start"),
+        "trace_end": row.get("trace_end"),
+        "route": route,
+    }
 
 
 def hit_blocking(hit):
-    """FHitResult -> bBlockingHit, via whichever access route this build has.
+    """FHitResult -> bBlockingHit, through break_hit's route ladder.
 
     Never bool(hit): a UE struct has no __bool__, so bool() on it is always
     True. That exact mistake is what made the AI LOS readout report a blocked
-    line of sight on every call.
+    line of sight on every call. And never get_editor_property: FHitResult
+    exports no fields at all -- see THE FIELD-ACCESS TRAP above.
     """
-    routes = []
-    for label, fn in (
-        ("get_editor_property('blocking_hit')",
-         lambda: hit.get_editor_property("blocking_hit")),
-        (".blocking_hit", lambda: hit.blocking_hit),
-    ):
-        routes.append(label)
-        try:
-            return bool(fn())
-        except Exception as exc:
-            routes[-1] = "%s (%s: %s)" % (label, type(exc).__name__, exc)
-    raise TraceReturnShapeError(
-        "could not read bBlockingHit from %s. Tried: %s. Fields the struct "
-        "exposes: %s"
-        % (describe_value(hit), routes,
-           sorted(n for n in dir(hit) if not n.startswith("_"))))
+    return break_hit(hit)["blocking_hit"]
 
 
 def unpack_trace_result(outcome):
@@ -489,8 +672,20 @@ def unpack_trace_result(outcome):
     human-readable label for which form was observed, so a caller can surface
     it and the next person does not have to rediscover this.
     """
+    if outcome is None:
+        # MEASURED, and the second branch of the same defect. Back-to-back
+        # aim_at_vital calls 0.1s apart in one scenario returned a bare
+        # FHitResult and then None, same trace, same target. None is what the
+        # binding produces when nothing blocked: there is no hit to hand back.
+        # Treating it as a shape error made the tool fail intermittently even
+        # once the FHitResult branch was readable, so it maps to a clean miss.
+        # `hit` is None here, which is why line_trace's contract is "hit may be
+        # None; check did_hit first".
+        return False, None, "None -- no blocking hit"
+
     if _looks_like_hit_result(outcome):
-        # This build's actual behaviour: the out param IS the return value.
+        # This build's actual behaviour when something IS hit: the out param is
+        # the return value.
         return hit_blocking(outcome), outcome, "bare FHitResult"
 
     if isinstance(outcome, (tuple, list)):
@@ -506,8 +701,9 @@ def unpack_trace_result(outcome):
             return hit_blocking(hit), hit, "1-tuple wrapping FHitResult"
 
     raise TraceReturnShapeError(
-        "SystemLibrary.line_trace_single returned %s. This harness accepts a "
-        "bare FHitResult (the shape this engine build actually produces), a "
+        "SystemLibrary.line_trace_single returned %s. This harness accepts "
+        "None (a clean miss -- the shape this build produces when nothing "
+        "blocks), a bare FHitResult (the shape it produces on a hit), a "
         "(bool, FHitResult) pair (the shape KismetSystemLibrary.h:1270's "
         "`bool LineTraceSingle(..., FHitResult& OutHit, ...)` signature "
         "implies), or a 1-tuple wrapping a FHitResult -- and nothing else. "
@@ -521,9 +717,11 @@ def line_trace(world, start, end, trace_type, ignore_actors=(),
                trace_complex=False, ignore_self=True):
     """Run a line trace and return (did_hit, hit, shape).
 
-    The single trace entry point for every Vigil toolset. `hit` is returned
-    even when did_hit is False, because a non-blocking FHitResult still carries
-    a usable TraceEnd.
+    The single trace entry point for every Vigil toolset.
+
+    CONTRACT: `hit` MAY BE None when did_hit is False. On this build a clean
+    miss comes back as None -- there is no non-blocking FHitResult to carry a
+    TraceEnd. Check did_hit before touching `hit`; break it with break_hit().
     """
     outcome = unreal.SystemLibrary.line_trace_single(
         world, start, end, trace_type, trace_complex, list(ignore_actors),
@@ -544,19 +742,62 @@ def probe_trace_return_shape(world=None):
         return ("unknown -- not in PIE; line_trace_single needs a world. "
                 "Re-run capabilities during a PIE session.")
     trace_type, _ = trace_type_for_channel("Visibility")
-    outcome = unreal.SystemLibrary.line_trace_single(
-        world, unreal.Vector(0.0, 0.0, 0.0), unreal.Vector(0.0, 0.0, 1.0),
-        trace_type, False, [], unreal.DrawDebugTrace.NONE, True)
-    try:
-        _, _, shape = unpack_trace_result(outcome)
-    except TraceReturnShapeError as exc:
-        return "UNHANDLED SHAPE -- raw return was %s. %s" % (
-            describe_value(outcome), exc)
-    return ("%s -- raw return %s. KismetSystemLibrary.h:1270 declares "
-            "`bool LineTraceSingle(..., FHitResult& OutHit, ...)`, which "
-            "implies a (bool, FHitResult) tuple; the runtime binding on this "
-            "build differs from the header. Trust this row, not the header."
-            % (shape, describe_value(outcome)))
+
+    def _probe(start, end):
+        """(shape label or UNHANDLED text, raw description)."""
+        outcome = unreal.SystemLibrary.line_trace_single(
+            world, start, end, trace_type, False, [],
+            unreal.DrawDebugTrace.NONE, True)
+        try:
+            _, hit, shape = unpack_trace_result(outcome)
+        except TraceReturnShapeError as exc:
+            return ("UNHANDLED SHAPE -- raw return was %s. %s"
+                    % (describe_value(outcome), exc)), None
+        return shape, hit
+
+    # Two probes on purpose: the miss branch and the hit branch return
+    # DIFFERENT types on this build (None vs a bare FHitResult), and only
+    # exercising one of them is how the second branch shipped broken.
+    miss_shape, _ = _probe(unreal.Vector(0.0, 0.0, 0.0),
+                           unreal.Vector(0.0, 0.0, 1.0))
+
+    # A long trace through a pawn's feet to find real geometry, so the hit
+    # branch and the Break-node layout are both exercised for real.
+    origin = unreal.Vector(0.0, 0.0, 5000.0)
+    for pawn in all_pawns(world):
+        loc = try_read(pawn.get_actor_location)
+        if loc is not None:
+            origin = unreal.Vector(loc.x, loc.y, loc.z + 2000.0)
+            break
+    hit_shape, hit = _probe(origin,
+                            unreal.Vector(origin.x, origin.y, origin.z - 10000.0))
+
+    if hit is None:
+        break_row = ("not exercised -- the downward probe from %s found no "
+                     "geometry, so no FHitResult was broken." % vec(origin))
+    else:
+        try:
+            broken = break_hit(hit)
+            break_row = ("route=%s; sample read: blocking_hit=%s actor=%s "
+                         "bone=%r distance=%.1f impact=%s"
+                         % (broken["route"], broken["blocking_hit"],
+                            broken["actor"].get_name() if broken["actor"] else None,
+                            broken["bone"], broken["distance"],
+                            vec(broken["impact_point"])))
+        except Exception as exc:
+            break_row = ("FAILED on a real hit (%s: %s)"
+                         % (type(exc).__name__, exc))
+
+    return ("miss branch: %s | hit branch: %s | FHitResult read route: %s. "
+            "FHitResult exports ZERO properties (its members are not "
+            "BlueprintReadWrite), so get_editor_property and attribute access "
+            "can never read it -- and GameplayStatics.break_hit_result, the "
+            "Blueprint Break node, DOES NOT EXIST in this binding. to_dict() / "
+            "to_tuple() are the working routes. KismetSystemLibrary.h:1270's "
+            "`bool LineTraceSingle(..., FHitResult& OutHit, ...)` implies a "
+            "(bool, FHitResult) tuple and this build does not produce one; a "
+            "clean miss comes back as None. Trust this row, not the header."
+            % (miss_shape, hit_shape, break_row))
 
 
 def ai_helper_library():

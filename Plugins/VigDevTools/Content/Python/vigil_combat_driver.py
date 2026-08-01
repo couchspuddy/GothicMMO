@@ -343,36 +343,14 @@ def _resolve_weapon_trace_type():
 
 
 def _break_hit(hit):
-    """FHitResult -> a small dict. Raises with the routes tried if it cannot.
+    """FHitResult -> a small dict. Delegates to common.break_hit.
 
-    FHitResult::GetActor() is a plain C++ accessor, and in UE5 the actor lives
-    behind FActorInstanceHandle rather than a UPROPERTY, so attribute access on
-    the struct is not dependable. UGameplayStatics::BreakHitResult is a
-    BlueprintPure UFUNCTION with 19 out params (GameplayStatics.h:1077-1078), so
-    Python hands the whole thing back as a tuple in declaration order.
+    This used to hard-code fields[0]/[3]/[5]/[9]/[10]/[12] against a "19 out
+    params" reading of the header. The layout selection and its anchor check
+    now live in vigil_pie_common so the driver, the LOS readout and any future
+    caller cannot drift apart on it -- which they already had once.
     """
-    try:
-        fields = unreal.GameplayStatics.break_hit_result(hit)
-    except Exception as exc:
-        raise LookupError(
-            "GameplayStatics.break_hit_result did not resolve on this build "
-            "(%s: %s) -- no reflected way to read the hit actor."
-            % (type(exc).__name__, exc))
-
-    if not isinstance(fields, (tuple, list)) or len(fields) < 18:
-        raise LookupError(
-            "break_hit_result returned %r (%d fields); expected the 19 out "
-            "params declared at GameplayStatics.h:1078."
-            % (type(fields).__name__, len(fields) if hasattr(fields, "__len__") else -1))
-
-    return {
-        "blocking_hit": bool(fields[0]),
-        "distance": float(fields[3]),
-        "impact_point": fields[5],
-        "actor": fields[9],
-        "component": fields[10],
-        "bone": str(fields[12]),
-    }
+    return common.break_hit(hit)
 
 
 def _weapon_trace(world, start, direction, trace_range, ignore_actors):

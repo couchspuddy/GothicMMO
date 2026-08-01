@@ -716,10 +716,17 @@ def _los_trace(world, pawn, target, cone):
         "trace_return_shape": shape,
     }
     if blocked and result is not None:
-        row["blocking_actor"] = common.try_read(
-            lambda: result.get_editor_property("hit_actor").get_name())
-        row["impact_point"] = common.try_read(
-            lambda: common.vec(result.get_editor_property("impact_point")))
+        # break_hit, not get_editor_property: FHitResult exports no fields at
+        # all, so the old reads here returned the try_read default forever.
+        broken = common.try_read(lambda: common.break_hit(result))
+        if broken is None:
+            row["blocking_actor"] = {"error": "break_hit could not read the "
+                                              "FHitResult -- see capabilities"}
+        else:
+            actor = broken["actor"]
+            row["blocking_actor"] = actor.get_name() if actor else None
+            row["impact_point"] = common.vec(broken["impact_point"])
+            row["blocking_bone"] = broken["bone"]
         row["note"] = ("A hit that IS the target actor still counts as visible "
                        "to the engine (UE::AISense_Sight::IsTraceConsideredVisible, "
                        "AISense_Sight.cpp:575).")
