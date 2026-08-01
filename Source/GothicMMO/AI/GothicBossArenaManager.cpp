@@ -93,27 +93,29 @@ void AGothicBossArenaManager::OnPillarDestroyed(AGothicRotundaPillar* Pillar)
     const int32 Remaining  = GetPillarsRemaining();
     const float Aggression = GetAggressionMultiplier();
 
-    // Both of these were computed into locals and thrown away, and
-    // GetAggressionMultiplier had no other caller — so AggressionByPillarCount
+    // Both of these were once computed into locals and thrown away, and
+    // GetAggressionMultiplier had no caller at all — so AggressionByPillarCount
     // ({2.0, 1.6, 1.35, 1.15, 1.0}) was entirely inert and knocking pillars down
-    // changed nothing about the boss. The escalation the whole pillar mechanic
-    // exists to drive never happened.
+    // changed nothing about the boss.
     //
-    // WHAT the multiplier should scale is an open design decision and is
-    // deliberately NOT chosen here. The three candidates, all defensible:
-    //   1. Movement — scale the boss's DefaultWalkSpeed, so a pillarless arena
-    //      gives her less recovery time between attacks. Most legible to a player.
-    //   2. Decision weights — fold it into GothicBTService_WeightedActionSelect's
-    //      RecklessFactor, so she picks aggressive actions more often. Closest to
-    //      the word "aggression", but it changes the tuned action pool.
-    //   3. Cooldowns — scale AbilityHaste, so her whole kit comes back faster.
-    //      Largest DPS swing and the hardest to tune safely.
-    // Each is a combat-feel change that wants a measurement, not a guess.
+    // The consumer now exists, and it POLLS rather than listening: the decision
+    // pool (GothicBTService_WeightedActionSelect) and the reposition task both
+    // call GetAggressionMultiplier directly. That is deliberate — BT nodes are
+    // shared objects with per-instance NodeMemory, so a node cannot safely bind
+    // a dynamic delegate. Two of the three candidates this comment used to list
+    // are dead ends and are recorded here so they don't get re-proposed:
+    //   - Cooldowns via AbilityHaste: no. Every enemy ability uses a
+    //     fixed-duration cooldown GE; AbilityHaste has one consumer project-wide
+    //     (the player's GA_Fire), so granting it to the boss does nothing.
+    //   - A uniform multiplier over the action pool: mathematically a no-op. The
+    //     roll is FRandRange(0, TotalWeight) against cumulative scores, so
+    //     scaling every score by k scales TotalWeight by k and leaves the
+    //     distribution identical. Aggression MUST be applied asymmetrically.
+    // What landed is a per-entry AggressionWeightBonus (a bias, not a scale),
+    // plus a shorter movement-commit window and a rarer menace-hold.
     //
-    // Broadcasting is the part that is unambiguously correct regardless of which
-    // one lands: the value reaches a BlueprintAssignable delegate the boss BP can
-    // bind today, and whichever option is chosen becomes a listener rather than a
-    // rewrite of this function.
+    // The broadcast stays regardless: it is the hook a Blueprint can bind for
+    // presentation (music, VFX, arena lighting) without touching C++.
     UE_LOG(LogTemp, Log,
         TEXT("BossArena[%s]: %s fell — %d pillar(s) standing, aggression x%.2f"),
         *GetName(), *GetNameSafe(Pillar), Remaining, Aggression);

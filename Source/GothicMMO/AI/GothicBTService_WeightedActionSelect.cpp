@@ -1,7 +1,9 @@
 ﻿// GothicBTService_WeightedActionSelect.cpp
 
 #include "AI/GothicBTService_WeightedActionSelect.h"
+#include "AI/GothicBossArenaManager.h"
 #include "AIController.h"
+#include "Kismet/GameplayStatics.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "Abilities/GameplayAbility.h"
@@ -24,6 +26,14 @@ namespace
         /** Deferred-validation state, same pattern as CombatSync. */
         float TimeSinceRelevant = 0.f;
         bool  bValidated        = false;
+
+        /** Cached arena manager for the aggression read. Weak because the
+         *  manager is a level actor and this memory outlives a seamless
+         *  travel; the null is a legitimate answer (no manager in this level),
+         *  so bSearchedForArena distinguishes "not found" from "not looked
+         *  yet" and stops us re-scanning the actor list every tick. */
+        TWeakObjectPtr<AGothicBossArenaManager> ArenaManager;
+        bool bSearchedForArena = false;
     };
 }
 
@@ -76,7 +86,38 @@ void UGothicBTService_WeightedActionSelect::OnBecomeRelevant(UBehaviorTreeCompon
     {
         Memory->TimeSinceRelevant = 0.f;
         Memory->bValidated        = false;
+
+        // Re-resolve the arena manager per branch activation rather than
+        // trusting a stale weak pointer across a level change.
+        Memory->ArenaManager.Reset();
+        Memory->bSearchedForArena = false;
     }
+}
+
+float UGothicBTService_WeightedActionSelect::GetArenaAggression(
+    UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) const
+{
+    FGothicWeightedActionMemory* Memory =
+        CastInstanceNodeMemory<FGothicWeightedActionMemory>(NodeMemory);
+
+    UWorld* World = OwnerComp.GetWorld();
+    if (!Memory || !World)
+    {
+        return 1.f;
+    }
+
+    if (!Memory->bSearchedForArena)
+    {
+        Memory->bSearchedForArena = true;
+        Memory->ArenaManager = Cast<AGothicBossArenaManager>(
+            UGameplayStatics::GetActorOfClass(World, AGothicBossArenaManager::StaticClass()));
+    }
+
+    // No manager is the normal case, not a failure: only the Rotunda has one.
+    // 1.0 makes every aggression term below vanish, so the Thrall and Retained
+    // trees run byte-identically to before this existed.
+    const AGothicBossArenaManager* Arena = Memory->ArenaManager.Get();
+    return Arena ? Arena->GetAggressionMultiplier() : 1.f;
 }
 
 void UGothicBTService_WeightedActionSelect::ValidateConfiguration(UBehaviorTreeComponent& OwnerComp) const
@@ -208,6 +249,23 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
     auto* Memory = reinterpret_cast<FGothicWeightedActionMemory*>(NodeMemory);
     const float Now = OwnerComp.GetWorld() ? OwnerComp.GetWorld()->GetTimeSeconds() : 0.f;
 
+    // Rotunda pillar escalation. 1.0 with four pillars up (and in every level
+    // without an arena manager), 2.0 with all four down. Read once per tick and
+    // used twice below: as a per-entry weight bias, and to shorten the movement
+    // commit window.
+    const float Aggression = GetArenaAggression(OwnerComp, NodeMemory);
+
+    // (Aggression - 1), so the term contributes exactly nothing at baseline.
+    const float AggressionFactor = FMath::Max(0.f, Aggression - 1.f);
+
+    // A stripped arena shortens how long a movement pick can hold the key: at
+    // x2.0 the boss commits to walking for half as long before the pool is
+    // allowed to reconsider and pick an attack instead.
+    const float EffectiveCommitDuration =
+        (bScaleCommitDurationByAggression && Aggression > KINDA_SMALL_NUMBER)
+            ? MinMovementCommitDuration / Aggression
+            : MinMovementCommitDuration;
+
     // Don't interrupt a decision that's still genuinely running. This is the
     // whole fix for fast-cycling: without it, every 0.2s tick re-rolls and
     // aborts whatever just started, regardless of how long it actually needs.
@@ -223,7 +281,7 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
                 && Memory->LastDecisionTime >= 0.f
                 && (Now - Memory->LastDecisionTime) < (CurrentEntry->AbilityTag.IsValid()
                     ? AbilityActivationGrace
-                    : MinMovementCommitDuration);
+                    : EffectiveCommitDuration);
 
             if (CurrentEntry->AbilityTag.IsValid())
             {
@@ -307,7 +365,14 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
 
         if (bReady && bInRange)
         {
-            Score = FMath::Max(0.f, Entry.BaseWeight + Entry.RecklessnessWeightBonus * RecklessFactor);
+            // Two bias terms of the same shape, both additive per entry and
+            // both zero at their baseline. Additive and per-entry is the only
+            // form that does anything: a uniform multiplier over every score
+            // cancels out of the weighted roll entirely.
+            Score = FMath::Max(0.f,
+                Entry.BaseWeight
+                + Entry.RecklessnessWeightBonus * RecklessFactor
+                + Entry.AggressionWeightBonus   * AggressionFactor);
         }
 
         Scores.Add(Score);
@@ -410,9 +475,10 @@ FString UGothicBTService_WeightedActionSelect::GetStaticDescription() const
     TArray<FString> Parts;
     for (const FGothicWeightedActionEntry& Entry : Actions)
     {
-        Parts.Add(FString::Printf(TEXT("%s (w=%.1f%s)"),
+        Parts.Add(FString::Printf(TEXT("%s (w=%.1f%s%s)"),
             *Entry.ActionID.ToString(), Entry.BaseWeight,
-            Entry.RecklessnessWeightBonus != 0.f ? TEXT(", +reckless") : TEXT("")));
+            Entry.RecklessnessWeightBonus != 0.f ? TEXT(", +reckless") : TEXT(""),
+            Entry.AggressionWeightBonus != 0.f ? TEXT(", +aggression") : TEXT("")));
     }
     return FString::Printf(TEXT("%s\nPool: %s"),
         *Super::GetStaticDescription(),

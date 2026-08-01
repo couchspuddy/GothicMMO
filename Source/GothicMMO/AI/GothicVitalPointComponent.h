@@ -117,19 +117,15 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|VitalPoint")
     FVector GetCurrentVitalWorldLocation() const;
 
-    /**
-     * Returns the world position of the NEXT vital point before it shifts.
-     * This is what The Read ability exposes to the Hunter.
-     * Returns zero vector if only one vital point is defined.
-     *
-     * The next index is rolled at random (excluding the current one) at the
-     * moment the current vital becomes active, and replicated — so The Read's
-     * prediction is pre-committed truth, not a computable pattern. When the
-     * vital is frozen, "next" is the current index: The Read honestly reports
-     * that it isn't going anywhere.
-     */
-    UFUNCTION(BlueprintPure, Category = "Gothic|VitalPoint")
-    FVector GetNextVitalWorldLocation() const;
+    // GetNextVitalWorldLocation() was removed here. It existed to expose the
+    // pre-committed NextVitalIndex to The Read, and the Read/telegraph path was
+    // removed in the redesign — the function had zero callers in C++ and zero
+    // references in any Blueprint graph.
+    //
+    // NextVitalIndex itself is deliberately KEPT: it is live internal state that
+    // ShiftVitalPoint reads on every shift, and it remains replicated so a
+    // future Read is a getter away rather than a redesign. Dropping it would
+    // change the component's replicated surface for no gain.
 
     /**
      * Permanently stops the vital point from shifting, from either the
@@ -169,16 +165,18 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|VitalPoint")
     int32 GetActiveVitalIndex() const { return ActiveVitalIndex; }
 
-    // ── Read highlight — called by GA_Read ────────────────────────────────
+    // ── Read highlight ────────────────────────────────────────────────────
 
-    /** Activates the Read overlay on the mesh at the given world position. */
-    void SetReadHighlight(const FVector& WorldPos);
-
-    /** Clears the Read overlay. Called when GA_Read ends. */
+    /**
+     * Parks the overlay's Read parameter off-world so the highlight is dark.
+     *
+     * Its counterpart SetReadHighlight() and the bReadHighlightActive flag were
+     * removed: nothing had called them since the Read redesign, so the flag was
+     * write-only and the setter was an unreachable entry point sitting on a
+     * material parameter. This half survives because it is genuinely called —
+     * on init, to establish the off state of the overlay material.
+     */
     void ClearReadHighlight();
-
-    /** True while GA_Read is actively highlighting the next vital. */
-    bool bReadHighlightActive = false;
 
     // ── Delegates ────────────────────────────────────────────────────────────
 

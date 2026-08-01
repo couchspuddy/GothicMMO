@@ -1,7 +1,9 @@
 ﻿// GothicBTTask_ComputeRepositionPoint.cpp
 
 #include "AI/GothicBTTask_ComputeRepositionPoint.h"
+#include "AI/GothicBossArenaManager.h"
 #include "AIController.h"
+#include "Kismet/GameplayStatics.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
@@ -71,11 +73,39 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
     Memory->bHolding    = false;
     Memory->HoldElapsed = 0.f;
 
+    // Rotunda pillar escalation, applied to the hold and nothing else.
+    //
+    // The menace-hold is the single most direct expression of "not aggressive
+    // yet": it writes the boss's OWN location as her reposition point, so a hold
+    // is a beat where she is deliberately not closing. Dividing the chance by
+    // the arena aggression multiplier means a stripped arena buys those beats
+    // back as movement — 0.35 at four pillars, 0.175 at zero. That is the
+    // multiplier used as itself, not an invented curve, and it is exactly inert
+    // at the baseline 1.0, so levels with no arena manager (every non-boss
+    // encounter) roll the authored chance unchanged.
+    //
+    // HoldDuration is deliberately NOT scaled: a hold that fires should still
+    // read as a full, legible beat of her sizing the player up. Aggression makes
+    // holds RARER, not clipped — a half-length stare is just a stutter.
+    //
+    // Looked up per activation rather than cached: a Reposition activates on the
+    // order of once per second at worst, against one manager in the level.
+    float EffectiveHoldChance = HoldChance;
+    if (const AGothicBossArenaManager* Arena = Cast<AGothicBossArenaManager>(
+            UGameplayStatics::GetActorOfClass(Pawn->GetWorld(), AGothicBossArenaManager::StaticClass())))
+    {
+        const float Aggression = Arena->GetAggressionMultiplier();
+        if (Aggression > KINDA_SMALL_NUMBER)
+        {
+            EffectiveHoldChance = HoldChance / Aggression;
+        }
+    }
+
     // Roll the menacing hold. On a hold, point the paired Move To at where she
     // already stands (a no-op walk) and stay InProgress so she plants and stares
     // the player down for HoldDuration instead of strafing off. The focus lock
     // on the controller keeps her facing the target the whole beat.
-    if (HoldChance > 0.f && FMath::FRand() < HoldChance)
+    if (EffectiveHoldChance > 0.f && FMath::FRand() < EffectiveHoldChance)
     {
         BB->SetValue<UBlackboardKeyType_Vector>(
             OutputPointKey.GetSelectedKeyID(), Pawn->GetActorLocation());

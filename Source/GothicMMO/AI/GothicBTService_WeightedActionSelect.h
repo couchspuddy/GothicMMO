@@ -79,6 +79,27 @@ struct FGothicWeightedActionEntry
     float RecklessnessWeightBonus = 0.f;
 
     /**
+     * Added to BaseWeight, scaled by (ArenaAggression - 1) — the Rotunda pillar
+     * escalation. Zero effect at the baseline multiplier of 1.0 (four pillars
+     * standing, or no arena manager in the level at all), fully applied at 2.0
+     * (every pillar down).
+     *
+     * This must be authored ASYMMETRICALLY or it does nothing. The roll is
+     * FRandRange(0, TotalWeight) against cumulative scores, so multiplying
+     * EVERY entry by the same factor scales TotalWeight by the same factor and
+     * leaves the distribution bit-for-bit identical. Aggression only becomes
+     * visible as a BIAS: entries that should ramp when the arena is stripped
+     * (the committing attacks) get a bonus, entries that should recede
+     * (Reposition, the menace-hold) get zero or a negative value.
+     *
+     * Ships at 0 on every entry — the mechanism is wired, the CURVE is an
+     * unmade design decision and wants a measured pass, not a guess. Until
+     * values are authored the boss behaves exactly as she does today.
+     */
+    UPROPERTY(EditAnywhere, Category = "Action")
+    float AggressionWeightBonus = 0.f;
+
+    /**
      * Optional range gate, in HORIZONTAL (XY) cm from pawn to target.
      * -1 on either bound means no limit on that side.
      *
@@ -131,6 +152,26 @@ protected:
      */
     UPROPERTY(EditAnywhere, Category = "Selection")
     float MinMovementCommitDuration = 1.5f;
+
+    /**
+     * Divide MinMovementCommitDuration by the current arena aggression multiplier.
+     *
+     * This is the second, more direct half of pillar aggression. The commit
+     * window is one of the two knobs that produced the measured orbiting: a
+     * movement pick holds the Blackboard key for a flat 1.5s no matter what the
+     * fight looks like, so the floor on "how long she walks instead of swinging"
+     * is fixed. Dividing by the multiplier drops that floor to 0.75s with every
+     * pillar down, which is the multiplier used as itself rather than as an
+     * invented curve — and it is exactly inert at 1.0, so nothing changes for
+     * the Retained or the Thralls, whose levels have no arena manager.
+     *
+     * Deliberately does NOT touch AbilityActivationGrace: that window is sized
+     * from this service's own tick rate (2 x 0.25s worst-case spacing) and is a
+     * measurement of the behavior tree, not a tuning value. Shrinking it would
+     * re-open the ratchet-towards-movement bug it exists to close.
+     */
+    UPROPERTY(EditAnywhere, Category = "Selection")
+    bool bScaleCommitDurationByAggression = true;
 
     /**
      * Grace window an ability pick gets between being WRITTEN to the Blackboard
@@ -202,6 +243,27 @@ private:
      * every tick re-rolls and interrupts whatever just started.
      */
     void SelectAndWrite(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory);
+
+    /**
+     * Current Rotunda aggression multiplier, or 1.0 when this pawn's level has
+     * no arena manager (every non-boss encounter). Resolved once per branch
+     * activation into node memory and polled from there.
+     *
+     * Polling rather than binding OnArenaAggressionChanged is not laziness. BT
+     * nodes are shared objects: one UGothicBTService_WeightedActionSelect
+     * instance serves every pawn running that tree, and this node does not set
+     * bCreateNodeInstance. A dynamic delegate bound from it would be bound once
+     * per BT component onto the same UObject, so the multicast would fire the
+     * same handler N times with no way to tell which pawn it was for, and any
+     * state it wrote would be shared across all of them. Per-instance state on
+     * a shared node has to live in NodeMemory, and NodeMemory is only reachable
+     * from the node's own callbacks — which means polling.
+     *
+     * The read itself is cheap (a pillar count and an array index) and this
+     * service already ticks at 5Hz. The one-time actor lookup is cached, misses
+     * included, so a level with no manager pays for exactly one search.
+     */
+    float GetArenaAggression(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) const;
 
     bool IsAbilityReady(UAbilitySystemComponent* ASC, const FGameplayTag& AbilityTag) const;
 

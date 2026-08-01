@@ -21,13 +21,13 @@ class AGothicRotundaPillar;
  * Fires when a pillar falls, carrying the new aggression multiplier and the new
  * standing-pillar count.
  *
- * The escalation curve had NO consumer of any kind: OnPillarDestroyed computed
- * the multiplier into a local and returned, and GetAggressionMultiplier had zero
- * callers project-wide — so destroying pillars changed nothing whatsoever about
- * the boss. This is the reachable half of the fix. What the multiplier should
- * actually SCALE is a design decision that has not been made (see the comment on
- * OnPillarDestroyed), so the value is broadcast where a Blueprint can act on it
- * today rather than being silently spent on a mechanic nobody chose.
+ * This is the PRESENTATION hook — music, arena lighting, VFX, anything a
+ * Blueprint wants to do the moment the arena escalates.
+ *
+ * It is not how the AI reads aggression. The behavior tree polls
+ * GetAggressionMultiplier() directly (GothicBTService_WeightedActionSelect and
+ * GothicBTTask_ComputeRepositionPoint), because BT nodes are shared objects with
+ * per-instance NodeMemory and cannot safely bind a dynamic delegate.
  */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
     FOnArenaAggressionChanged, float, NewAggressionMultiplier, int32, PillarsRemaining);
