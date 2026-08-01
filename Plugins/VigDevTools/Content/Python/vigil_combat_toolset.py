@@ -82,7 +82,46 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                 "melee": {"actor": "str"},
                 "reload": {"actor": "str"},
                 "convert_steadfast": {"actor": "str"},
-                "swap_weapon": {"actor": "str", "index": "int"},
+                "swap_weapon": {
+                    "actor": "str", "index": "int",
+                    "_note": "Moves ActiveWeaponIndex only. Does NOT touch the "
+                             "inventory, so it exercises no equipment code -- "
+                             "use equip_item/unequip_slot for that.",
+                },
+                "equip_item": {
+                    "actor": "str (player)",
+                    "instance_id": "str, 32 hex digits (from inventory_snapshot)",
+                    "definition": "str, asset path or bare name -- use INSTEAD of "
+                                  "instance_id",
+                    "_note": "Real UGothicInventoryComponent::EquipItem, the call "
+                             "the inventory UI makes. The slot comes from the "
+                             "item definition and is not a parameter. On a CLIENT "
+                             "the returned bool means 'request sent', not "
+                             "success -- read 'authority' and re-check with "
+                             "inventory_snapshot on a later step.",
+                },
+                "unequip_slot": {
+                    "actor": "str (player)",
+                    "slot": "str name (Sidearm|Piece|Rig|Head|Neck|Chest|Back|"
+                            "LeftArm|RightArm|Wrist|LeftLeg|RightLeg|Feet) or "
+                            "raw value (0-2, 10-19)",
+                    "_note": "The only action that reaches OnEquipmentChanged's "
+                             "slot-clearing branch. Returning false is a "
+                             "DOCUMENTED outcome (slot empty, or inventory at "
+                             "MaxInventorySize) and arrives as a 'refusal' "
+                             "field, not an error.",
+                },
+                "inventory_snapshot": {
+                    "actor": "str (player)",
+                    "_note": "Read-only. Source of instance_ids, and the way to "
+                             "assert an equip actually landed.",
+                },
+                "grant_test_items": {
+                    "actor": "str (player)",
+                    "_note": "DebugSpawnTestItems: ten transient ARMOR items. "
+                             "Authority-only. Cannot grant a named weapon "
+                             "definition -- nothing in Python can.",
+                },
                 "activate_slot": {"actor": "str",
                                   "slot": "LIGHT_ATTACK|HEAVY_ATTACK|ABILITY1|"
                                           "ABILITY2|ABILITY3|SUPER_ABILITY|PRIMARY_FIRE"},

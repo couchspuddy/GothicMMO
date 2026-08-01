@@ -1090,6 +1090,367 @@ def write_json(payload, filename_stem):
 
 
 # --------------------------------------------------------------------------
+# Inventory and equipment
+#
+# THE INVENTORY IS NOT ON THE PAWN. UGothicInventoryComponent is created on
+# AGothicPlayerState so it survives respawns alongside the ASC and the
+# AttributeSet (GothicInventoryComponent.h:2-3, GothicPlayerState.h:70-72).
+# Looking for it on the character is the first thing everyone tries and it
+# comes back None every time.
+#
+# What is and is not reachable from Python here, all verified against the
+# header rather than assumed:
+#
+#   EquipItem / UnequipSlot     BlueprintCallable  -> exported. The real API.
+#   GetAllItems / IsSlotEquipped BlueprintPure     -> exported.
+#   AGothicPlayerState::GetInventory()  plain inline getter, NOT a UFUNCTION
+#                               (GothicPlayerState.h:39) -> NOT exported. The
+#                               UPROPERTY behind it is, so we read that.
+#   GetEquippedItem             no UFUNCTION macro (GothicInventoryComponent.h:131)
+#                               -> NOT exported. Read the EquippedItems
+#                               UPROPERTY instead (h:302-303). C++ `protected`
+#                               does not hide a UPROPERTY from Python.
+#   UGothicItemDefinition::RollInstance   no UFUNCTION (GothicItemDefinition.h:138)
+#   AGothicWorldPickup::InitializePickup  no UFUNCTION (GothicWorldPickup.h:27)
+#                               -> NEITHER is exported, and every field of
+#                               FGothicItemInstance is BlueprintReadOnly
+#                               (GothicItemTypes.h:139-180) so the struct cannot
+#                               be filled in from Python either. There is
+#                               therefore NO way to mint an item from an
+#                               arbitrary definition asset at runtime. Equip
+#                               actions can only address what the inventory
+#                               already holds -- the StartingItemDefs kit or
+#                               DebugSpawnTestItems. Adding a definition to
+#                               StartingItemDefs on the PlayerState BP is an
+#                               editor-side change, not a harness one.
+# --------------------------------------------------------------------------
+
+class InventoryUnavailable(LookupError):
+    """No UGothicInventoryComponent reachable from this pawn.
+
+    Named, and raised rather than returning an empty item list, because "the
+    player is carrying nothing" and "the harness never found the inventory"
+    are indistinguishable once either is allowed to come back as [].
+    """
+
+
+class EquipSlotUnknown(ValueError):
+    """A slot name or value that EGothicEquipSlot does not define."""
+
+
+class ItemNotFound(LookupError):
+    """Nothing in the inventory matched the requested item address."""
+
+
+def inventory_component(pawn):
+    """The live UGothicInventoryComponent for `pawn`. Raises if unreachable."""
+    getter = getattr(pawn, "get_player_state", None)
+    if getter is None:
+        raise InventoryUnavailable(
+            "%s has no get_player_state, so it is not a player pawn. The "
+            "inventory lives on AGothicPlayerState (GothicPlayerState.h:70-72), "
+            "never on the character." % pawn.get_name())
+
+    state = getter()
+    if state is None:
+        raise InventoryUnavailable(
+            "%s has no PlayerState yet. In PIE the PlayerState arrives a frame "
+            "or two after the pawn; schedule the step slightly later."
+            % pawn.get_name())
+
+    inv = try_read(lambda: state.get_editor_property("inventory_component"))
+    if isinstance(inv, dict):       # try_read error object, not a component
+        inv = None
+    if inv is None:
+        inv = component(state, "GothicInventoryComponent")
+    if inv is None:
+        raise InventoryUnavailable(
+            "No UGothicInventoryComponent on PlayerState %s (reached from pawn "
+            "%s). Tried the 'inventory_component' UPROPERTY "
+            "(GothicPlayerState.h:71-72) and get_component_by_class. Components "
+            "present: %s"
+            % (state.get_name(), pawn.get_name(), component_names(state)))
+    return inv
+
+
+_EQUIP_SLOT_TABLE = None
+
+
+def equip_slot_table():
+    """{PYTHON_NAME: enum entry} for every EGothicEquipSlot value.
+
+    Built by reflection, deliberately. Python enum entry names are GENERATED
+    from the C++ names rather than declared, so hardcoding them is a guess:
+    EGothicEquipSlot::LeftArm (GothicItemTypes.h:41) arrives here as LEFT_ARM.
+    Reflecting means a rename surfaces as a missing key WITH the real list
+    attached, instead of an AttributeError inside an action.
+
+    The values are also non-contiguous on purpose -- weapons are 0-2, armor is
+    10-19 (GothicItemTypes.h:29-47) -- so an index is not a slot.
+    """
+    global _EQUIP_SLOT_TABLE
+    if _EQUIP_SLOT_TABLE is not None:
+        return _EQUIP_SLOT_TABLE
+
+    enum_cls = getattr(unreal, "GothicEquipSlot", None)
+    if enum_cls is None:
+        raise EquipSlotUnknown(
+            "unreal.GothicEquipSlot does not exist on this build. Suspect a "
+            "meta=(ScriptName=...) rename on EGothicEquipSlot, or a stale "
+            "binding -- restart the editor after a C++ rebuild.")
+
+    table = {}
+    for name in dir(enum_cls):
+        if name.startswith("_"):
+            continue
+        entry = getattr(enum_cls, name, None)
+        if isinstance(entry, enum_cls):
+            table[name] = entry
+
+    if not table:
+        raise EquipSlotUnknown(
+            "unreal.GothicEquipSlot exposed no enum entries. dir() gave: %s"
+            % sorted(n for n in dir(enum_cls) if not n.startswith("_")))
+
+    _EQUIP_SLOT_TABLE = table
+    return table
+
+
+def _slot_key(text):
+    """Fold a slot name to its comparable form: LEFT_ARM == 'left arm'."""
+    return "".join(ch for ch in str(text).lower() if ch.isalnum())
+
+
+def equip_slot(spec):
+    """Resolve a slot name ("Sidearm", "left_arm") or raw value (0, 14).
+
+    Raises EquipSlotUnknown listing every real slot. Never falls back to
+    Sidearm: silently equipping the wrong slot would produce a scenario result
+    that looks like data.
+    """
+    table = equip_slot_table()
+
+    if isinstance(spec, bool):
+        raise EquipSlotUnknown("slot must be a name or a value, got %r" % spec)
+
+    if isinstance(spec, int):
+        for name, entry in table.items():
+            if int(entry.value) == spec:
+                return entry
+        raise EquipSlotUnknown(
+            "No EGothicEquipSlot has value %d. Values are non-contiguous "
+            "(weapons 0-2, armor 10-19). Known: %s"
+            % (spec, {n: int(e.value) for n, e in sorted(table.items())}))
+
+    needle = _slot_key(spec)
+    if not needle:
+        raise EquipSlotUnknown("empty slot specifier")
+    for name, entry in table.items():
+        if _slot_key(name) == needle:
+            return entry
+    raise EquipSlotUnknown(
+        "'%s' is not an EGothicEquipSlot. Known: %s"
+        % (spec, {n: int(e.value) for n, e in sorted(table.items())}))
+
+
+def equip_slot_name(entry):
+    """The Python name for a slot entry, for readable results."""
+    for name, known in equip_slot_table().items():
+        if int(known.value) == int(entry.value):
+            return name
+    return "UNKNOWN(%s)" % int(entry.value)
+
+
+def guid_string(guid):
+    """FGuid as 32 hex digits -- FGuid::ToString(EGuidFormats::Digits).
+
+    Formatted from the A/B/C/D UPROPERTYs (Misc/Guid.h) rather than through
+    UKismetGuidLibrary, so this depends on nothing but the struct's own exported
+    fields. The int32s are signed in Python and masked back to unsigned here.
+    """
+    parts = []
+    for field in ("a", "b", "c", "d"):
+        value = getattr(guid, field, None)
+        if value is None:
+            raise ItemNotFound(
+                "FGuid did not expose '%s' on this build; cannot address items "
+                "by instance ID. Fields seen: %s"
+                % (field, sorted(n for n in dir(guid) if not n.startswith("_"))))
+        parts.append("%08X" % (int(value) & 0xFFFFFFFF))
+    return "".join(parts)
+
+
+def _guid_key(text):
+    """Fold a GUID to bare lowercase hex, so braces and dashes do not matter."""
+    return "".join(ch for ch in str(text).lower() if ch in "0123456789abcdef")
+
+
+def definition_path(item):
+    """Asset path of an item's definition, or None when the instance is empty.
+
+    An empty FGothicItemInstance with a null Definition is a real, meaningful
+    value here -- UnequipSlot_Authority broadcasts exactly that as the "slot is
+    now bare" signal (GothicInventoryComponent.cpp) -- so None is a legitimate
+    answer from this function and not a failed read.
+    """
+    definition = getattr(item, "definition", None)
+    if definition is None:
+        return None
+    return definition.get_path_name()
+
+
+def item_summary(item):
+    """A JSON-safe view of one FGothicItemInstance, addressable by instance_id."""
+    instance_id = getattr(item, "instance_id", None)
+    path = definition_path(item)
+    return {
+        "instance_id": guid_string(instance_id) if instance_id is not None else None,
+        "definition": path,
+        "definition_name": path.rsplit(".", 1)[-1] if path else None,
+        "gear_power": try_read(lambda: int(item.gear_power)),
+        "strain_cost": try_read(lambda: round(float(item.strain_cost), 3)),
+        "is_empty": path is None,
+    }
+
+
+def inventory_items(inv):
+    """Unequipped items. GetAllItems is BlueprintPure (GothicInventoryComponent.h:109-110)."""
+    getter = getattr(inv, "get_all_items", None)
+    if getter is None:
+        raise InventoryUnavailable(
+            "get_all_items missing on %s. It is BlueprintPure at "
+            "GothicInventoryComponent.h:109-110, so its absence means stale "
+            "Python bindings -- restart the editor after a C++ rebuild."
+            % inv.get_name())
+    return list(getter())
+
+
+def equipped_slots(inv):
+    """[(slot entry, FGothicItemInstance), ...] for every occupied slot.
+
+    Reads the EquippedItems UPROPERTY (GothicInventoryComponent.h:302-303).
+    It is a TArray<FGothicEquippedSlot> and NOT the TMap it used to be, because
+    UE cannot replicate a TMap (h:18-20) -- code written against the old shape
+    will not work here.
+    """
+    entries = try_read(lambda: inv.get_editor_property("equipped_items"))
+    if isinstance(entries, dict):
+        raise InventoryUnavailable(
+            "Could not read EquippedItems on %s: %s. It is a BlueprintReadOnly "
+            "UPROPERTY at GothicInventoryComponent.h:302-303; a failure here "
+            "means the binding shape changed, not that nothing is equipped."
+            % (inv.get_name(), entries.get("error")))
+    if entries is None:
+        return []
+    return [(entry.get_editor_property("slot"), entry.get_editor_property("item"))
+            for entry in entries]
+
+
+def equipped_in_slot(inv, slot_entry):
+    """The item in a slot, or None when the slot is bare."""
+    target = int(slot_entry.value)
+    for slot, item in equipped_slots(inv):
+        if int(slot.value) == target:
+            return item
+    return None
+
+
+def find_inventory_item(inv, instance_id=None, definition=None):
+    """Locate an UNEQUIPPED item by instance GUID or by definition asset.
+
+    Mirrors how the UI addresses items: GothicInventoryWidget::MakeUIData
+    (GothicInventoryWidget.cpp:258-260) carries InstanceID as the handle, and
+    every mutation on the component takes that FGuid.
+
+    Searches the unequipped list only, because that is what EquipItem accepts --
+    it uses FindInventoryItem, not FindItem (GothicInventoryComponent.h:103-104).
+
+    The FGuid is returned by handing back the live struct, never by
+    reconstructing one: pass `item.instance_id` straight through to EquipItem.
+    """
+    items = inventory_items(inv)
+
+    if instance_id:
+        needle = _guid_key(instance_id)
+        if not needle:
+            raise ItemNotFound("'%s' contains no hex digits, so it is not a "
+                               "GUID." % instance_id)
+        for item in items:
+            if _guid_key(guid_string(item.instance_id)) == needle:
+                return item
+        raise ItemNotFound(
+            "No unequipped item with instance ID '%s'. Carrying %d item(s): %s. "
+            "(Equipped items are deliberately not searched -- EquipItem only "
+            "accepts unequipped ones, GothicInventoryComponent.h:103-104.)"
+            % (instance_id, len(items), [item_summary(i) for i in items]))
+
+    if definition:
+        needle = str(definition).lower()
+        matches = [i for i in items
+                   if (definition_path(i) or "").lower() == needle
+                   or (definition_path(i) or "").rsplit(".", 1)[-1].lower() == needle]
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            raise ItemNotFound(
+                "No unequipped item from definition '%s'. Carrying %d item(s): "
+                "%s. NOTE: the harness cannot mint items -- RollInstance is not "
+                "a UFUNCTION and FGothicItemInstance is fully BlueprintReadOnly "
+                "-- so if the definition was never granted, add it to "
+                "StartingItemDefs on the PlayerState BP (editor-side change)."
+                % (definition, len(items), [item_summary(i) for i in items]))
+        raise ItemNotFound(
+            "'%s' matches %d unequipped items; address one by instance_id "
+            "instead: %s" % (definition, len(matches),
+                             [item_summary(m) for m in matches]))
+
+    raise ItemNotFound("supply either 'instance_id' or 'definition' to "
+                       "identify the item")
+
+
+def inventory_authority(inv):
+    """True when this component's owner may mutate inventory state directly.
+
+    Read off the OWNING ACTOR, not the component:
+    UGothicInventoryComponent::HasInventoryAuthority is a plain C++ method with
+    no UFUNCTION macro (GothicInventoryComponent.h:76-77), so it is absent from
+    the Python bindings. AActor::HasAuthority is BlueprintCallable, and the
+    PlayerState's role is exactly what the component's own check resolves to.
+
+    This is THE value that decides whether an equip/unequip return code is a
+    verdict or just "request sent" (GothicInventoryComponent.h:28-34).
+    """
+    owner = inv.get_owner()
+    if owner is None:
+        raise InventoryUnavailable(
+            "%s has no owning actor, so its authority cannot be determined. "
+            "An ownerless component counts as authority in C++ "
+            "(GothicInventoryComponent.h:76), but that case is a CDO, not "
+            "anything a PIE scenario should be driving." % inv.get_name())
+    return bool(owner.has_authority())
+
+
+def inventory_snapshot(inv):
+    """Everything a verifier needs to address and assert on the inventory."""
+    items = inventory_items(inv)
+    return {
+        "component": inv.get_name(),
+        "owner": try_read(lambda: inv.get_owner().get_name()),
+        "has_authority": inventory_authority(inv),
+        "item_count": len(items),
+        "max_inventory_size": try_read(
+            lambda: int(inv.get_editor_property("max_inventory_size"))),
+        "items": [item_summary(i) for i in items],
+        "equipped": [{"slot": equip_slot_name(slot), "slot_value": int(slot.value),
+                      "item": item_summary(item)}
+                     for slot, item in equipped_slots(inv)],
+        "current_strain": try_read(lambda: round(float(inv.get_current_strain()), 3)),
+        "resonance_cap": try_read(
+            lambda: round(float(inv.get_editor_property("resonance_cap")), 3)),
+    }
+
+
+# --------------------------------------------------------------------------
 # Console policy. One allowlist, shared by every path that can run a command,
 # so there is a single place to widen or tighten it.
 # --------------------------------------------------------------------------
@@ -1103,6 +1464,12 @@ CONSOLE_ALLOWLIST = (
     "log ",
     "abilitysystem.",
     "gothic.",
+    # Project cvars/commands registered under the Vigil namespace. Same trust
+    # class as "gothic." above: our own code, no engine state at risk.
+    #   vigil.Deterministic / vigil.DeterministicSeed  Game/GothicDeterminism.cpp
+    #   Vigil.OpenBleedGates                           AI/GothicBleedGate.cpp
+    # (matching is case-insensitive, so the capitalised registration is covered)
+    "vigil.",
     "displayall ",
     "dumpgameplaytags",
     "t.maxfps",

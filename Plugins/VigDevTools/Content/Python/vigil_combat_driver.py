@@ -154,6 +154,216 @@ def _a_swap(world, step):
     return {"swapped_to": index}
 
 
+# --------------------------------------------------------------------------
+# Inventory equip / unequip
+#
+# swap_weapon above only moves ActiveWeaponIndex between weapons the character
+# already holds. It never touches the inventory, so it cannot exercise any of
+# the equipment code: the OnItemEquipped broadcast, OnEquipmentChanged's
+# slot-clearing branch, the auto-reload trigger, or the Server RPC round trip.
+# These two actions do, by calling the same functions the inventory UI calls.
+# --------------------------------------------------------------------------
+
+def _inventory(world, step):
+    return common.inventory_component(_actor(world, step))
+
+
+def _equip_result(inv, slot_entry, before, called, authority):
+    """Shared result shape: what was asked, what the API said, what changed.
+
+    `changed` is the load-bearing field. On a client `called` is meaningless
+    (see below), so the only honest evidence that anything happened is the
+    before/after diff -- and even that lands a round trip later, not in this
+    result. The replication test reads it on a LATER step, not this one.
+    """
+    after = common.equipped_in_slot(inv, slot_entry)
+    before_summary = common.item_summary(before) if before is not None else None
+    after_summary = common.item_summary(after) if after is not None else None
+    return {
+        "slot": common.equip_slot_name(slot_entry),
+        "returned": called,
+        "authority": authority,
+        "return_means": (
+            "verdict -- this component has authority, so the bool is the real "
+            "outcome" if authority else
+            "REQUEST SENT ONLY -- on a client EquipItem/UnequipSlot forward to "
+            "their Server RPC and return true unconditionally "
+            "(GothicInventoryComponent.h:118-124, .cpp routers). Do NOT read "
+            "this true as success; re-read the slot on a later step and "
+            "compare."),
+        "equipped_before": before_summary,
+        "equipped_after": after_summary,
+        "changed": before_summary != after_summary,
+    }
+
+
+@_action("equip_item")
+def _a_equip_item(world, step):
+    """Equip an inventory item through UGothicInventoryComponent::EquipItem.
+
+    THE REAL PATH, ON PURPOSE. This is the same BlueprintCallable the inventory
+    UI drives (GothicInventoryWidget calls straight through to it), not a poke
+    at EquippedItems. Poking the array would prove nothing about the code that
+    ships: it would skip the authority router, the strain gate, and the
+    OnItemEquipped broadcast that AGothicPlayerCharacter::OnEquipmentChanged is
+    bound to -- which is where the weapon slot, mesh, crosshair, ammo and
+    auto-reload behaviour all actually live.
+
+    Address the item with EITHER:
+      instance_id  32 hex digits from an inventory snapshot (braces/dashes ok)
+      definition   asset path or bare asset name, e.g. DA_Weapon_HeavyMeleeRig
+
+    The slot is NOT a parameter: the definition owns it
+    (UGothicItemDefinition::EquipSlot), exactly as it does for the UI.
+    """
+    inv = _inventory(world, step)
+    item = common.find_inventory_item(
+        inv,
+        instance_id=step.get("instance_id"),
+        definition=step.get("definition"))
+
+    summary = common.item_summary(item)
+    definition = item.definition
+    if definition is None:
+        raise common.ItemNotFound(
+            "Item %s has a null Definition, so it has no slot to equip into."
+            % summary["instance_id"])
+    slot_entry = definition.get_editor_property("equip_slot")
+    before = common.equipped_in_slot(inv, slot_entry)
+    authority = common.inventory_authority(inv)
+
+    # The FGuid is handed straight back from the live struct and never rebuilt
+    # from the string -- constructing an FGuid in Python is not something to
+    # rely on, and there is no reason to.
+    called = bool(inv.equip_item(item.instance_id))
+
+    result = _equip_result(inv, slot_entry, before, called, authority)
+    result["requested"] = summary
+    if authority and not called:
+        result["refusal"] = (
+            "EquipItem returned false on the authority. The documented causes "
+            "are: the ID is not in the unequipped inventory, or the item would "
+            "exceed the Resonance Strain cap (GothicInventoryComponent.h:114-124). "
+            "Note the strain gate is UNREACHABLE with current content -- max "
+            "wearable strain is 50 against a cap of 100 (h:182-192) -- so "
+            "suspect the ID first.")
+    return result
+
+
+@_action("unequip_slot")
+def _a_unequip_slot(world, step):
+    """Unequip a slot through UGothicInventoryComponent::UnequipSlot.
+
+    This is the action that exercises OnEquipmentChanged's SLOT-CLEARING
+    branch. UnequipSlot_Authority broadcasts OnItemEquipped with an EMPTY
+    FGothicItemInstance as the "slot is now bare" signal, and OnEquipmentChanged
+    reads Item.Definition being null to clear the weapon slot
+    (GothicInventoryComponent.cpp, UnequipSlot_Authority). Nothing else in this
+    harness reaches that branch.
+
+    Fields: actor, slot (name like "Sidearm"/"left_arm", or raw value 0-2/10-19).
+
+    FALSE IS A REAL, DOCUMENTED OUTCOME HERE, not an error: on the authority
+    UnequipSlot refuses when the inventory is already at MaxInventorySize,
+    because the item would have nowhere to go, and it leaves the item equipped
+    (GothicInventoryComponent.cpp, UnequipSlot_Authority). The result explains
+    which case fired rather than raising, so a scenario testing the full-
+    inventory refusal can assert on it.
+    """
+    inv = _inventory(world, step)
+    if "slot" not in step:
+        raise ValueError(
+            "unequip_slot needs a 'slot'. Known: %s"
+            % {n: int(e.value)
+               for n, e in sorted(common.equip_slot_table().items())})
+    slot_entry = common.equip_slot(step["slot"])
+
+    before = common.equipped_in_slot(inv, slot_entry)
+    authority = common.inventory_authority(inv)
+    called = bool(inv.unequip_slot(slot_entry))
+
+    result = _equip_result(inv, slot_entry, before, called, authority)
+    if authority and not called:
+        items = len(common.inventory_items(inv))
+        cap = common.try_read(
+            lambda: int(inv.get_editor_property("max_inventory_size")))
+        if before is None:
+            result["refusal"] = (
+                "the slot was already empty -- UnequipSlot returns false when "
+                "IndexOfEquippedSlot finds nothing.")
+        elif isinstance(cap, int) and items >= cap:
+            result["refusal"] = (
+                "INVENTORY FULL (%d/%d). The cap is checked BEFORE anything is "
+                "torn down, so the item is still equipped and the state is "
+                "intact -- this is the designed refusal, not a failure."
+                % (items, cap))
+        else:
+            result["refusal"] = (
+                "UnequipSlot returned false with the slot occupied and the "
+                "inventory at %s/%s. That combination is not explained by the "
+                "documented refusals; treat it as a finding, not a harness "
+                "problem." % (items, cap))
+    return result
+
+
+@_action("inventory_snapshot")
+def _a_inventory_snapshot(world, step):
+    """Dump the inventory: instance IDs to address, plus equipped state.
+
+    Read-only. Run this before an equip step to get instance_ids, and after one
+    to assert on the result -- particularly on a client, where the equip call's
+    own return value is not a verdict.
+    """
+    return common.inventory_snapshot(_inventory(world, step))
+
+
+@_action("grant_test_items")
+def _a_grant_test_items(world, step):
+    """Fill the inventory with the C++ debug kit, so equip steps have something
+    to move.
+
+    Calls UGothicInventoryComponent::DebugSpawnTestItems (BlueprintCallable,
+    GothicInventoryComponent.h:284-285), which rolls ten transient ARMOR items
+    across the Salvage..Pure tiers.
+
+    KNOW WHAT THIS CANNOT DO: the kit is armor only -- there is no weapon in it,
+    and it cannot be pointed at a specific definition asset. It will not produce
+    DA_Weapon_HeavyMeleeRig or any other authored weapon. Nothing in the Python
+    bindings can: RollInstance and InitializePickup are not UFUNCTIONs, and
+    every FGothicItemInstance field is BlueprintReadOnly, so an instance cannot
+    be minted or filled in from here at all.
+
+    Authority-only. AddItem refuses on a client with a log
+    (GothicInventoryComponent.h:81-87), so on a client this silently grants
+    nothing -- which is why authority is reported and asserted below.
+    """
+    inv = _inventory(world, step)
+    if not common.inventory_authority(inv):
+        raise common.InventoryUnavailable(
+            "grant_test_items needs authority: DebugSpawnTestItems calls "
+            "AddItem, which is authority-only and refuses on a client "
+            "(GothicInventoryComponent.h:81-87). Run this on the server/host.")
+
+    granter = getattr(inv, "debug_spawn_test_items", None)
+    if granter is None:
+        raise common.InventoryUnavailable(
+            "debug_spawn_test_items missing on %s; it is BlueprintCallable at "
+            "GothicInventoryComponent.h:284-285, so this means stale bindings."
+            % inv.get_name())
+
+    before = len(common.inventory_items(inv))
+    granter()
+    after = len(common.inventory_items(inv))
+    if after <= before:
+        raise common.InventoryUnavailable(
+            "DebugSpawnTestItems added nothing (%d items before and after). "
+            "The usual cause is a full inventory -- AddItem refuses at "
+            "MaxInventorySize." % before)
+    return {"items_before": before, "items_after": after,
+            "granted": after - before,
+            "note": "armor only; no weapon definitions are reachable from here"}
+
+
 @_action("activate_slot")
 def _a_activate(world, step):
     """Activate an ability by slot through the ASC, bypassing input."""

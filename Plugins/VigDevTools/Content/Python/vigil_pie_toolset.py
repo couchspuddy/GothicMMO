@@ -174,13 +174,60 @@ class VigilPIETools(unreal.ToolsetDefinition):
              "authoritative; needs PIE)",
              lambda: common.probe_trace_return_shape())
 
+        # --- Inventory equip/unequip -----------------------------------
+        # equip_item and unequip_slot are the only actions that exercise the
+        # equipment code (OnItemEquipped, OnEquipmentChanged's slot-clearing
+        # branch, the Server RPC round trip). Every binding they lean on is a
+        # row, because three of them are "expected False" for structural
+        # reasons that look exactly like breakage if rediscovered cold.
+        _row("GothicInventoryComponent.equip_item",
+             lambda: _has("GothicInventoryComponent", "equip_item"))
+        _row("GothicInventoryComponent.unequip_slot",
+             lambda: _has("GothicInventoryComponent", "unequip_slot"))
+        _row("GothicInventoryComponent.get_all_items",
+             lambda: _has("GothicInventoryComponent", "get_all_items"))
+        _row("GothicInventoryComponent.debug_spawn_test_items",
+             lambda: _has("GothicInventoryComponent", "debug_spawn_test_items"))
+        # Expected False, permanently: GetEquippedItem carries no UFUNCTION
+        # macro (GothicInventoryComponent.h:130-131). The EquippedItems
+        # UPROPERTY is what the harness reads instead -- C++ `protected` does
+        # not hide a UPROPERTY from Python.
+        _row("GothicInventoryComponent.get_equipped_item (expected False -- "
+             "no UFUNCTION macro; read the equipped_items UPROPERTY instead)",
+             lambda: _has("GothicInventoryComponent", "get_equipped_item"))
+        # Expected False, permanently: also no UFUNCTION macro
+        # (GothicInventoryComponent.h:76-77). Authority is read off the owning
+        # actor's HasAuthority instead.
+        _row("GothicInventoryComponent.has_inventory_authority (expected "
+             "False -- no UFUNCTION; use owner.has_authority())",
+             lambda: _has("GothicInventoryComponent", "has_inventory_authority"))
+        # Expected False, permanently, and it is the reason no harness action
+        # can grant an authored weapon: UGothicItemDefinition::RollInstance has
+        # no UFUNCTION (GothicItemDefinition.h:132-138), AGothicWorldPickup::
+        # InitializePickup has none either (GothicWorldPickup.h:26-27), and
+        # every FGothicItemInstance field is BlueprintReadOnly
+        # (GothicItemTypes.h:139-180) so the struct cannot be filled from
+        # Python. To get DA_Weapon_HeavyMeleeRig into a test inventory it must
+        # be added to StartingItemDefs on the PlayerState BP -- editor-side.
+        _row("GothicItemDefinition.roll_instance (expected False -- no "
+             "UFUNCTION; NOTHING in Python can mint an item instance)",
+             lambda: _has("GothicItemDefinition", "roll_instance"))
+        _row("EGothicEquipSlot entries (GENERATED names, not declared)",
+             lambda: {n: int(e.value)
+                      for n, e in sorted(common.equip_slot_table().items())})
+        # FGuid exports A/B/C/D (Misc/Guid.h) and that is how items are
+        # addressed; if this row breaks, instance_id addressing breaks with it.
+        _row("FGuid A/B/C/D readable (how items are addressed)",
+             lambda: all(hasattr(unreal.Guid(), f) for f in "abcd"))
+
         vigil = {}
         for name in (
             "GothicCharacterBase", "GothicPlayerCharacter", "GothicEnemyBase",
             "GothicAbilitySystemComponent", "GothicAttributeSet",
             "GothicSteadfastComponent", "GothicVitalPointComponent",
             "GothicCombatStateComponent", "GothicPackSubsystem",
-            "GothicAbilitySlot",
+            "GothicAbilitySlot", "GothicInventoryComponent",
+            "GothicItemDefinition", "GothicPlayerState",
         ):
             vigil[name] = hasattr(unreal, name)
 
