@@ -191,6 +191,70 @@ def _m_combat_target(actor):
     return target.get_name() if common.is_valid(target) else None
 
 
+# Actor name -> True once ChosenAction has been confirmed present on that
+# pawn's blackboard asset. Checked once, not every sample: _key_entries walks
+# the asset's parent chain and this reader runs at 10Hz per target.
+_chosen_action_verified = {}
+
+CHOSEN_ACTION_KEY = "ChosenAction"
+
+
+def _verify_chosen_action_key(actor, bb):
+    """Confirm the blackboard ASSET declares ChosenAction. Raises if it does not.
+
+    UBlackboardComponent::GetValueAsName (BlackboardComponent.h:123-124) returns
+    NAME_None for a key that does not exist, which is indistinguishable from a
+    key the service has legitimately cleared -- and clearing it is exactly what
+    UGothicBTService_WeightedActionSelect does when nothing is eligible
+    (GothicBTService_WeightedActionSelect.cpp:331, .h:181). A silent None column
+    would therefore read as "the BT chose nothing" when the truth might be "this
+    pawn has no such key". Verify once, then trust the reads.
+    """
+    name = actor.get_name()
+    if _chosen_action_verified.get(name):
+        return
+
+    from vig_blackboard_tools import _key_entries
+    entries = _key_entries(bb, actor.get_controller())
+    if not entries:
+        raise LookupError(
+            "could not enumerate %s's blackboard asset, so a NAME_None from "
+            "ChosenAction cannot be told apart from a missing key" % name)
+    declared = {key for key, _ in entries}
+    if CHOSEN_ACTION_KEY not in declared:
+        raise LookupError(
+            "%s's blackboard declares no '%s' key. Present: %s"
+            % (name, CHOSEN_ACTION_KEY, sorted(declared)))
+    _chosen_action_verified[name] = True
+
+
+@_reader("chosen_action")
+def _m_chosen_action(actor):
+    """Which weighted action the BT has committed to this tick.
+
+    Same live source as combat_target: the blackboard, not the pawn.
+    UGothicBTService_WeightedActionSelect writes the winning entry's ActionID
+    into the ChosenAction Name key and clears it when nothing is eligible
+    (GothicBTService_WeightedActionSelect.cpp:352, :372, and the clear at :331),
+    and every equality decorator in the tree gates on that key. Sampling it here
+    turns "what is the boss doing and for how long" into a probe column instead
+    of one MCP call per sample.
+
+    Returns None when the key is genuinely empty -- that is the service reporting
+    nothing eligible, which is a real BT state and a finding in its own right.
+    """
+    bb = common.blackboard(actor)
+    if bb is None:
+        raise LookupError(
+            "no blackboard on %s -- ChosenAction is a BT key and only exists on "
+            "an AI-possessed pawn" % actor.get_name())
+
+    _verify_chosen_action_key(actor, bb)
+
+    value = str(bb.get_value_as_name(CHOSEN_ACTION_KEY))
+    return None if value in ("None", "") else value
+
+
 @_reader("location")
 def _m_location(actor):
     return common.vec(actor.get_actor_location())
@@ -247,6 +311,9 @@ def start(targets, metrics, interval_seconds=0.1, max_samples=20000, world=None)
     _game_origin = common.game_time(_world) if _world is not None else None
     _stop_reason = None
     _error_streak = 0
+    # The interpreter outlives PIE, so a verdict cached against a previous
+    # session's pawn must not be trusted for this one.
+    _chosen_action_verified.clear()
 
     _tick_handle = unreal.register_slate_post_tick_callback(_on_tick)
     return True

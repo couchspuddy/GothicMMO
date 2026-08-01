@@ -309,29 +309,402 @@ def _a_aim_at(world, step):
     return {"aimed_at": target.get_name(), "rotation": [rot.pitch, rot.yaw, rot.roll]}
 
 
+# --------------------------------------------------------------------------
+# Weapon trace. Everything that answers "would this shot land?" runs through
+# here, because the answer is only meaningful if it is the SAME trace GA_Fire
+# runs: LineTraceSingleByChannel(Start=camera location, End=Start+forward*range,
+# ECC_Weapon, simple collision, shooter ignored) -- GA_Fire.cpp:250-257.
+# --------------------------------------------------------------------------
+
+WEAPON_CHANNEL_NAME = "Weapon"        # DefaultEngine.ini:219, ECC_GameTraceChannel1
+_FALLBACK_TRACE_RANGE = 10000.0
+_ASSUMED_WEAPON_TRACE_INDEX = 2       # see _resolve_weapon_trace_type
+
+_weapon_trace_type = None             # (ETraceTypeQuery, provenance str), resolved once
+
+
+def _resolve_weapon_trace_type():
+    """The ETraceTypeQuery that maps to ECC_Weapon, plus how we worked it out.
+
+    UEngineTypes::ConvertToTraceType (EngineTypes.h:4075) is the obvious call and
+    it is NOT a UFUNCTION -- UEngineTypes exposes four plain statics and nothing
+    else, so Python cannot reach any of them. The mapping therefore has to be
+    reconstructed.
+
+    UCollisionProfile builds TraceTypeMapping as [ECC_Visibility, ECC_Camera]
+    (CollisionProfile.cpp:373-377) followed by every DefaultChannelResponses entry
+    with bTraceType=true, in array order (:447-450). ETraceTypeQuery::TraceTypeQuery1
+    is index 0 of that array. DefaultChannelResponses is a UPROPERTY(globalconfig)
+    on the UCollisionProfile CDO (CollisionProfile.h:171-172) and FCustomChannelSetup
+    exposes Name and bTraceType as UPROPERTYs (CollisionProfile.h:96-118), so the
+    whole mapping is reflectable.
+
+    If that read fails, fall back to the ordinal this project's config implies
+    (Weapon is the only bTraceType custom channel, so index 2 = TraceTypeQuery3)
+    and SAY SO in the provenance string. A wrong channel here would silently
+    produce traces that hit nothing, which is the exact failure this fix exists
+    to remove -- so the guess never gets to look like a derivation.
+    """
+    global _weapon_trace_type
+    if _weapon_trace_type is not None:
+        return _weapon_trace_type
+
+    index = None
+    provenance = None
+    try:
+        cdo = unreal.get_default_object(unreal.CollisionProfile)
+        responses = cdo.get_editor_property("default_channel_responses") or []
+        trace_channels = [r for r in responses
+                          if bool(r.get_editor_property("b_trace_type"))]
+        for i, entry in enumerate(trace_channels):
+            if str(entry.get_editor_property("name")) == WEAPON_CHANNEL_NAME:
+                index = i + 2   # Visibility and Camera occupy 0 and 1
+                provenance = (
+                    "derived from the UCollisionProfile CDO's "
+                    "DefaultChannelResponses (CollisionProfile.h:171-172)")
+                break
+        if index is None:
+            raise LookupError(
+                "no DefaultChannelResponses entry named '%s' with bTraceType=true; "
+                "found trace channels %s"
+                % (WEAPON_CHANNEL_NAME,
+                   [str(r.get_editor_property("name")) for r in trace_channels]))
+    except Exception as exc:
+        index = _ASSUMED_WEAPON_TRACE_INDEX
+        provenance = (
+            "ASSUMED TraceTypeQuery%d -- could not derive the mapping from the "
+            "UCollisionProfile CDO (%s: %s). Verify against DefaultEngine.ini "
+            "[/Script/Engine.CollisionProfile] before trusting a miss."
+            % (index + 1, type(exc).__name__, exc))
+
+    member = "TRACE_TYPE_QUERY%d" % (index + 1)
+    channel = getattr(unreal.TraceTypeQuery, member, None)
+    if channel is None:
+        raise LookupError(
+            "unreal.TraceTypeQuery has no member '%s' -- the Weapon channel "
+            "resolved to trace index %d, which this build does not define. %s"
+            % (member, index, provenance))
+
+    _weapon_trace_type = (channel, provenance)
+    return _weapon_trace_type
+
+
+def _break_hit(hit):
+    """FHitResult -> a small dict. Raises with the routes tried if it cannot.
+
+    FHitResult::GetActor() is a plain C++ accessor, and in UE5 the actor lives
+    behind FActorInstanceHandle rather than a UPROPERTY, so attribute access on
+    the struct is not dependable. UGameplayStatics::BreakHitResult is a
+    BlueprintPure UFUNCTION with 19 out params (GameplayStatics.h:1077-1078), so
+    Python hands the whole thing back as a tuple in declaration order.
+    """
+    try:
+        fields = unreal.GameplayStatics.break_hit_result(hit)
+    except Exception as exc:
+        raise LookupError(
+            "GameplayStatics.break_hit_result did not resolve on this build "
+            "(%s: %s) -- no reflected way to read the hit actor."
+            % (type(exc).__name__, exc))
+
+    if not isinstance(fields, (tuple, list)) or len(fields) < 18:
+        raise LookupError(
+            "break_hit_result returned %r (%d fields); expected the 19 out "
+            "params declared at GameplayStatics.h:1078."
+            % (type(fields).__name__, len(fields) if hasattr(fields, "__len__") else -1))
+
+    return {
+        "blocking_hit": bool(fields[0]),
+        "distance": float(fields[3]),
+        "impact_point": fields[5],
+        "actor": fields[9],
+        "component": fields[10],
+        "bone": str(fields[12]),
+    }
+
+
+def _weapon_trace(world, start, direction, trace_range, ignore_actors):
+    """Run GA_Fire's trace along `direction`. Returns the broken hit, or None."""
+    channel, _ = _resolve_weapon_trace_type()
+    end = unreal.Vector(start.x + direction.x * trace_range,
+                        start.y + direction.y * trace_range,
+                        start.z + direction.z * trace_range)
+    outcome = unreal.SystemLibrary.line_trace_single(
+        world, start, end, channel, False, list(ignore_actors),
+        unreal.DrawDebugTrace.NONE, True)
+
+    # KismetSystemLibrary.h:1270 returns bool with FHitResult& OutHit, so Python
+    # yields (bHit, HitResult). Guard the shape rather than index blindly.
+    if isinstance(outcome, (tuple, list)) and len(outcome) == 2:
+        did_hit, hit = outcome
+    else:
+        raise LookupError(
+            "SystemLibrary.line_trace_single returned %r, not the (bool, "
+            "HitResult) pair KismetSystemLibrary.h:1270 declares." % (outcome,))
+
+    if not did_hit:
+        return None
+    return _break_hit(hit)
+
+
+def _unit(v):
+    length = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+    if length <= 1e-4:
+        raise ValueError("cannot normalise a zero-length direction")
+    return unreal.Vector(v.x / length, v.y / length, v.z / length)
+
+
+def _basis(forward):
+    """Two unit vectors spanning the plane perpendicular to `forward`."""
+    up = unreal.Vector(0.0, 0.0, 1.0)
+    if abs(forward.z) > 0.95:
+        up = unreal.Vector(1.0, 0.0, 0.0)
+    right = _unit(unreal.Vector(
+        forward.y * up.z - forward.z * up.y,
+        forward.z * up.x - forward.x * up.z,
+        forward.x * up.y - forward.y * up.x))
+    true_up = unreal.Vector(
+        right.y * forward.z - right.z * forward.y,
+        right.z * forward.x - right.x * forward.z,
+        right.x * forward.y - right.y * forward.x)
+    return right, _unit(true_up)
+
+
+def _dist(a, b):
+    return math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+
+
+# Candidate aim points are the vital, then rings around it in the plane
+# perpendicular to the line of sight, at these fractions of HitDetectionRadius.
+# Any mesh surface within the vital radius projects to within roughly that
+# radius of the vital as seen from the shooter, so this covers the reachable
+# set without a solver.
+_VITAL_AIM_RINGS = (0.4, 0.75, 1.0, 1.35)
+_VITAL_AIM_SPOKES = 8
+
+
+def _weapon_trace_range(pawn):
+    """The range GA_Fire will actually trace to, and where the number came from."""
+    try:
+        data = pawn.get_active_weapon_data()   # BlueprintPure, GothicPlayerCharacter.h:287
+        if data is not None:
+            value = float(data.get_editor_property("trace_range"))
+            if value > 0.0:
+                return value, "UGothicWeaponData.TraceRange on the active weapon"
+    except Exception as exc:
+        return _FALLBACK_TRACE_RANGE, (
+            "fallback %.0fuu -- GetActiveWeaponData/TraceRange unreadable (%s: %s)"
+            % (_FALLBACK_TRACE_RANGE, type(exc).__name__, exc))
+    return _FALLBACK_TRACE_RANGE, (
+        "fallback %.0fuu -- no active weapon data on this pawn"
+        % _FALLBACK_TRACE_RANGE)
+
+
+def _hit_detection_radius(vital):
+    try:
+        return float(vital.get_editor_property("hit_detection_radius")), None
+    except Exception as exc:
+        return 30.0, ("assumed 30.0 -- HitDetectionRadius unreadable (%s: %s); "
+                      "GothicVitalPointComponent.h:193 declares the default"
+                      % (type(exc).__name__, exc))
+
+
+def _solve_vital_aim(world, pawn, target, vital):
+    """Find an aim point whose ECC_Weapon impact registers as a vital hit.
+
+    THE BUG THIS REPLACES
+    ---------------------
+    The old action aimed at GetCurrentVitalWorldLocation() and called it done.
+    That world position is a bone transform plus a per-Blueprint LocalOffset
+    (GothicVitalPointComponent.cpp:193-212) and sits 100-245uu off the capsule
+    axis on this project's rigs -- so the ray toward it frequently passed the
+    mesh entirely and GA_Fire took its silent early-out at GA_Fire.cpp:259-266.
+    Seven measured attempts, zero hits, and every one of them reported success.
+
+    A vital registers on the IMPACT POINT, not the aim point:
+    UGothicVitalPointComponent::IsVitalPointHit compares Dist(ImpactPoint,
+    CurrentVitalLocation) against HitDetectionRadius + BonusRadius
+    (GothicVitalPointComponent.cpp:229-238), and GA_Fire feeds it Hit.ImpactPoint
+    (GA_Fire.cpp:309). So the aim point has to be chosen such that the surface
+    the ray lands on is inside the vital sphere.
+
+    Candidates are evaluated with BonusRadius = 0 on purpose. The shooter's
+    VitalPointRadius attribute only ever widens the sphere (GA_Fire.cpp:306-309),
+    so a solution that holds at zero bonus holds for every loadout.
+
+    Raises when no candidate works. Firing into space and reporting a rotation
+    was the actual defect; a loud failure with the closest miss is the fix.
+    """
+    start = _aim_origin(pawn)
+    vital_loc = vital.get_current_vital_world_location()
+    trace_range, range_note = _weapon_trace_range(pawn)
+    radius, radius_note = _hit_detection_radius(vital)
+
+    base_dir = _unit(unreal.Vector(vital_loc.x - start.x,
+                                   vital_loc.y - start.y,
+                                   vital_loc.z - start.z))
+    right, up = _basis(base_dir)
+
+    candidates = [("vital centre", vital_loc)]
+    for ring in _VITAL_AIM_RINGS:
+        offset = ring * radius
+        for spoke in range(_VITAL_AIM_SPOKES):
+            angle = 2.0 * math.pi * spoke / _VITAL_AIM_SPOKES
+            dx = math.cos(angle) * offset
+            dy = math.sin(angle) * offset
+            candidates.append((
+                "ring %.2fR spoke %d" % (ring, spoke),
+                unreal.Vector(vital_loc.x + right.x * dx + up.x * dy,
+                              vital_loc.y + right.y * dx + up.y * dy,
+                              vital_loc.z + right.z * dx + up.z * dy)))
+
+    best = None
+    wrong_actor = None
+    for tried, (label, point) in enumerate(candidates, start=1):
+        direction = _unit(unreal.Vector(point.x - start.x,
+                                        point.y - start.y,
+                                        point.z - start.z))
+        hit = _weapon_trace(world, start, direction, trace_range, [pawn])
+        if hit is None:
+            continue
+        if hit["actor"] is None or hit["actor"].get_name() != target.get_name():
+            if wrong_actor is None:
+                wrong_actor = hit["actor"].get_name() if hit["actor"] else "<none>"
+            continue
+
+        gap = _dist(hit["impact_point"], vital_loc)
+        if best is None or gap < best["gap"]:
+            best = {"label": label, "point": point, "direction": direction,
+                    "impact": hit["impact_point"], "gap": gap, "bone": hit["bone"],
+                    "distance": hit["distance"]}
+
+        # IsVitalPointHit is the authoritative test -- ask the component rather
+        # than re-deriving its arithmetic here, so this cannot drift from C++.
+        if bool(vital.is_vital_point_hit(hit["impact_point"], 0.0)):
+            return {
+                "solved": True,
+                "aim_point": point,
+                "direction": direction,
+                "impact_point": hit["impact_point"],
+                "impact_gap": gap,
+                "impact_bone": hit["bone"],
+                "candidate": label,
+                "candidates_tried": tried,
+                "vital_location": vital_loc,
+                "hit_detection_radius": radius,
+                "trace_range": trace_range,
+                "range_note": range_note,
+                "radius_note": radius_note,
+            }
+
+    detail = {
+        "vital_location": common.vec(vital_loc),
+        "vital_index": int(vital.get_active_vital_index()),
+        "shooter_camera": common.vec(start),
+        "distance_to_vital": round(_dist(start, vital_loc), 1),
+        "hit_detection_radius": radius,
+        "candidates_tried": len(candidates),
+        "trace_channel": _resolve_weapon_trace_type()[1],
+        "trace_range_source": range_note,
+    }
+    if best is not None:
+        detail["closest_impact"] = common.vec(best["impact"])
+        detail["closest_impact_gap"] = round(best["gap"], 1)
+        detail["closest_impact_bone"] = best["bone"]
+    if wrong_actor is not None:
+        detail["blocked_by"] = wrong_actor
+
+    raise RuntimeError(
+        "No aim point on %s puts an ECC_Weapon impact within %.1fcm of its "
+        "vital. %s. Refusing to aim -- the shot would miss and GA_Fire is "
+        "silent on a miss (GA_Fire.cpp:259-266). Detail: %s"
+        % (target.get_name(), radius,
+           ("Closest reachable surface was %.1fcm away on bone '%s'"
+            % (best["gap"], best["bone"])) if best is not None
+           else "No candidate ray hit the target at all",
+           detail))
+
+
+def _camera_shot_now(world, pawn, target, vital, trace_range):
+    """What firing THIS TICK would actually do, along the camera's real forward.
+
+    Control rotation set this tick does not reach the camera until the next
+    frame, and GA_Fire traces from the camera (GA_Fire.cpp:221, 250). So an
+    aim step and a fire step scheduled at the same `at` fire the OLD rotation.
+    Reporting the camera's current answer makes that visible instead of leaving
+    it as folklore: aim, wait a tick, aim again, and this field tells you
+    whether the shot is lined up before you spend it.
+    """
+    camera = common.component(pawn, "CameraComponent")
+    if camera is None:
+        return {"error": "no CameraComponent on %s -- GA_Fire would early-out "
+                         "at GA_Fire.cpp:224" % pawn.get_name()}
+
+    hit = _weapon_trace(world, camera.get_world_location(),
+                        camera.get_forward_vector(), trace_range, [pawn])
+    if hit is None:
+        return {"would_hit": None, "would_be_vital": False,
+                "note": "camera forward hits nothing -- firing now is a miss"}
+
+    name = hit["actor"].get_name() if hit["actor"] else None
+    on_target = name == target.get_name()
+    return {
+        "would_hit": name,
+        "would_be_vital": bool(
+            on_target and vital.is_vital_point_hit(hit["impact_point"], 0.0)),
+        "impact_point": common.vec(hit["impact_point"]),
+        "impact_gap_to_vital": round(
+            _dist(hit["impact_point"], vital.get_current_vital_world_location()), 1),
+    }
+
+
 @_action("aim_at_vital")
 def _a_aim_at_vital(world, step):
-    """Point the controller at a target's CURRENT vital point world location.
+    """Aim so the SHOT lands on the vital, and refuse if it cannot.
 
-    The whole reason vital point tuning is hard is that aiming at an actor
-    origin tells you nothing about whether the vital sphere is reachable.
-    This aims at the sphere.
+    Aiming at the vital's world position is wrong: the vital is a point in
+    space, the hit is a point on the mesh, and IsVitalPointHit only ever sees
+    the second one. This solves for an aim point whose ECC_Weapon impact falls
+    inside the vital sphere, verifies it against the component's own
+    IsVitalPointHit, and raises when no such point exists.
+
+    Step fields:
+        actor:  the shooter
+        target: the pawn whose vital to aim at
     """
     pawn = _actor(world, step)
     target = common.resolve_actor(world, step["target"])
     vital = common.component(target, "GothicVitalPointComponent")
     if vital is None:
         raise LookupError("%s has no GothicVitalPointComponent" % target.get_name())
-    point = vital.get_current_vital_world_location()
+
     controller = pawn.get_controller()
     if controller is None:
         raise LookupError("no controller on %s" % pawn.get_name())
-    rot = unreal.MathLibrary.find_look_at_rotation(_aim_origin(pawn), point)
+
+    solution = _solve_vital_aim(world, pawn, target, vital)
+
+    rot = unreal.MathLibrary.find_look_at_rotation(
+        _aim_origin(pawn), solution["aim_point"])
     controller.set_control_rotation(rot)
+
     return {
         "aimed_at_vital_of": target.get_name(),
         "vital_index": int(vital.get_active_vital_index()),
-        "vital_location": common.vec(point),
+        "vital_location": common.vec(solution["vital_location"]),
+        "aim_point": common.vec(solution["aim_point"]),
+        "predicted_impact": common.vec(solution["impact_point"]),
+        "predicted_impact_gap": round(solution["impact_gap"], 1),
+        "predicted_impact_bone": solution["impact_bone"],
+        "hit_detection_radius": solution["hit_detection_radius"],
+        "solved_by": solution["candidate"],
+        "rotation": [round(rot.pitch, 2), round(rot.yaw, 2), round(rot.roll, 2)],
+        "trace_channel": _resolve_weapon_trace_type()[1],
+        "trace_range": solution["trace_range"],
+        "camera_shot_now": _camera_shot_now(
+            world, pawn, target, vital, solution["trace_range"]),
+        "note": "Control rotation reaches the camera NEXT frame; schedule the "
+                "fire step at least ~0.1s after this one. camera_shot_now "
+                "reports what firing on THIS tick would have done.",
     }
 
 
@@ -346,19 +719,63 @@ def _a_set_target(world, step):
 
 @_action("freeze_vital")
 def _a_freeze_vital(world, step):
-    """Lock a vital point to a known index.
+    """Lock a vital point to a known INDEX. It still tracks the animating bone.
 
-    The single most valuable determinism primitive available. With the vital
-    frozen, hit detection becomes testable instead of merely observable.
-    Pass index -1 to freeze wherever it currently is.
+    Freezing does not pin a world position, and the harness note claiming it
+    stranded the aim point in open air is wrong -- FreezeVitalPoint only sets
+    bIsFrozen so ShiftVitalPoint becomes a no-op
+    (GothicVitalPointComponent.cpp:229 region, .h:302-303).
+    GetCurrentVitalWorldLocation still calls ComputeWorldLocation every time,
+    which reads the live bone transform (GothicVitalPointComponent.cpp:193-217).
+    A frozen vital on a walking pawn moves with the pawn. Verified against the
+    C++, not assumed.
+
+    What index -1 really costs is REPEATABILITY, not accuracy: it freezes
+    whatever the shift timer happened to land on, so two runs of the same
+    scenario freeze different limbs and the damage numbers are not comparable.
+    Pass an explicit index when a measurement has to be reproducible; this
+    reports which one you got either way.
+
+    Freezing is one-way -- nothing ever clears bIsFrozen, so the pawn is
+    permanently frozen for the rest of the PIE session.
     """
     target = _actor(world, step)
     vital = common.component(target, "GothicVitalPointComponent")
     if vital is None:
         raise LookupError("%s has no GothicVitalPointComponent" % target.get_name())
-    index = int(step.get("index", -1))
-    vital.freeze_vital_point(index)
-    return {"frozen_at": int(vital.get_active_vital_index())}
+
+    requested = int(step.get("index", -1))
+    try:
+        defined = len(vital.get_editor_property("vital_point_locations") or [])
+    except Exception:
+        defined = None
+
+    if defined is not None and requested >= 0 and requested >= defined:
+        raise ValueError(
+            "vital index %d is out of range on %s -- VitalPointLocations "
+            "defines %d entr%s (0..%d). FreezeVitalPoint would silently keep "
+            "the current index (GothicVitalPointComponent.h:136-137)."
+            % (requested, target.get_name(), defined,
+               "y" if defined == 1 else "ies", defined - 1))
+
+    vital.freeze_vital_point(requested)
+    resolved = int(vital.get_active_vital_index())
+
+    result = {
+        "target": target.get_name(),
+        "requested_index": requested,
+        "frozen_at": resolved,
+        "vital_location": common.vec(vital.get_current_vital_world_location()),
+        "vital_points_defined": defined,
+        "note": "The index is frozen; the world location still follows the bone "
+                "every frame. Freezing is irreversible for this PIE session.",
+    }
+    if requested < 0:
+        result["repeatability_warning"] = (
+            "index -1 froze whatever the shift had reached (index %d). Two runs "
+            "will not freeze the same limb -- pass an explicit index to make a "
+            "vital-damage measurement reproducible." % resolved)
+    return result
 
 
 @_action("damage_vital")
