@@ -119,37 +119,60 @@ class VigEncounterTools(unreal.ToolsetDefinition):
         except Exception as e:
             result["asc_error"] = str(e)
 
-        # Blackboard: phase and transition state
-        controller = boss.get_controller()
-        if controller:
-            bb = controller.get_blackboard()
-            if bb:
-                bb_state = {}
-                for key, reader in {
-                    "CurrentPhase": "int",
-                    "bIsTransitioning": "bool",
-                    "NearestPillar": "object",
-                    "ApproachOffsetDistance": "float",
-                    "TargetActor": "object",
-                    "bIsInCombat": "bool",
-                }.items():
-                    try:
-                        if reader == "int":
-                            bb_state[key] = bb.get_value_as_int(key)
-                        elif reader == "bool":
-                            bb_state[key] = bb.get_value_as_bool(key)
-                        elif reader == "float":
-                            bb_state[key] = bb.get_value_as_float(key)
-                        elif reader == "object":
-                            obj = bb.get_value_as_object(key)
-                            bb_state[key] = (
-                                obj.get_actor_label()
-                                if obj
-                                else "None"
-                            )
-                    except Exception:
-                        pass
-                result["blackboard"] = bb_state
+        # Blackboard: phase and transition state.
+        #
+        # This block used to open with `controller.get_blackboard()`, outside any
+        # try -- and AAIController::GetBlackboardComponent is not a UFUNCTION
+        # (AIController.h:446-447), so it does not exist in Python at all. The
+        # AttributeError propagated out of the tool and dump_boss_state failed
+        # whole. common.blackboard() uses the reflected paths that do exist:
+        # UAIBlueprintHelperLibrary::GetBlackboard (AIBlueprintHelperLibrary.h:52)
+        # and the BlueprintReadOnly `Blackboard` UPROPERTY (AIController.h:146).
+        bb = common.blackboard(boss)
+        if bb is None:
+            result["blackboard"] = {
+                "error": "No BlackboardComponent resolved for this boss. If the "
+                         "fight is running, the BT has not started or the pawn "
+                         "is not AI-possessed."
+            }
+        else:
+            bb_state = {}
+            for key, reader in {
+                "CurrentPhase": "int",
+                "bIsTransitioning": "bool",
+                "NearestPillar": "object",
+                "ApproachOffsetDistance": "float",
+                "TargetActor": "object",
+                "bIsInCombat": "bool",
+            }.items():
+                try:
+                    if reader == "int":
+                        bb_state[key] = bb.get_value_as_int(key)
+                    elif reader == "bool":
+                        bb_state[key] = bb.get_value_as_bool(key)
+                    elif reader == "float":
+                        bb_state[key] = bb.get_value_as_float(key)
+                    elif reader == "object":
+                        obj = bb.get_value_as_object(key)
+                        bb_state[key] = (
+                            obj.get_actor_label() if obj else "None"
+                        )
+                except Exception as exc:
+                    # Was `pass`. A key that stopped resolving vanished from the
+                    # dump entirely and read as "the boss does not have a phase".
+                    bb_state[key] = {
+                        "error": "%s: %s" % (type(exc).__name__, exc)}
+            # Only CurrentPhase (AGothicBossAIController.h:49) and bIsInCombat /
+            # TargetActor (GothicEnemyAIController.h:33-35) are C++-declared keys.
+            # The rest live in the BB asset only; a zero from get_value_as_* on a
+            # key the asset does not define is indistinguishable from a real zero,
+            # so use vig_blackboard_tools.dump_blackboard, which enumerates the
+            # asset, when a value here looks suspicious.
+            bb_state["_note"] = (
+                "Missing keys read as 0/False, not as errors. Cross-check "
+                "against vig_blackboard_tools.dump_blackboard, which enumerates "
+                "the blackboard asset instead of probing this fixed list.")
+            result["blackboard"] = bb_state
 
         # Find nearby destructible zones (BestialLucidZone tagged actors)
         result["nearby_pillars"] = VigEncounterTools._find_tagged_actors(

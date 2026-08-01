@@ -120,6 +120,45 @@ def component(actor, class_name):
         return None
 
 
+def blackboard(actor):
+    """The live UBlackboardComponent driving `actor`, or None.
+
+    Why a fallback chain rather than one call: AAIController::GetBlackboardComponent
+    is NOT a UFUNCTION (AIController.h:446-447) and therefore does not exist in
+    Python at all. `controller.get_blackboard()` raises AttributeError on this
+    build -- that single line is what took dump_boss_state out. The reliable
+    paths are UAIBlueprintHelperLibrary::GetBlackboard (a BlueprintPure
+    UFUNCTION, AIBlueprintHelperLibrary.h:52-53) and the BlueprintReadOnly
+    `Blackboard` UPROPERTY (AIController.h:146-147).
+
+    vig_blackboard_tools._blackboard learned this the hard way and keeps its own
+    copy of the chain; this one exists so the probe and the encounter tools do
+    not each re-derive it.
+    """
+    controller = None
+    try:
+        controller = actor.get_controller()
+    except Exception:
+        controller = None
+
+    attempts = [lambda: unreal.AIBlueprintHelperLibrary.get_blackboard(actor)]
+    if controller is not None:
+        attempts += [
+            lambda: unreal.AIBlueprintHelperLibrary.get_blackboard(controller),
+            lambda: controller.get_editor_property("blackboard"),
+            lambda: controller.get_component_by_class(unreal.BlackboardComponent),
+        ]
+
+    for attempt in attempts:
+        try:
+            bb = attempt()
+            if bb:
+                return bb
+        except Exception:
+            continue
+    return None
+
+
 def is_valid(obj):
     try:
         return bool(unreal.SystemLibrary.is_valid(obj))
