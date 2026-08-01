@@ -284,8 +284,22 @@ private:
 	/** Caches Selah totals + names and raises the shared prompt on the last corpse. */
 	void ActivateSelahPrompt();
 
-	/** Aggro fires once per encounter, not once per player. */
-	bool bAggroTriggered = false;
+	/**
+	 * True while any living roster member is actually fighting someone.
+	 *
+	 * Replaces a once-ever bAggroTriggered latch. That bool was set on the first
+	 * overlap and never cleared, so the trigger could aggro an encounter exactly
+	 * once per session: a roster that legitimately disengaged (which only became
+	 * possible when the leash started holding) could never be re-aggroed by
+	 * walking back in. Asking "is this fight already running" preserves the
+	 * original intent — no re-trigger spam mid-fight — while letting a genuine
+	 * re-entry work.
+	 *
+	 * Deliberately NOT a stored flag: engagement is derived from the roster every
+	 * time it is asked, so it cannot drift out of step with a disengage the way a
+	 * cached bool did.
+	 */
+	bool IsAnyMemberEngaged() const;
 
 	UFUNCTION()
 	void HandleTriggerBeginOverlap(

@@ -316,6 +316,67 @@ void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget)
     }
 }
 
+void AGothicEnemyBase::NotifyDamagedBy(AActor* DamageInstigator)
+{
+    // Aggro is a server decision, like every other write to CombatTarget.
+    if (!HasAuthority() || !DamageInstigator || DamageInstigator == this)
+    {
+        return;
+    }
+
+    // Health has already been written by the time this is called, so a lethal
+    // hit reads as dead here — a corpse must not acquire a target on the way
+    // down, or OnDeath's roster bookkeeping runs against a live-looking pawn.
+    if (!IsAlive())
+    {
+        return;
+    }
+
+    AGothicCharacterBase* InstigatorChar = Cast<AGothicCharacterBase>(DamageInstigator);
+    if (!InstigatorChar || !InstigatorChar->IsAlive())
+    {
+        return;
+    }
+
+    // Friendly fire. The check is deliberately "another Accursed on my own team"
+    // rather than a plain TeamId comparison against the instigator: TeamId is
+    // EditDefaultsOnly and defaults to 0 on AGothicCharacterBase, so nothing in
+    // C++ distinguishes the player (0) from an enemy (0), and a bare
+    // "same TeamId -> ignore" test would have silently refused EVERY retaliation
+    // — the exact bug this function exists to fix, reintroduced by its own guard.
+    // Narrowing to enemy-on-enemy keeps TeamId meaningful where it is actually
+    // differentiated (between AI factions) without depending on Blueprint
+    // defaults this code cannot see.
+    if (const AGothicEnemyBase* InstigatorEnemy = Cast<AGothicEnemyBase>(InstigatorChar))
+    {
+        if (InstigatorEnemy->TeamId == TeamId)
+        {
+            return;
+        }
+    }
+
+    // Don't thrash an engagement that is already running — see
+    // bRetaliationOverridesCurrentTarget. A target that has died since it was
+    // set is treated as no target at all.
+    if (!bRetaliationOverridesCurrentTarget)
+    {
+        if (AActor* Current = GetCombatTarget())
+        {
+            const AGothicCharacterBase* CurrentChar = Cast<AGothicCharacterBase>(Current);
+            const bool bCurrentStillFightable = !CurrentChar || CurrentChar->IsAlive();
+            if (Current != DamageInstigator && bCurrentStillFightable)
+            {
+                return;
+            }
+        }
+    }
+
+    // Through SetCombatTarget, never around it: that is the choke point that
+    // consults IsAcceptingCombatTargets, and bypassing it here would break the
+    // leash's no-re-aggro-during-return property for every damage source at once.
+    SetCombatTarget(DamageInstigator);
+}
+
 void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
 {
     // Re-entry guard. Super also early-outs on State.Dead, but it returns void —
