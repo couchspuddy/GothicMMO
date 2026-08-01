@@ -63,8 +63,17 @@ protected:
     float ReadRange = 6000.f;
 
     /**
-     * Trace radius. A Read that demanded pixel-accurate aim would be miserable
-     * with a moving target, so this is a fat sweep rather than a line.
+     * UNUSED by the trace as of the Aug 2026 targeting fix, and deliberately kept
+     * rather than deleted so the tuning intent survives.
+     *
+     * Read used to sweep a sphere of this radius on ECC_Pawn, which marked a
+     * different enemy than the one under the crosshair. It now line-traces on
+     * ECC_Weapon exactly like GA_Fire, so Read and Fire can never disagree about
+     * what you are aiming at — that agreement is the ability, since the mark only
+     * pays off on the shot that follows it.
+     *
+     * If aim tolerance is wanted later, widen FIRE and READ TOGETHER from a shared
+     * helper. Reintroducing a fat sweep here alone re-creates the original bug.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Read")
     float ReadTraceRadius = 40.f;
