@@ -89,9 +89,40 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
         * (FMath::RandBool() ? 1.f : -1.f);
     const float NewBearing = CurrentBearing + FMath::DegreesToRadians(OffsetDeg);
 
+    // Orbit at the distance the pawn is ALREADY at, not at a fixed radius.
+    //
+    // This used to seat the point at RepositionRadius from the target
+    // unconditionally, which throws away the pawn's current separation and
+    // makes every Reposition a retreat: the Bestial Lucid in capsule contact
+    // at ~150uu was sent to 350uu, and a Thrall at a measured 199uu was sent
+    // to 450uu — a reposition point FARTHER from the player than the pawn
+    // already stood. The bearing offset is what makes a reposition a strafe;
+    // the radius change was never part of the intent (see the header: the
+    // offset is meant to be meaningful "from the pawn's actual current
+    // position", and only the bearing ever was).
+    //
+    // RepositionRadius keeps its authored values and its purpose — it is now
+    // a CEILING, so a pawn still closing from long range strafes on a sane arc
+    // instead of a huge one, but a pawn already in its attack band strafes
+    // inside that band and stays swingable. Nothing new is tuned here: the
+    // lower bound is whatever distance the approach logic already converged
+    // on (measured floor 125uu, capsule contact), and min(150, 350) = 150 sits
+    // inside the Claw band's 160uu reach where the old 350 did not.
+    //
+    // If the two are effectively stacked, there is no current separation worth
+    // preserving (and no meaningful bearing either — GetSafeNormal2D returned
+    // zero above, so CurrentBearing is an arbitrary 0). Fall back to the
+    // authored radius so the pawn steps out rather than writing the target's
+    // own location as the destination.
+    const float CurrentDistance2D =
+        FVector::Dist2D(Pawn->GetActorLocation(), Target->GetActorLocation());
+    const float OrbitRadius = CurrentDistance2D > KINDA_SMALL_NUMBER
+        ? FMath::Min(CurrentDistance2D, RepositionRadius)
+        : RepositionRadius;
+
     const FVector Direction(FMath::Cos(NewBearing), FMath::Sin(NewBearing), 0.f);
     const FVector ComputedPoint =
-        Target->GetActorLocation() + Direction * RepositionRadius;
+        Target->GetActorLocation() + Direction * OrbitRadius;
 
     BB->SetValue<UBlackboardKeyType_Vector>(OutputPointKey.GetSelectedKeyID(), ComputedPoint);
 

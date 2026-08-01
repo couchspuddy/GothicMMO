@@ -219,15 +219,28 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
 
         if (CurrentEntry)
         {
+            const bool bWithinCommitWindow = Memory
+                && Memory->LastDecisionTime >= 0.f
+                && (Now - Memory->LastDecisionTime) < (CurrentEntry->AbilityTag.IsValid()
+                    ? AbilityActivationGrace
+                    : MinMovementCommitDuration);
+
             if (CurrentEntry->AbilityTag.IsValid())
             {
-                if (IsAbilityActive(ASC, CurrentEntry->AbilityTag))
+                // Hold while it's genuinely running, AND while it's still on
+                // its way to running. The second half is the important one:
+                // an ability pick is not active on the tick after it's made,
+                // because the tree still has to abort the current branch and
+                // reach ActivateAbilityByTag. Without the grace, the pick was
+                // reroll-eligible before it could ever start, while movement
+                // picks locked the key the moment they were written — so the
+                // key drifted to movement no matter how the weights were set.
+                if (IsAbilityActive(ASC, CurrentEntry->AbilityTag) || bWithinCommitWindow)
                 {
                     return;
                 }
             }
-            else if (Memory && Memory->LastDecisionTime >= 0.f
-                && (Now - Memory->LastDecisionTime) < MinMovementCommitDuration)
+            else if (bWithinCommitWindow)
             {
                 return;
             }

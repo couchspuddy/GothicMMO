@@ -133,6 +133,34 @@ protected:
     float MinMovementCommitDuration = 1.5f;
 
     /**
+     * Grace window an ability pick gets between being WRITTEN to the Blackboard
+     * and actually going active on the ASC.
+     *
+     * Without this the pool ratchets towards movement. A movement pick is
+     * protected for MinMovementCommitDuration the instant it is written; an
+     * ability pick was protected only by IsAbilityActive(), which is still
+     * false on the tick after selection because the tree has not yet aborted
+     * the running branch and reached ActivateAbilityByTag. So every ability
+     * pick was eligible to be overwritten one service tick after it was made,
+     * and roughly half the time it was overwritten by a movement entry that
+     * then locked the key for seconds. Measured: the Bestial Lucid's Claw and
+     * Reposition carry the SAME BaseWeight (2.5/2.5) and the Thrall's Strike
+     * outweighs its Reposition 10:4, yet both read "Reposition" on every
+     * blackboard sample of a 96s fight with the ability off cooldown.
+     *
+     * Sized from the service's own tick rate, not from feel: ticks land every
+     * Interval +/- RandomDeviation, so the worst case spacing between two
+     * ticks is 0.25s, and a behavior tree needs at least two of them to abort
+     * the running branch and execute the newly-selected task. 2 x 0.25 = 0.5s.
+     *
+     * It is deliberately a window and not a latch: if the ability never goes
+     * active (blocked by tags, failed activation), the window lapses and the
+     * pool rerolls normally rather than wedging on a pick that never runs.
+     */
+    UPROPERTY(EditAnywhere, Category = "Selection")
+    float AbilityActivationGrace = 0.5f;
+
+    /**
      * Delay before the one-shot AssetTag validation runs. Matches CombatSync.
      * Must stay above zero: validating on the frame the branch becomes relevant
      * reads the pawn before BeginPlay has granted its StartupAbilities, and
