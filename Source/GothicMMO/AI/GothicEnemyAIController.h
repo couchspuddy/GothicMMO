@@ -66,9 +66,32 @@ public:
     /**
      * Clears the combat target and returns to patrol/idle state.
      * Call when target dies or escapes detection range.
+     *
+     * Clears BOTH sources of truth — the Blackboard key AND the pawn's own
+     * CombatTarget latch. It used to clear only the Blackboard, which made every
+     * disengage a no-op: GothicBTService_CombatSync reconciles the two every
+     * 0.2s, sees an empty key next to a pawn that still holds a target, and
+     * calls SetBlackboardTarget straight back. See BreakLeash.
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|AI")
     void ClearCombatTarget();
+
+    /**
+     * False while this enemy is leashing home. AGothicEnemyBase::SetCombatTarget
+     * consults this before latching a target, so perception, encounter volumes
+     * and pack propagation cannot re-aggro a disengaging enemy the same tick it
+     * turned around.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|AI")
+    bool IsAcceptingCombatTargets() const { return !bLeashReturning; }
+
+    /** True while walking back to the anchor after a broken leash. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|AI")
+    bool IsLeashReturning() const { return bLeashReturning; }
+
+    /** The anchor this enemy leashes to — its spawn/placement location. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|AI")
+    FVector GetLeashAnchor() const { return PatrolOrigin; }
 
     /**
      * Returns the current Blackboard target as a typed actor.
@@ -172,10 +195,77 @@ protected:
     /**
      * Range at which the enemy gives up chasing and returns to patrol (cm).
      * Should be larger than the perception LoseSightRadius.
+     *
+     * Measured HORIZONTALLY from PatrolOrigin, like every other range in this
+     * class — see IsTargetInAttackRange for why. Unchanged at 3000 (~8.5x the
+     * 350uu reposition orbit, 10x the 300uu engage distance): it was already the
+     * tuned value, and the leash never failing had nothing to do with its size.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI")
     float LeashRange = 3000.f;
-    
+
+    // ── Leash / disengage ────────────────────────────────────────────────────
+
+    /**
+     * Also break the leash when the TARGET leaves LeashRange of the anchor, not
+     * only when the enemy itself has been dragged that far out.
+     *
+     * This is the arena half of the leash. Anchor-distance alone means the boss
+     * has already walked the whole leash length out of her room before she gives
+     * up — measured 2026-08-01, the Bestial Lucid followed a teleported player
+     * 7,187uu out of the Rotunda. With this on she turns around at the first
+     * check after the player leaves the arena instead.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|AI|Leash")
+    bool bLeashOnTargetDistance = true;
+
+    /**
+     * How close to the anchor counts as home (cm), horizontally.
+     *
+     * 150 = 3x the 50uu acceptance radius the return MoveToLocation already
+     * passes, so arrival still registers when the path legitimately stops short
+     * on a navmesh edge — and comfortably inside the 200uu MeleeAttackRange, so
+     * "home" is tighter than a single melee step.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|AI|Leash")
+    float LeashReturnAcceptanceRadius = 150.f;
+
+    /**
+     * Failsafe (seconds). If the walk home hasn't finished by now, reset anyway
+     * rather than leave an enemy permanently unaggroable.
+     *
+     * 20 = LeashRange 3000uu over a conservative 300uu/s enemy walk speed (10s
+     * of travel) doubled for pathing detours. Not a tuning knob for feel — it
+     * only fires when navigation has failed.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|AI|Leash")
+    float LeashReturnTimeoutSeconds = 20.f;
+
+    /**
+     * Restore Health to MaxHealth when the enemy gets home.
+     *
+     * True is the arena-boss default: a boss you can leash, heal from, and
+     * re-pull at low health is a boss you can kill by walking. Restored on
+     * ARRIVAL, not at the moment the leash breaks, so a player who chases her
+     * back into the arena fights the health bar she left with until she's home.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|AI|Leash")
+    bool bRestoreHealthOnLeashReset = true;
+
+    /**
+     * Breaks the leash: full disengage, walk back to the anchor, and suppress
+     * re-aggro until home. Virtual only so subclasses can log/telegraph it —
+     * the state reset itself belongs in OnLeashReset.
+     */
+    virtual void BreakLeash();
+
+    /**
+     * Called once the enemy is home and combat state has been wiped. Base
+     * restores health; boss subclasses reset phase state here. Anything a fight
+     * mutates that a fresh pull must not inherit belongs in an override.
+     */
+    virtual void OnLeashReset();
+
 
 private:
     /**
@@ -200,4 +290,13 @@ private:
     /** Periodic check to see if the target escaped the leash range. */
     FTimerHandle LeashCheckTimer;
     void CheckLeash();
+
+    /** True from BreakLeash until the enemy is home (or the failsafe fires). */
+    bool bLeashReturning = false;
+
+    /** World seconds the current return started, for LeashReturnTimeoutSeconds. */
+    float LeashReturnStartTime = 0.f;
+
+    /** Drives the walk home and decides when it's finished. */
+    void TickLeashReturn();
 };

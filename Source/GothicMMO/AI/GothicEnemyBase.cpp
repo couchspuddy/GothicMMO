@@ -293,9 +293,24 @@ void AGothicEnemyBase::SetPackID(FName NewPackID)
 
 void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget)
 {
+    AGothicEnemyAIController* AIC = Cast<AGothicEnemyAIController>(GetController());
+
+    // Refuse aggro while leashing home, and refuse it BEFORE the latch is set —
+    // writing CombatTarget and relying on the controller to ignore it is not
+    // enough, because CombatSync would read the latch back out and re-aggro the
+    // moment the leash suppression lifts.
+    //
+    // Perception is the case that matters: OnPerceptionUpdated fires every time
+    // the player is sensed, so a boss walking home in plain sight would otherwise
+    // re-target on the next perception update and never reach her anchor.
+    if (AIC && !AIC->IsAcceptingCombatTargets())
+    {
+        return;
+    }
+
     CombatTarget = NewTarget;
 
-    if (AGothicEnemyAIController* AIC = Cast<AGothicEnemyAIController>(GetController()))
+    if (AIC)
     {
         AIC->SetBlackboardTarget(NewTarget);
     }

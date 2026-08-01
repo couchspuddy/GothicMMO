@@ -304,6 +304,30 @@ void UGothicVitalPointComponent::FreezeVitalPoint(int32 LockIndex)
 
 }
 
+void UGothicVitalPointComponent::UnfreezeVitalPoint()
+{
+    if (!GetOwner()->HasAuthority() || !bIsFrozen)
+    {
+        return;
+    }
+
+    bIsFrozen = false;
+
+    // NextVitalIndex was collapsed onto the active index by the freeze — roll a
+    // real one again or The Read keeps reporting "next" as the current point.
+    RollNextVitalIndex();
+
+    if (bShiftOnTimer && !ShiftTimerHandle.IsValid())
+    {
+        GetWorld()->GetTimerManager().SetTimer(
+            ShiftTimerHandle,
+            this,
+            &UGothicVitalPointComponent::OnShiftTimerFired,
+            ShiftTimerInterval,
+            true); // looping
+    }
+}
+
 // ── Shimmer ───────────────────────────────────────────────────────────────────
 
 void UGothicVitalPointComponent::SpawnShimmer()

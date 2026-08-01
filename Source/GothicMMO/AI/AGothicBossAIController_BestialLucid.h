@@ -84,6 +84,17 @@ protected:
 	/** Override to add Bestial Lucid-specific phase-advance behavior on top of the base bookkeeping. */
 	virtual void OnPhaseAdvance() override;
 
+	/**
+	 * Undo everything the Phase 2 beat set, on top of the base health + phase
+	 * reset. Three pieces of state outlive a phase rollback on their own and
+	 * each one alone is enough to leave her unkillable on the next pull:
+	 * bTransitionTriggered (the one-shot guard — Phase 2 could never fire
+	 * again), the pending Blackboard flag (the BT would resume a scripted
+	 * transition she is no longer in), and the frozen vital point (Phase 1 with
+	 * a Phase 2 weak spot locked open).
+	 */
+	virtual void OnLeashReset() override;
+
 private:
 	UPROPERTY()
 	TObjectPtr<UGothicVitalPointComponent> CachedVitalPointComponent;

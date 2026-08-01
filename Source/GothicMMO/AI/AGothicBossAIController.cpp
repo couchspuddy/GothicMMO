@@ -18,6 +18,27 @@ AGothicBossAIController::AGothicBossAIController()
 {
 }
 
+void AGothicBossAIController::OnLeashReset()
+{
+	Super::OnLeashReset(); // health restore
+
+	if (!bResetPhaseOnLeashReset || CurrentPhase == 1)
+	{
+		return;
+	}
+
+	CurrentPhase = 1;
+
+	if (Blackboard && PhaseBlackboardKey != NAME_None)
+	{
+		Blackboard->SetValueAsInt(PhaseBlackboardKey, CurrentPhase);
+	}
+
+	// Broadcast like any other phase change — anything that reacted to the
+	// advance (VFX, music, BT branches) has to be told it has been undone.
+	OnBossPhaseChanged.Broadcast(CurrentPhase);
+}
+
 void AGothicBossAIController::OnPhaseAdvance()
 {
 	CurrentPhase++;
