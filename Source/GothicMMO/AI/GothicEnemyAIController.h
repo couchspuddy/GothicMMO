@@ -281,8 +281,32 @@ private:
      */
     TWeakObjectPtr<AActor> PendingBlackboardTarget;
 
-    /** Cached patrol spawn point — enemy returns here when leash breaks. */
+    /**
+     * Cached patrol spawn point — enemy returns here when leash breaks.
+     *
+     * PROJECTED ONTO THE NAVMESH, not the raw actor location. An actor's location
+     * is its capsule centre, which floats one scaled half-height above the floor;
+     * for the Bestial Lucid that is 379.5uu (capsule 253 at scale 1.5), past the
+     * 250uu default vertical extent Recast resolves a goal poly with. The raw
+     * value therefore had no nav poly at all and every MoveToLocation to it was
+     * rejected — the boss stood still for the whole leash timeout. See
+     * EnsurePatrolOriginProjected.
+     */
     FVector PatrolOrigin;
+
+    /** True once PatrolOrigin has been successfully snapped to the navmesh. */
+    bool bPatrolOriginProjected = false;
+
+    /**
+     * Snaps PatrolOrigin to the navmesh with an explicit query extent, once.
+     * Idempotent and safe to retry — called at possess time and again at
+     * BreakLeash in case the navmesh wasn't generated yet on the first attempt.
+     * Returns true if the anchor is now a pathable point.
+     */
+    bool EnsurePatrolOriginProjected();
+
+    /** Issues the walk-home move request and logs a rejected one. */
+    void RequestLeashReturnMove();
 
     /** Cached default walk speed from the possessed pawn's movement component. */
     float DefaultWalkSpeed = 0.f;

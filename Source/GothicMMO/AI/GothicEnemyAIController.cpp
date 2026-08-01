@@ -12,6 +12,34 @@
 #include "BehaviorTree/BehaviorTreeComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Character.h"
+#include "NavigationSystem.h"
+#include "Navigation/PathFollowingComponent.h"
+
+namespace
+{
+    /**
+     * Query extent used to snap PatrolOrigin onto the navmesh. See
+     * EnsurePatrolOriginProjected for why an EXPLICIT extent is mandatory here.
+     *
+     * Vertical 1000: an actor's location is its CAPSULE CENTRE, so the anchor
+     * captured at possess time floats above the floor the pawn is standing on by
+     * one scaled capsule half-height. The worst case in the project is the
+     * Bestial Lucid — capsule half-height 253 at actor scale 1.5 = 379.5uu — and
+     * Recast's default vertical query extent is only 250 (see
+     * DEFAULT_NAV_QUERY_EXTENT_VERTICAL in NavigationTypes.h). 379.5 > 250, so
+     * the boss's anchor could never resolve to a nav poly at all. 1000 is ~2.6x
+     * the measured worst case, leaving headroom for a larger creature or an
+     * anchor authored a little above the floor, while still being far too short
+     * to punch through to a different storey.
+     *
+     * Horizontal 150: deliberately capped at LeashReturnAcceptanceRadius. If the
+     * anchor sits just off a navmesh edge the projection slides it sideways, and
+     * bounding that slide by the same tolerance that defines "home" means the
+     * effective anchor can never drift further from its authored placement than
+     * the return already treats as arrived. (Recast's default is 50.)
+     */
+    const FVector PatrolOriginProjectionExtent(150.f, 150.f, 1000.f);
+}
 
 AGothicEnemyAIController::AGothicEnemyAIController()
 {
@@ -23,6 +51,13 @@ void AGothicEnemyAIController::OnPossess(APawn* InPawn)
     Super::OnPossess(InPawn);
 
     PatrolOrigin = InPawn->GetActorLocation();
+
+    // Snap the anchor onto the navmesh immediately. Everything downstream — the
+    // leash distance maths, the Blackboard key written below, and above all the
+    // MoveToLocation that walks the enemy home — treats PatrolOrigin as a
+    // pathable goal, and a capsule-centre is not one. Retried in BreakLeash if
+    // the navmesh isn't ready this early.
+    EnsurePatrolOriginProjected();
 
     // Cache the default walk speed so the decel service can restore it
     if (ACharacter* Char = Cast<ACharacter>(InPawn))
@@ -250,12 +285,94 @@ void AGothicEnemyAIController::CheckLeash()
     }
 }
 
+bool AGothicEnemyAIController::EnsurePatrolOriginProjected()
+{
+    if (bPatrolOriginProjected)
+    {
+        return true;
+    }
+
+    UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+    if (!NavSys)
+    {
+        return false;
+    }
+
+    // The extent is passed EXPLICITLY and is the entire point of this function.
+    //
+    // The obvious-looking alternative — MoveToLocation's
+    // bProjectDestinationToNavigation flag — does not work here: that path
+    // (AAIController::MoveTo) projects with INVALID_NAVEXTENT, which is
+    // FVector::ZeroVector and makes the nav data substitute its own
+    // DefaultQueryExtent of (50, 50, 250). A 379.5uu capsule-centre offset is
+    // outside that box, so the flag would fail exactly where the raw goal
+    // already fails — silently, and one call deeper.
+    FNavLocation Projected;
+    const FNavAgentProperties& AgentProps = GetNavAgentPropertiesRef();
+
+    if (!NavSys->ProjectPointToNavigation(PatrolOrigin, Projected, PatrolOriginProjectionExtent, &AgentProps))
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("GothicEnemyAIController[%s]: could not project leash anchor %s onto the navmesh "
+                 "(extent %s) — keeping the raw location. The walk home will fail until this "
+                 "resolves; check navmesh coverage under the spawn point."),
+            *GetNameSafe(GetPawn()), *PatrolOrigin.ToCompactString(),
+            *PatrolOriginProjectionExtent.ToCompactString());
+        return false;
+    }
+
+    PatrolOrigin           = Projected.Location;
+    bPatrolOriginProjected = true;
+
+    // Keep the tree's copy in step. On the OnPossess call the Blackboard doesn't
+    // exist yet and the write below is a no-op — RunBehaviorTree publishes the
+    // already-projected value moments later. On a retry from BreakLeash it does
+    // exist, and this is what stops the key going stale.
+    if (Blackboard)
+    {
+        Blackboard->SetValueAsVector(GothicBBKeys::PatrolOrigin, PatrolOrigin);
+    }
+
+    return true;
+}
+
+void AGothicEnemyAIController::RequestLeashReturnMove()
+{
+    // Never discard this result. A leash return that is never accepted by path
+    // following looks identical to an enemy that simply chose not to move, and
+    // that is precisely how a boss stood at speed 0 for the full 20s timeout,
+    // 3861uu from her anchor, without a single line in the log.
+    const EPathFollowingRequestResult::Type Result =
+        MoveToLocation(PatrolOrigin, 50.f);
+
+    if (Result == EPathFollowingRequestResult::Failed)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("GothicEnemyAIController[%s]: leash return MoveToLocation FAILED for goal %s "
+                 "(anchor projected: %s) — the enemy will not walk home."),
+            *GetNameSafe(GetPawn()), *PatrolOrigin.ToCompactString(),
+            bPatrolOriginProjected ? TEXT("yes") : TEXT("NO"));
+    }
+    else if (Result == EPathFollowingRequestResult::AlreadyAtGoal)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("GothicEnemyAIController[%s]: leash return reported AlreadyAtGoal for %s while "
+                 "%.0fuu out — the goal is resolving to the wrong poly."),
+            *GetNameSafe(GetPawn()), *PatrolOrigin.ToCompactString(),
+            GetPawn() ? FVector::Dist2D(GetPawn()->GetActorLocation(), PatrolOrigin) : -1.f);
+    }
+}
+
 void AGothicEnemyAIController::BreakLeash()
 {
     if (bLeashReturning)
     {
         return;
     }
+
+    // Second chance at projection: on a dynamically-generated navmesh there is
+    // no guarantee the tiles under the spawn point existed at possess time.
+    EnsurePatrolOriginProjected();
 
     UE_LOG(LogTemp, Log, TEXT("GothicEnemyAIController[%s]: leash broken — disengaging and returning to anchor %s"),
         *GetNameSafe(GetPawn()), *PatrolOrigin.ToCompactString());
@@ -271,7 +388,7 @@ void AGothicEnemyAIController::BreakLeash()
     // not carry the swing home with her.
     StopMovement();
 
-    MoveToLocation(PatrolOrigin, 50.f);
+    RequestLeashReturnMove();
 }
 
 void AGothicEnemyAIController::TickLeashReturn()
@@ -293,7 +410,17 @@ void AGothicEnemyAIController::TickLeashReturn()
         // Re-issue rather than trust the original request to survive. The tree is
         // still ticking underneath this — its own idle/patrol MoveTo can and does
         // take the movement request away mid-return.
-        MoveToLocation(PatrolOrigin, 50.f);
+        //
+        // But only when there is nothing left running. MoveToLocation aborts the
+        // active request before making a new one, so an unconditional re-issue
+        // every 2s tears down a perfectly healthy path mid-stride and re-paths
+        // from scratch. Checking for Idle keeps the recovery net the comment
+        // above describes while leaving a working walk home alone.
+        const UPathFollowingComponent* PathComp = GetPathFollowingComponent();
+        if (!PathComp || PathComp->GetStatus() == EPathFollowingStatus::Idle)
+        {
+            RequestLeashReturnMove();
+        }
         return;
     }
 
