@@ -34,15 +34,16 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
     FOnEnemyDied,
     AGothicEnemyBase*, DeadEnemy);
 
-/** Enemy tier affects loot tables and XP reward. */
-UENUM(BlueprintType)
-enum class EEnemyTier : uint8
-{
-    Minion    UMETA(DisplayName = "Minion"),       // Basic fodder
-    Elite     UMETA(DisplayName = "Elite"),        // Named, tougher variants
-    Champion  UMETA(DisplayName = "Champion"),     // Mini-boss equivalent
-    Boss      UMETA(DisplayName = "Boss"),         // Full boss encounter
-};
+// EEnemyTier, EnemyTier and ExperienceReward were removed here. The enum
+// claimed to affect "loot tables and XP reward" and did neither: loot is driven
+// entirely by the per-Blueprint LootTable asset below, and no code path in the
+// project ever awarded experience — GetExperienceReward and GetEnemyTier both
+// had zero callers in C++ and zero references in any Blueprint graph. All three
+// BPs authored values (Minion/50, Elite/50, Boss/300) that nothing read.
+//
+// Nothing is stubbed in their place on purpose. When XP exists it will want a
+// real progression design, and a dead enum with four unread tiers is worse than
+// an empty space to design into.
 
 UCLASS(Abstract)
 class GOTHICMMO_API AGothicEnemyBase : public AGothicCharacterBase
@@ -56,12 +57,6 @@ public:
 
     // IGothicCombatInterface override — enemies ragdoll and drop loot on death.
     virtual void OnDeath_Implementation(AActor* Killer) override;
-
-    UFUNCTION(BlueprintPure, Category = "Gothic|Enemy")
-    EEnemyTier GetEnemyTier() const { return EnemyTier; }
-
-    UFUNCTION(BlueprintPure, Category = "Gothic|Enemy")
-    float GetExperienceReward() const { return ExperienceReward; }
 
     /**
      * Called by the AI Controller when combat is entered/exited.
@@ -231,12 +226,6 @@ protected:
     // -------------------------------------------------------------------------
     // Data — set in Blueprint
     // -------------------------------------------------------------------------
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
-    EEnemyTier EnemyTier = EEnemyTier::Minion;
-
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
-    float ExperienceReward = 50.f;
 
     /**
      * Delay before the corpse is destroyed (seconds).

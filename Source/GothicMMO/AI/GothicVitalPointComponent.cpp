@@ -155,13 +155,11 @@ void UGothicVitalPointComponent::ShiftVitalPoint()
     // broadcasting, so no listener can observe a NextVitalIndex that still points
     // at the vital that just became current.
     //
-    // The previous text justified this by "GA_Read's shift handler immediately
-    // re-queries GetNextVitalWorldLocation" — which contradicted the comment forty
-    // lines up in TickComponent, and that one is the accurate one.
-    // GetNextVitalWorldLocation has ZERO callers; the Read/telegraph path was
-    // removed in the redesign. The ordering is kept because it is the invariant a
-    // pre-committed prediction is supposed to have, not because anything currently
-    // depends on it.
+    // No listener currently observes it — the Read/telegraph path was removed in
+    // the redesign, and its getter has now been removed too. The ordering is kept
+    // because it is the invariant a pre-committed prediction is supposed to have,
+    // so a future Read reads correct state on the frame it subscribes, not
+    // because anything depends on it today.
     ActiveVitalIndex  = NextVitalIndex;
     AccumulatedDamage = 0.f;
     RollNextVitalIndex();
@@ -223,16 +221,6 @@ FVector UGothicVitalPointComponent::ComputeWorldLocation(int32 Index) const
 FVector UGothicVitalPointComponent::GetCurrentVitalWorldLocation() const
 {
     return ComputeWorldLocation(ActiveVitalIndex);
-}
-
-FVector UGothicVitalPointComponent::GetNextVitalWorldLocation() const
-{
-    if (VitalPointLocations.Num() <= 1)
-    {
-        return FVector::ZeroVector;
-    }
-
-    return ComputeWorldLocation(NextVitalIndex);
 }
 
 bool UGothicVitalPointComponent::IsVitalPointHit(const FVector& HitWorldLocation, float BonusRadius) const
@@ -500,19 +488,8 @@ void UGothicVitalPointComponent::UpdateVitalMaterialPosition()
         FLinearColor(Pos.X, Pos.Y, Pos.Z, 1.f));
 }
 
-void UGothicVitalPointComponent::SetReadHighlight(const FVector& WorldPos)
-{
-    if (!OverlayDMI) return;
-
-    bReadHighlightActive = true;
-    OverlayDMI->SetVectorParameterValue(ReadPosParamName,
-        FLinearColor(WorldPos.X, WorldPos.Y, WorldPos.Z, 1.f));
-}
-
 void UGothicVitalPointComponent::ClearReadHighlight()
 {
-    bReadHighlightActive = false;
-
     if (!OverlayDMI) return;
 
     OverlayDMI->SetVectorParameterValue(ReadPosParamName,

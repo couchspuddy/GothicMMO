@@ -97,7 +97,11 @@ protected:
     // from yanking the decision away mid-hold.
     // -------------------------------------------------------------------------
 
-    /** Chance (0-1) a Reposition becomes a stand-and-menace instead of a strafe. */
+    /** Chance (0-1) a Reposition becomes a stand-and-menace instead of a strafe.
+     *  Divided at runtime by the arena aggression multiplier where a
+     *  GothicBossArenaManager exists, so holds get rarer as pillars fall; the
+     *  authored value is what rolls at the baseline 1.0 and in every level that
+     *  has no manager. */
     UPROPERTY(EditAnywhere, Category = "Menace", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float HoldChance = 0.35f;
 
