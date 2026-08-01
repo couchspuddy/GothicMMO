@@ -131,6 +131,39 @@ class VigilPIETools(unreal.ToolsetDefinition):
         _row("MathLibrary.find_look_at_rotation",
              lambda: _has("MathLibrary", "find_look_at_rotation"))
 
+        # --- Weapon trace channel resolution -------------------------------
+        # aim_at_vital and every ranged measurement run GA_Fire's own
+        # LineTraceSingleByChannel(ECC_Weapon) (GA_Fire.cpp:257). Getting the
+        # ETraceTypeQuery for that channel took two failed investigations, so
+        # every link in the chain is a row here.
+        #
+        # Expected False, permanently: UCollisionProfile is not exported to
+        # Python on ANY build. It has no BlueprintType
+        # (CollisionProfile.h:159) and no script-exposed field -- every
+        # UPROPERTY on it is a bare globalconfig, and it declares no
+        # UFUNCTIONs -- so PyGenUtil::ShouldExportClass (PyGenUtil.cpp:1769)
+        # rejects it. This is NOT a ScriptName rename; do not go looking for
+        # another spelling. The mapping comes from DefaultEngine.ini instead.
+        _row("unreal.CollisionProfile (expected False -- never exported, "
+             "not a rename)",
+             lambda: hasattr(unreal, "CollisionProfile"))
+        _row("unreal.TraceTypeQuery members",
+             lambda: sorted(n for n in dir(unreal.TraceTypeQuery)
+                            if not n.startswith("_")))
+        _row("Config/DefaultEngine.ini (the trace-type source of truth)",
+             lambda: common.collision_channel_table()["config_file"])
+        _row("custom collision channels",
+             lambda: [(e["name"], e["channel"], e["trace"])
+                      for e in common.collision_channel_table()["channels"]])
+        # Expect ["Visibility", "Camera", "Weapon"] on this project: Weapon is
+        # the only custom channel with bTraceType=True (DefaultEngine.ini:219);
+        # ArenaBlock is bTraceType=False (:220) and so is NOT traceable by
+        # ETraceTypeQuery at all.
+        _row("trace types in ETraceTypeQuery order",
+             lambda: common.collision_channel_table()["trace_types"])
+        _row("Weapon trace type (what aim_at_vital fires on)",
+             lambda: common.trace_type_for_channel("Weapon")[1])
+
         vigil = {}
         for name in (
             "GothicCharacterBase", "GothicPlayerCharacter", "GothicEnemyBase",
