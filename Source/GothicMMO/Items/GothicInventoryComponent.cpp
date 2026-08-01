@@ -7,11 +7,36 @@
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffect.h"
+#include "Net/UnrealNetwork.h"
+#include "GameFramework/Actor.h"
 
 UGothicInventoryComponent::UGothicInventoryComponent()
 {
     PrimaryComponentTick.bCanEverTick = false;
     SetIsReplicatedByDefault(true);
+}
+
+void UGothicInventoryComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+    // COND_OwnerOnly throughout. This component lives on the PlayerState, which
+    // replicates to EVERY connection — without the condition, each client would
+    // receive every other player's complete inventory, which is both a waste of
+    // bandwidth and free intel for a cheat client. The PlayerState's Owner is
+    // its PlayerController, so "owner only" resolves to the right connection.
+    DOREPLIFETIME_CONDITION(UGothicInventoryComponent, Items, COND_OwnerOnly);
+    DOREPLIFETIME_CONDITION(UGothicInventoryComponent, EquippedItems, COND_OwnerOnly);
+    DOREPLIFETIME_CONDITION(UGothicInventoryComponent, Silver, COND_OwnerOnly);
+}
+
+bool UGothicInventoryComponent::HasInventoryAuthority() const
+{
+    // No owner means no net context at all — the CDO, or a component built in a
+    // test harness. Treat that as authority so those paths keep working rather
+    // than silently refusing every mutation.
+    const AActor* Owner = GetOwner();
+    return Owner == nullptr || Owner->HasAuthority();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -20,6 +45,16 @@ UGothicInventoryComponent::UGothicInventoryComponent()
 
 bool UGothicInventoryComponent::AddItem(const FGothicItemInstance& Item)
 {
+    if (!HasInventoryAuthority())
+    {
+        // Deliberately no Server RPC: nothing on a client legitimately grants
+        // items. Pickups, loot rolls and the starting kit all originate on the
+        // server, so a client reaching here is a bug in the caller.
+        UE_LOG(LogTemp, Warning,
+            TEXT("Inventory: AddItem called on a client — ignored. Item grants are server-side."));
+        return false;
+    }
+
     if (!Item.IsValid())
     {
         UE_LOG(LogTemp, Warning, TEXT("Inventory: Tried to add invalid item"));
@@ -48,6 +83,13 @@ bool UGothicInventoryComponent::AddItem(const FGothicItemInstance& Item)
 
 bool UGothicInventoryComponent::RemoveItem(const FGuid& InstanceID)
 {
+    if (!HasInventoryAuthority())
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("Inventory: RemoveItem called on a client — ignored. Item removal is server-side."));
+        return false;
+    }
+
     for (int32 i = 0; i < Items.Num(); ++i)
     {
         if (Items[i].InstanceID == InstanceID)
@@ -61,13 +103,32 @@ bool UGothicInventoryComponent::RemoveItem(const FGuid& InstanceID)
     return false;
 }
 
-const FGothicItemInstance* UGothicInventoryComponent::FindItem(const FGuid& InstanceID) const
+const FGothicItemInstance* UGothicInventoryComponent::FindInventoryItem(const FGuid& InstanceID) const
 {
     for (const FGothicItemInstance& Item : Items)
     {
         if (Item.InstanceID == InstanceID)
         {
             return &Item;
+        }
+    }
+    return nullptr;
+}
+
+const FGothicItemInstance* UGothicInventoryComponent::FindItem(const FGuid& InstanceID) const
+{
+    if (const FGothicItemInstance* Found = FindInventoryItem(InstanceID))
+    {
+        return Found;
+    }
+
+    // Equipped gear is findable too. It was not, which is the whole reason the
+    // Binder silently refused to work on anything the player was wearing.
+    for (const FGothicEquippedSlot& Entry : EquippedItems)
+    {
+        if (Entry.Item.InstanceID == InstanceID)
+        {
+            return &Entry.Item;
         }
     }
     return nullptr;
@@ -82,7 +143,39 @@ FGothicItemInstance* UGothicInventoryComponent::FindItemMutable(const FGuid& Ins
             return &Item;
         }
     }
+
+    for (FGothicEquippedSlot& Entry : EquippedItems)
+    {
+        if (Entry.Item.InstanceID == InstanceID)
+        {
+            return &Entry.Item;
+        }
+    }
     return nullptr;
+}
+
+TOptional<EGothicEquipSlot> UGothicInventoryComponent::FindEquippedSlotForItem(const FGuid& InstanceID) const
+{
+    for (const FGothicEquippedSlot& Entry : EquippedItems)
+    {
+        if (Entry.Item.InstanceID == InstanceID)
+        {
+            return Entry.Slot;
+        }
+    }
+    return TOptional<EGothicEquipSlot>();
+}
+
+int32 UGothicInventoryComponent::IndexOfEquippedSlot(EGothicEquipSlot Slot) const
+{
+    for (int32 i = 0; i < EquippedItems.Num(); ++i)
+    {
+        if (EquippedItems[i].Slot == Slot)
+        {
+            return i;
+        }
+    }
+    return INDEX_NONE;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -91,10 +184,44 @@ FGothicItemInstance* UGothicInventoryComponent::FindItemMutable(const FGuid& Ins
 
 bool UGothicInventoryComponent::EquipItem(const FGuid& InstanceID)
 {
-    const FGothicItemInstance* Item = FindItem(InstanceID);
+    if (!HasInventoryAuthority())
+    {
+        ServerEquipItem(InstanceID);
+        return true; // "request sent" — see the header note on return values.
+    }
+    return EquipItem_Authority(InstanceID);
+}
+
+bool UGothicInventoryComponent::ServerEquipItem_Validate(const FGuid& InstanceID)
+{
+    return true;
+}
+
+void UGothicInventoryComponent::ServerEquipItem_Implementation(const FGuid& InstanceID)
+{
+    EquipItem_Authority(InstanceID);
+}
+
+bool UGothicInventoryComponent::EquipItem_Authority(const FGuid& InstanceID)
+{
+    // Deliberately FindInventoryItem, not FindItem. FindItem now sees equipped
+    // gear as well, and equipping something already equipped would take the
+    // swap path against itself — RemoveItem finds nothing, UnequipSlot pushes
+    // the item back into Items, and the slot is then overwritten with a stale
+    // copy, duplicating the item. Refuse it outright instead.
+    const FGothicItemInstance* Item = FindInventoryItem(InstanceID);
     if (!Item || !Item->Definition)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Inventory: EquipItem — item not found"));
+        if (FindEquippedSlotForItem(InstanceID).IsSet())
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("Inventory: EquipItem — %s is already equipped."), *InstanceID.ToString());
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("Inventory: EquipItem — item %s not found in inventory."), *InstanceID.ToString());
+        }
         return false;
     }
 
@@ -137,12 +264,16 @@ bool UGothicInventoryComponent::EquipItem(const FGuid& InstanceID)
     RemoveItem(InstanceID);
 
     // Unequip whatever is in that slot; it returns to inventory.
-    if (EquippedItems.Contains(Slot))
+    if (IndexOfEquippedSlot(Slot) != INDEX_NONE)
     {
-        UnequipSlot(Slot);
+        UnequipSlot_Authority(Slot);
     }
 
-    EquippedItems.Add(Slot, ItemCopy);
+    FGothicEquippedSlot NewEntry;
+    NewEntry.Slot = Slot;
+    NewEntry.Item = ItemCopy;
+    EquippedItems.Add(NewEntry);
+
     ApplyEquipmentStats(Slot, ItemCopy);
 
     RecalculateStrain();
@@ -154,12 +285,34 @@ bool UGothicInventoryComponent::EquipItem(const FGuid& InstanceID)
 
 bool UGothicInventoryComponent::UnequipSlot(EGothicEquipSlot Slot)
 {
-    if (!EquippedItems.Contains(Slot))
+    if (!HasInventoryAuthority())
+    {
+        ServerUnequipSlot(Slot);
+        return true; // "request sent" — see the header note on return values.
+    }
+    return UnequipSlot_Authority(Slot);
+}
+
+bool UGothicInventoryComponent::ServerUnequipSlot_Validate(EGothicEquipSlot Slot)
+{
+    return true;
+}
+
+void UGothicInventoryComponent::ServerUnequipSlot_Implementation(EGothicEquipSlot Slot)
+{
+    UnequipSlot_Authority(Slot);
+}
+
+bool UGothicInventoryComponent::UnequipSlot_Authority(EGothicEquipSlot Slot)
+{
+    const int32 EquippedIdx = IndexOfEquippedSlot(Slot);
+    if (EquippedIdx == INDEX_NONE)
     {
         return false;
     }
 
-    FGothicItemInstance Unequipped = EquippedItems[Slot];
+    // Copy by value — the array is mutated below and any reference into it dies.
+    FGothicItemInstance Unequipped = EquippedItems[EquippedIdx].Item;
 
     // The cap is checked BEFORE anything is torn down. AddItem refuses at
     // MaxInventorySize; this path used to Items.Add() unconditionally, so
@@ -175,7 +328,7 @@ bool UGothicInventoryComponent::UnequipSlot(EGothicEquipSlot Slot)
     }
 
     RemoveEquipmentStats(Slot);
-    EquippedItems.Remove(Slot);
+    EquippedItems.RemoveAt(EquippedIdx);
 
     // Return to inventory
     Items.Add(Unequipped);
@@ -198,12 +351,116 @@ bool UGothicInventoryComponent::UnequipSlot(EGothicEquipSlot Slot)
 
 const FGothicItemInstance* UGothicInventoryComponent::GetEquippedItem(EGothicEquipSlot Slot) const
 {
-    return EquippedItems.Find(Slot);
+    const int32 Idx = IndexOfEquippedSlot(Slot);
+    return Idx == INDEX_NONE ? nullptr : &EquippedItems[Idx].Item;
 }
 
 bool UGothicInventoryComponent::IsSlotEquipped(EGothicEquipSlot Slot) const
 {
-    return EquippedItems.Contains(Slot);
+    return IndexOfEquippedSlot(Slot) != INDEX_NONE;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Replication callbacks
+//
+// These reconstruct, on a client, the delegate broadcasts the server made
+// directly from its mutation functions. They diff the arriving array against
+// the pre-replication value UE hands us, so a client emits the same events in
+// the same shapes — including UnequipSlot's empty-instance "slot is bare"
+// signal, which AGothicPlayerCharacter::OnEquipmentChanged depends on.
+//
+// They cannot double-fire alongside the direct broadcasts: UE never calls an
+// OnRep on the authority, and a listen-server host is the authority for every
+// PlayerState it owns — including remote players'. The ROLE_Authority early-out
+// is a guard against hand-invocation, not a case that occurs in normal flow.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void UGothicInventoryComponent::OnRep_Items(const TArray<FGothicItemInstance>& PreviousItems)
+{
+    if (GetOwnerRole() == ROLE_Authority)
+    {
+        return;
+    }
+
+    auto ContainsID = [](const TArray<FGothicItemInstance>& Array, const FGuid& ID)
+    {
+        return Array.ContainsByPredicate(
+            [&ID](const FGothicItemInstance& Candidate) { return Candidate.InstanceID == ID; });
+    };
+
+    // Gone since the last update → OnItemRemoved, matching RemoveItem.
+    for (const FGothicItemInstance& Old : PreviousItems)
+    {
+        if (!ContainsID(Items, Old.InstanceID))
+        {
+            OnItemRemoved.Broadcast(Old);
+        }
+    }
+
+    // New since the last update → OnItemAdded, matching AddItem and the
+    // return-to-inventory half of UnequipSlot.
+    for (const FGothicItemInstance& New : Items)
+    {
+        if (!ContainsID(PreviousItems, New.InstanceID))
+        {
+            OnItemAdded.Broadcast(New);
+        }
+    }
+}
+
+void UGothicInventoryComponent::OnRep_EquippedItems(const TArray<FGothicEquippedSlot>& PreviousEquipped)
+{
+    if (GetOwnerRole() == ROLE_Authority)
+    {
+        return;
+    }
+
+    // Slots that emptied. The server signals this by broadcasting OnItemEquipped
+    // with a default-constructed instance (null Definition); reproduce that
+    // exactly — OnEquipmentChanged reads Item.Definition and clears the weapon
+    // slot, mesh, crosshair and ammo when it is null.
+    for (const FGothicEquippedSlot& Old : PreviousEquipped)
+    {
+        const bool bStillOccupied = EquippedItems.ContainsByPredicate(
+            [&Old](const FGothicEquippedSlot& Entry)
+            {
+                return Entry.Slot == Old.Slot && Entry.Item.InstanceID == Old.Item.InstanceID;
+            });
+
+        if (!bStillOccupied)
+        {
+            const bool bSlotRefilled = EquippedItems.ContainsByPredicate(
+                [&Old](const FGothicEquippedSlot& Entry) { return Entry.Slot == Old.Slot; });
+
+            // Only announce "bare" for a slot that is genuinely empty now. A
+            // straight swap replaces the occupant in one replication step, and
+            // firing empty-then-filled there would make the character briefly
+            // tear down a weapon it is about to rebuild.
+            if (!bSlotRefilled)
+            {
+                OnItemEquipped.Broadcast(Old.Slot, FGothicItemInstance());
+            }
+        }
+    }
+
+    // Slots that gained (or changed) an occupant → OnItemEquipped with the item.
+    for (const FGothicEquippedSlot& New : EquippedItems)
+    {
+        const bool bUnchanged = PreviousEquipped.ContainsByPredicate(
+            [&New](const FGothicEquippedSlot& Entry)
+            {
+                return Entry.Slot == New.Slot && Entry.Item.InstanceID == New.Item.InstanceID;
+            });
+
+        if (!bUnchanged)
+        {
+            OnItemEquipped.Broadcast(New.Slot, New.Item);
+        }
+    }
+
+    // Strain is derived entirely from EquippedItems, so any change to the set
+    // changes it. The server's equivalent call is RecalculateStrain().
+    OnStrainChanged.Broadcast();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -213,15 +470,17 @@ bool UGothicInventoryComponent::IsSlotEquipped(EGothicEquipSlot Slot) const
 float UGothicInventoryComponent::GetCurrentStrain() const
 {
     float Total = 0.f;
-    for (const auto& Pair : EquippedItems)
+    for (const FGothicEquippedSlot& Entry : EquippedItems)
     {
-        Total += Pair.Value.StrainCost;
+        Total += Entry.Item.StrainCost;
     }
     return Total;
 }
 
 bool UGothicInventoryComponent::WouldExceedStrain(const FGothicItemInstance& Item) const
 {
+    // Cannot return true with today's content — see the header. Max achievable
+    // strain across every wearable slot is 50 against a ResonanceCap of 100.
     return (GetCurrentStrain() + Item.StrainCost) > ResonanceCap;
 }
 
@@ -236,18 +495,59 @@ void UGothicInventoryComponent::RecalculateStrain()
 
 bool UGothicInventoryComponent::DismantleItem(const FGuid& InstanceID)
 {
+    if (!HasInventoryAuthority())
+    {
+        ServerDismantleItem(InstanceID);
+        return true; // "request sent" — see the header note on return values.
+    }
+    return DismantleItem_Authority(InstanceID);
+}
+
+bool UGothicInventoryComponent::ServerDismantleItem_Validate(const FGuid& InstanceID)
+{
+    return true;
+}
+
+void UGothicInventoryComponent::ServerDismantleItem_Implementation(const FGuid& InstanceID)
+{
+    DismantleItem_Authority(InstanceID);
+}
+
+bool UGothicInventoryComponent::DismantleItem_Authority(const FGuid& InstanceID)
+{
     const FGothicItemInstance* Item = FindItem(InstanceID);
     if (!Item || !Item->Definition)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Inventory: DismantleItem — item not found"));
+        UE_LOG(LogTemp, Warning,
+            TEXT("Inventory: DismantleItem — item %s not found in inventory or equipped gear."),
+            *InstanceID.ToString());
         return false;
     }
 
+    // Def is a UObject pointer to the shared asset, so it survives the container
+    // mutations below. `Item` itself does not — do not touch it after this point.
     const UGothicItemDefinition* Def = Item->Definition;
+    Item = nullptr;
+
+    // If it is being worn, take it off first: that tears down the item's
+    // GameplayEffect and returns it to Items, which is where the removal below
+    // expects to find it. Skipping this would leave a permanent stat effect
+    // applied by an item that no longer exists.
+    if (const TOptional<EGothicEquipSlot> EquippedSlot = FindEquippedSlotForItem(InstanceID))
+    {
+        if (!UnequipSlot_Authority(*EquippedSlot))
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("Inventory: DismantleItem — could not unequip %s (inventory full); item not dismantled."),
+                *InstanceID.ToString());
+            return false;
+        }
+    }
 
     if (Def->IsMundane())
     {
-        // Mundane → Silver
+        // Mundane → Silver. Note this currency has no sink yet — see the Silver
+        // declaration in the header.
         Silver += Def->DismantleSilver;
     }
     else
@@ -275,9 +575,38 @@ bool UGothicInventoryComponent::DismantleItem(const FGuid& InstanceID)
 
 bool UGothicInventoryComponent::RerollSecondaries(const FGuid& InstanceID, float SelahCost)
 {
+    if (!HasInventoryAuthority())
+    {
+        ServerRerollSecondaries(InstanceID, SelahCost);
+        return true; // "request sent" — see the header note on return values.
+    }
+    return RerollSecondaries_Authority(InstanceID, SelahCost);
+}
+
+bool UGothicInventoryComponent::ServerRerollSecondaries_Validate(const FGuid& InstanceID, float SelahCost)
+{
+    // A negative cost would pay the player to re-roll. The affordability check
+    // itself lives in the authority implementation, where the ASC is available.
+    return SelahCost >= 0.f;
+}
+
+void UGothicInventoryComponent::ServerRerollSecondaries_Implementation(const FGuid& InstanceID, float SelahCost)
+{
+    RerollSecondaries_Authority(InstanceID, SelahCost);
+}
+
+bool UGothicInventoryComponent::RerollSecondaries_Authority(const FGuid& InstanceID, float SelahCost)
+{
+    // FindItemMutable reaches equipped gear as well as the backpack. Nothing
+    // below mutates Items or EquippedItems, so holding this pointer is safe —
+    // it edits the item in place. Do not add a container mutation here without
+    // re-reading the pointer.
     FGothicItemInstance* Item = FindItemMutable(InstanceID);
     if (!Item || !Item->Definition)
     {
+        UE_LOG(LogTemp, Warning,
+            TEXT("Binder: RerollSecondaries — item %s not found in inventory or equipped gear."),
+            *InstanceID.ToString());
         return false;
     }
 
@@ -328,15 +657,57 @@ bool UGothicInventoryComponent::RerollSecondaries(const FGuid& InstanceID, float
 
     Item->bImbued = true; // Any Selah interaction locks the item
 
+    // If the re-rolled item is currently worn, its live stat effect is now built
+    // from stats that no longer exist. Tear it down and rebuild from the new
+    // roll — this could not happen before, because equipped gear was unreachable
+    // from here. Remove-then-apply, not apply alone: ApplyEquipmentStats
+    // overwrites the ActiveStatEffects entry, which would strand the old GE on
+    // the ASC forever and stack the new one on top of it.
+    if (const TOptional<EGothicEquipSlot> EquippedSlot = FindEquippedSlotForItem(InstanceID))
+    {
+        const FGothicItemInstance ItemCopy = *Item;
+        Item = nullptr;
+
+        RemoveEquipmentStats(*EquippedSlot);
+        ApplyEquipmentStats(*EquippedSlot, ItemCopy);
+
+        RecalculateStrain();
+        OnItemEquipped.Broadcast(*EquippedSlot, ItemCopy);
+    }
 
     return true;
 }
 
 bool UGothicInventoryComponent::ImbueStar(const FGuid& InstanceID, float SelahCost)
 {
+    if (!HasInventoryAuthority())
+    {
+        ServerImbueStar(InstanceID, SelahCost);
+        return true; // "request sent" — see the header note on return values.
+    }
+    return ImbueStar_Authority(InstanceID, SelahCost);
+}
+
+bool UGothicInventoryComponent::ServerImbueStar_Validate(const FGuid& InstanceID, float SelahCost)
+{
+    return SelahCost >= 0.f;
+}
+
+void UGothicInventoryComponent::ServerImbueStar_Implementation(const FGuid& InstanceID, float SelahCost)
+{
+    ImbueStar_Authority(InstanceID, SelahCost);
+}
+
+bool UGothicInventoryComponent::ImbueStar_Authority(const FGuid& InstanceID, float SelahCost)
+{
+    // Reaches equipped gear as well as the backpack. No container mutation
+    // below, so the pointer stays valid throughout.
     FGothicItemInstance* Item = FindItemMutable(InstanceID);
     if (!Item || !Item->Definition)
     {
+        UE_LOG(LogTemp, Warning,
+            TEXT("Binder: ImbueStar — item %s not found in inventory or equipped gear."),
+            *InstanceID.ToString());
         return false;
     }
 
@@ -367,6 +738,13 @@ bool UGothicInventoryComponent::ImbueStar(const FGuid& InstanceID, float SelahCo
     Item->CurrentStars++;
     Item->bImbued = true;
 
+    // No stat effect to rebuild: stars are inert (see the header). If they ever
+    // gain a mechanical effect, this needs the same remove-and-reapply the
+    // re-roll path does when the item is equipped.
+    if (const TOptional<EGothicEquipSlot> EquippedSlot = FindEquippedSlotForItem(InstanceID))
+    {
+        OnItemEquipped.Broadcast(*EquippedSlot, *Item);
+    }
 
     return true;
 }
@@ -380,7 +758,7 @@ void UGothicInventoryComponent::GrantStartingItems()
     {
         return;
     }
-    if (GetOwner() && !GetOwner()->HasAuthority())
+    if (!HasInventoryAuthority())
     {
         return;
     }
@@ -399,7 +777,9 @@ void UGothicInventoryComponent::GrantStartingItems()
         FGothicItemInstance Instance = Def->RollInstance();
         if (AddItem(Instance))
         {
-            EquipItem(Instance.InstanceID);
+            // Already on the authority — go straight to the implementation
+            // rather than back through the client-routing wrapper.
+            EquipItem_Authority(Instance.InstanceID);
         }
     }
 }
@@ -625,11 +1005,11 @@ int32 UGothicInventoryComponent::GetAggregateGearPower() const
 {
     int32 Total = 0;
     int32 Count = 0;
-    for (const TPair<EGothicEquipSlot, FGothicItemInstance>& Pair : EquippedItems)
+    for (const FGothicEquippedSlot& Entry : EquippedItems)
     {
-        if (Pair.Value.IsValid())
+        if (Entry.Item.IsValid())
         {
-            Total += Pair.Value.GearPower;
+            Total += Entry.Item.GearPower;
             ++Count;
         }
     }
@@ -639,13 +1019,13 @@ int32 UGothicInventoryComponent::GetAggregateGearPower() const
 float UGothicInventoryComponent::GetArchetypeDamageBonus(EGothicSecondaryStat DamageStat) const
 {
     float Sum = 0.f;
-    for (const TPair<EGothicEquipSlot, FGothicItemInstance>& Pair : EquippedItems)
+    for (const FGothicEquippedSlot& Entry : EquippedItems)
     {
-        if (!Pair.Value.IsValid())
+        if (!Entry.Item.IsValid())
         {
             continue;
         }
-        for (const FGothicStatRoll& Roll : Pair.Value.SecondaryStats)
+        for (const FGothicStatRoll& Roll : Entry.Item.SecondaryStats)
         {
             if (Roll.StatType == DamageStat)
             {

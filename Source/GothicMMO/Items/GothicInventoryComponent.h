@@ -2,21 +2,51 @@
 // Manages the player's item inventory, equipped gear, and Resonance Strain.
 // Lives on PlayerState to survive respawns (same pattern as ASC/AttributeSet).
 //
-// NOT replicated, and NOT server-authoritative — despite what this header said
-// until it was checked against the code.
+// Server-authoritative and replicated. Every mutation runs on the server only;
+// clients observe the result through replication and never mutate locally.
 //
-// The component calls SetIsReplicatedByDefault(true), and nothing else: there is
-// no GetLifetimeReplicatedProps, and neither Items nor EquippedItems carries a
-// Replicated specifier, so no inventory state crosses the wire. Nor is there an
-// authority check on any mutation — AddItem, RemoveItem, EquipItem, UnequipSlot,
-// DismantleItem, RerollSecondaries and ImbueStar are all BlueprintCallable and
-// all run wherever they are called. (RecalculateStrain is the one function that
-// tests HasAuthority, and only to skip applying a GE on a client.)
+// ── The shape of it ──────────────────────────────────────────────────────────
 //
-// That is survivable today because the game is solo, so the only instance that
-// exists IS the authority. It is a real gap for multiplayer, not a design
-// decision, and closing it is a deliberate piece of work — replicating these
-// arrays and routing mutations through server RPCs — not a comment fix.
+// Items, EquippedItems and Silver are Replicated, COND_OwnerOnly — a player's
+// inventory is nobody else's business, and PlayerState replicates to every
+// connection by default, so without the condition each client would receive
+// every other player's full gear list. The PlayerState's Owner is its
+// PlayerController (APlayerController::InitPlayerState), which is what makes
+// both COND_OwnerOnly and the Server RPCs below route correctly from a
+// component that does not live on the pawn.
+//
+// EquippedItems is a TArray<FGothicEquippedSlot>, not the TMap it used to be:
+// UE cannot replicate a TMap. GetEquippedItem/IsSlotEquipped hide the change,
+// so callers are unaffected.
+//
+// ── Who may call what ────────────────────────────────────────────────────────
+//
+// AddItem and RemoveItem are authority-only and refuse (with a log) on a
+// client; nothing legitimately drives them from a client — pickups, loot and
+// the starting kit are all server-side.
+//
+// EquipItem, UnequipSlot, DismantleItem, RerollSecondaries and ImbueStar ARE
+// legitimately client-initiated: they are driven by the player from
+// GothicInventoryWidget and Sean the Binder's UI. Each is a router — on
+// authority it performs the change, on a client it forwards to its Server RPC
+// and the change comes back as replicated state. Call sites do not change, but
+// see the return-value note on each: on a client the bool means "request sent",
+// not "request succeeded", because the answer is not known locally yet.
+//
+// ── UI refresh, and why it does not double-fire ──────────────────────────────
+//
+// The four delegates (OnItemAdded/OnItemRemoved/OnItemEquipped/OnStrainChanged)
+// are broadcast directly by the mutation functions, which now only ever execute
+// on the authority. Clients get the same broadcasts from OnRep_Items and
+// OnRep_EquippedItems, which diff the newly-arrived arrays against a local
+// shadow copy and emit exactly the events the server emitted.
+//
+// These two paths cannot both fire for the same change: UE never calls an OnRep
+// on the authority, and a listen-server host IS the authority for every
+// PlayerState in its world — including remote players'. So the host only ever
+// takes the direct-broadcast path and a client only ever takes the OnRep path.
+// The OnReps additionally early-out on ROLE_Authority as a belt-and-braces
+// guard against a future caller invoking them by hand.
 
 #pragma once
 
@@ -41,18 +71,37 @@ class GOTHICMMO_API UGothicInventoryComponent : public UActorComponent
 public:
     UGothicInventoryComponent();
 
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+    /** True when this component may mutate state. Ownerless (CDO/tests) counts as authority. */
+    bool HasInventoryAuthority() const;
+
     // ── Inventory ────────────────────────────────────────────────────────
 
-    /** Add a rolled item to the inventory. Returns false if inventory is full. */
+    /**
+     * Add a rolled item to the inventory. Returns false if inventory is full.
+     * Authority-only — refuses and logs on a client. No client path exists
+     * because nothing client-side legitimately grants items.
+     */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
     bool AddItem(const FGothicItemInstance& Item);
 
-    /** Remove an item by its instance ID. Returns true if found and removed. */
+    /** Remove an item by its instance ID. Authority-only. Returns true if found and removed. */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
     bool RemoveItem(const FGuid& InstanceID);
 
-    /** Find an item by its instance ID. Returns null if not found. */
+    /**
+     * Find an item by its instance ID, searching the inventory AND equipped gear.
+     *
+     * Equipped gear used to be invisible here, which is why the Binder could
+     * never re-roll, imbue or dismantle the armor a player was actually wearing.
+     * If you specifically need "in the backpack, not on the body" — EquipItem
+     * does — use FindInventoryItem.
+     */
     const FGothicItemInstance* FindItem(const FGuid& InstanceID) const;
+
+    /** Find an item in the unequipped inventory only. Returns null if not found or if equipped. */
+    const FGothicItemInstance* FindInventoryItem(const FGuid& InstanceID) const;
 
     UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
     int32 GetItemCount() const { return Items.Num(); }
@@ -66,11 +115,15 @@ public:
      * Equip an item from inventory to its slot.
      * Unequips any item currently in that slot (returns it to inventory).
      * Checks Resonance Strain budget before equipping Resonant/Pure items.
+     *
+     * Client-callable: on a client this forwards to ServerEquipItem and returns
+     * true meaning "request sent" — the real outcome arrives via replication and
+     * shows up as OnItemEquipped. Only the authority's return value is a verdict.
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
     bool EquipItem(const FGuid& InstanceID);
 
-    /** Unequip an item from a slot, returning it to inventory. */
+    /** Unequip an item from a slot, returning it to inventory. Client-callable; see EquipItem on the return value. */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
     bool UnequipSlot(EGothicEquipSlot Slot);
 
@@ -126,18 +179,40 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
     float GetRemainingStrain() const { return ResonanceCap - GetCurrentStrain(); }
 
-    /** True if equipping this item would exceed the Strain cap. */
+    /**
+     * True if equipping this item would exceed the Strain cap.
+     *
+     * UNREACHABLE TODAY: this can never return true with current content. The
+     * highest StrainCost authored anywhere is the Pure-tier Ashen Crown at 40,
+     * and the most strain-bearing items that can be worn at once total 50
+     * across all slots, against a ResonanceCap of 100. The gate is real code on
+     * a budget nothing can currently spend. Raising strain costs (or lowering
+     * the cap) is a deliberate balance decision and explicitly deferred — do not
+     * "fix" this by changing the cap.
+     */
     UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
     bool WouldExceedStrain(const FGothicItemInstance& Item) const;
 
     // ── Economy ──────────────────────────────────────────────────────────
 
-    /** Dismantle an item — returns Silver (mundane) or Selah (Resonant/Pure). */
+    /**
+     * Dismantle an item — returns Silver (mundane) or Selah (Resonant/Pure).
+     * Works on equipped gear as well as inventory; equipped items are unequipped
+     * first so their stat effect is torn down. Client-callable.
+     */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
     bool DismantleItem(const FGuid& InstanceID);
 
-    /** Current Silver balance. Mundane currency, account-wide. */
-    UPROPERTY(BlueprintReadOnly, Category = "Gothic|Economy")
+    /**
+     * Current Silver balance. Mundane currency, account-wide.
+     *
+     * STUB — accumulates and is never spent. Dismantling mundane gear pays into
+     * it and nothing anywhere reads it: there is no Silver sink (no vendor, no
+     * repair, no crafting cost). It replicates so the number a client sees is
+     * the server's, but until a sink exists it is a scoreboard, not an economy.
+     * Building that sink is deferred, not forgotten.
+     */
+    UPROPERTY(BlueprintReadOnly, Replicated, Category = "Gothic|Economy")
     int32 Silver = 0;
 
     // ── Sean the Binder ──────────────────────────────────────────────────
@@ -146,7 +221,8 @@ public:
      * Re-roll an item's secondary stats at Sean.
      * Costs Selah (from the player's Selah attribute).
      * Random, never directed — Selah buys attempts, not outcomes.
-     * Returns true if the re-roll succeeded.
+     * Works on equipped gear as well as inventory. Client-callable.
+     * Returns true if the re-roll succeeded (on the authority).
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
     bool RerollSecondaries(const FGuid& InstanceID, float SelahCost);
@@ -155,9 +231,38 @@ public:
      * Imbue stars into an item at Sean.
      * Costs Selah. Cannot exceed the item's StarCeiling.
      * Locks the item (bImbued = true, prevents trading).
+     * Works on equipped gear as well as inventory. Client-callable.
+     *
+     * STUB — CurrentStars is recorded and spent Selah is really deducted, but
+     * stars have no mechanical effect: nothing reads CurrentStars when computing
+     * stats, damage or Gear Power. Imbuing today buys a number on a tooltip and
+     * a trade lock. Wiring stars to a stat multiplier is deferred by design.
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
     bool ImbueStar(const FGuid& InstanceID, float SelahCost);
+
+    // ── Server RPCs ──────────────────────────────────────────────────────
+    //
+    // The client-initiated mutations. Each is Reliable + WithValidation and
+    // simply re-enters the matching public function on the authority, so the
+    // rules (strain budget, Selah cost, inventory cap, slot agreement) are
+    // enforced in exactly one place and a client cannot bypass them by calling
+    // the RPC directly.
+
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerEquipItem(const FGuid& InstanceID);
+
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerUnequipSlot(EGothicEquipSlot Slot);
+
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerDismantleItem(const FGuid& InstanceID);
+
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerRerollSecondaries(const FGuid& InstanceID, float SelahCost);
+
+    UFUNCTION(Server, Reliable, WithValidation)
+    void ServerImbueStar(const FGuid& InstanceID, float SelahCost);
 
     // ── Delegates ────────────────────────────────────────────────────────
 
@@ -185,12 +290,24 @@ protected:
     int32 MaxInventorySize = 50;
 
     /** All items in the player's inventory (unequipped). */
-    UPROPERTY(BlueprintReadOnly, Category = "Gothic|Inventory")
+    UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_Items, Category = "Gothic|Inventory")
     TArray<FGothicItemInstance> Items;
 
-    /** Currently equipped items, keyed by slot. */
-    UPROPERTY(BlueprintReadOnly, Category = "Gothic|Inventory")
-    TMap<EGothicEquipSlot, FGothicItemInstance> EquippedItems;
+    /**
+     * Currently equipped items, one entry per occupied slot.
+     *
+     * A TArray and not a TMap because UE cannot replicate a TMap. Order is not
+     * meaningful; look up by Slot (GetEquippedItem / FindEquippedSlot).
+     */
+    UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_EquippedItems, Category = "Gothic|Inventory")
+    TArray<FGothicEquippedSlot> EquippedItems;
+
+    /** Client-side: rebuild the UI events the server broadcast directly. Never runs on the authority. */
+    UFUNCTION()
+    void OnRep_Items(const TArray<FGothicItemInstance>& PreviousItems);
+
+    UFUNCTION()
+    void OnRep_EquippedItems(const TArray<FGothicEquippedSlot>& PreviousEquipped);
 
     /** Guards GrantStartingItems so the kit is granted once, not every respawn. */
     bool bStartingItemsGranted = false;
@@ -200,8 +317,32 @@ protected:
     TSubclassOf<UGameplayEffect> EquipmentStatsEffect;
 
 private:
-    /** Find a mutable item in the inventory by ID. */
+    /**
+     * Find a mutable item by ID, searching the inventory AND equipped gear.
+     *
+     * DANGER: the returned pointer points into Items or EquippedItems and is
+     * invalidated by ANY mutation of either array — including calls that mutate
+     * indirectly, like RemoveItem, EquipItem and UnequipSlot. A use-after-free
+     * from exactly this pattern was fixed in EquipItem; copy the value out
+     * before you touch a container, and never hold this across a call.
+     */
     FGothicItemInstance* FindItemMutable(const FGuid& InstanceID);
+
+    /** The slot an equipped item occupies, or none if the ID is not equipped. */
+    TOptional<EGothicEquipSlot> FindEquippedSlotForItem(const FGuid& InstanceID) const;
+
+    /** Index into EquippedItems for a slot, or INDEX_NONE. */
+    int32 IndexOfEquippedSlot(EGothicEquipSlot Slot) const;
+
+    // ── Authority implementations ────────────────────────────────────────
+    // The public functions are routers (authority → these; client → Server RPC).
+    // These assume authority and are where the actual rules live.
+
+    bool EquipItem_Authority(const FGuid& InstanceID);
+    bool UnequipSlot_Authority(EGothicEquipSlot Slot);
+    bool DismantleItem_Authority(const FGuid& InstanceID);
+    bool RerollSecondaries_Authority(const FGuid& InstanceID, float SelahCost);
+    bool ImbueStar_Authority(const FGuid& InstanceID, float SelahCost);
 
     /** Recalculate and broadcast strain. */
     void RecalculateStrain();

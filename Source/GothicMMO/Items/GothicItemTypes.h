@@ -178,3 +178,27 @@ struct FGothicItemInstance
 
     bool IsValid() const { return Definition != nullptr && InstanceID.IsValid(); }
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Equipped Slot — one occupied equipment slot
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * A slot/item pair. Exists because the equipment set has to replicate and
+ * UE cannot replicate a TMap — UGothicInventoryComponent used to store
+ * equipment as TMap<EGothicEquipSlot, FGothicItemInstance>, which is a fine
+ * local container and an impossible replicated one. The component now keeps a
+ * TArray of these and looks up by Slot; the array is small (13 slots maximum,
+ * one per EGothicEquipSlot entry) so linear lookup costs nothing.
+ */
+USTRUCT(BlueprintType)
+struct FGothicEquippedSlot
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Item")
+    EGothicEquipSlot Slot = EGothicEquipSlot::Sidearm;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Item")
+    FGothicItemInstance Item;
+};
