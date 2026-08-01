@@ -1163,6 +1163,16 @@ def spawn(world, class_path, location, rotation=(0.0, 0.0, 0.0),
         AdjustIfPossibleButAlwaysSpawn is not reachable this way; AlwaysSpawn is
         the closer match and is the default, so a spawn point inside geometry
         interpenetrates instead of failing.
+
+    THE NAME, WHICH IS NOT THE C++ NAME
+    -----------------------------------
+    The first cut of this call said `unreal.AIBlueprintHelperLibrary` and died
+    with "module 'unreal' has no attribute 'AIBlueprintHelperLibrary'". That is
+    the ScriptName trap, not a missing API: the UCLASS carries
+    meta=(ScriptName="AIHelperLibrary") (AIBlueprintHelperLibrary.h:25), so the
+    Python binding is `unreal.AIHelperLibrary`. Resolved through
+    common.ai_helper_library() so the spelling lives in exactly one place and a
+    future rename raises a diagnosable error instead of an AttributeError.
     """
     cls = unreal.load_class(None, class_path)
     if cls is None:
@@ -1175,7 +1185,16 @@ def spawn(world, class_path, location, rotation=(0.0, 0.0, 0.0),
             "non-pawn actor into the PIE world from editor Python. Place the "
             "actor in the level instead." % class_path)
 
-    pawn = unreal.AIBlueprintHelperLibrary.spawn_ai_from_class(
+    helper = common.ai_helper_library()
+    spawn_fn = getattr(helper, "spawn_ai_from_class", None)
+    if spawn_fn is None:
+        raise LookupError(
+            "%s resolved but has no spawn_ai_from_class. SpawnAIFromClass is a "
+            "plain BlueprintCallable UFUNCTION (AIBlueprintHelperLibrary.h:44-45) "
+            "so it should be bound; check for a signature change before looking "
+            "for another spawn route." % helper.__name__)
+
+    pawn = spawn_fn(
         world,
         cls,
         behavior_tree,

@@ -54,39 +54,82 @@ class VigilPIETools(unreal.ToolsetDefinition):
         fail by returning None rather than raising, so a resolution table is
         more useful than a smoke test.
 
+        THIS TOOL MUST NOT BE ABLE TO FAIL. It is the probe you reach for when
+        something else is broken, so a missing API has to come back as a False
+        row, never as an exception. The previous version wrote
+        `hasattr(unreal.AIBlueprintHelperLibrary, ...)` -- evaluating the
+        attribute BEFORE hasattr could catch anything -- and an engine class
+        rename took the whole report down along with the tool it was meant to
+        diagnose. Every row now goes through _row(), which converts any
+        exception into a visible error string in that row alone.
+
         Returns:
             JSON with api and vigil_classes tables mapping name to availability.
         """
-        subsystem = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
-        level_editor = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
+        api = {}
 
-        api = {
-            "UnrealEditorSubsystem": subsystem is not None,
-            "UnrealEditorSubsystem.get_game_world": hasattr(subsystem, "get_game_world"),
-            "LevelEditorSubsystem": level_editor is not None,
-            "LevelEditorSubsystem.editor_request_begin_play": hasattr(
-                level_editor, "editor_request_begin_play"),
-            "LevelEditorSubsystem.editor_request_end_play": hasattr(
-                level_editor, "editor_request_end_play"),
-            "register_slate_post_tick_callback": hasattr(
-                unreal, "register_slate_post_tick_callback"),
-            "GameplayStatics.get_time_seconds": hasattr(
-                unreal.GameplayStatics, "get_time_seconds"),
-            # Expected False, permanently: BeginDeferredActorSpawnFromClass is
-            # meta=(BlueprintInternalUseOnly="true") (GameplayStatics.h:65-67)
-            # and PyGenUtil.cpp:1621 excludes those from the Python bindings.
-            # Kept as a capability row so nobody rediscovers it as a bug.
-            "GameplayStatics.begin_deferred_actor_spawn_from_class (expected False)":
-                hasattr(unreal.GameplayStatics,
-                        "begin_deferred_actor_spawn_from_class"),
-            # The route spawn_enemy actually uses.
-            "AIBlueprintHelperLibrary.spawn_ai_from_class": hasattr(
-                unreal.AIBlueprintHelperLibrary, "spawn_ai_from_class"),
-            "AIPerceptionComponent.get_currently_perceived_actors": hasattr(
-                unreal.AIPerceptionComponent, "get_currently_perceived_actors"),
-            "MathLibrary.find_look_at_rotation": hasattr(
-                unreal.MathLibrary, "find_look_at_rotation"),
-        }
+        def _row(label, fn):
+            """Evaluate one capability. Records the failure instead of raising."""
+            try:
+                api[label] = fn()
+            except Exception as exc:
+                api[label] = "unavailable: %s: %s" % (type(exc).__name__, exc)
+
+        def _has(owner_name, member):
+            """hasattr against unreal.<owner_name>, tolerating a missing owner."""
+            owner = getattr(unreal, owner_name, None)
+            if owner is None:
+                return "unavailable: unreal.%s does not exist on this build " \
+                       "(suspect a meta=(ScriptName=...) rename)" % owner_name
+            return hasattr(owner, member)
+
+        _row("UnrealEditorSubsystem",
+             lambda: unreal.get_editor_subsystem(
+                 unreal.UnrealEditorSubsystem) is not None)
+        _row("UnrealEditorSubsystem.get_game_world",
+             lambda: hasattr(unreal.get_editor_subsystem(
+                 unreal.UnrealEditorSubsystem), "get_game_world"))
+        _row("LevelEditorSubsystem",
+             lambda: unreal.get_editor_subsystem(
+                 unreal.LevelEditorSubsystem) is not None)
+        _row("LevelEditorSubsystem.editor_request_begin_play",
+             lambda: hasattr(unreal.get_editor_subsystem(
+                 unreal.LevelEditorSubsystem), "editor_request_begin_play"))
+        _row("LevelEditorSubsystem.editor_request_end_play",
+             lambda: hasattr(unreal.get_editor_subsystem(
+                 unreal.LevelEditorSubsystem), "editor_request_end_play"))
+        _row("register_slate_post_tick_callback",
+             lambda: hasattr(unreal, "register_slate_post_tick_callback"))
+        _row("GameplayStatics.get_time_seconds",
+             lambda: _has("GameplayStatics", "get_time_seconds"))
+        # Expected False, permanently: BeginDeferredActorSpawnFromClass is
+        # meta=(BlueprintInternalUseOnly="true") (GameplayStatics.h:65-67)
+        # and PyGenUtil.cpp:1621 excludes those from the Python bindings.
+        # Kept as a capability row so nobody rediscovers it as a bug.
+        _row("GameplayStatics.begin_deferred_actor_spawn_from_class (expected False)",
+             lambda: _has("GameplayStatics",
+                          "begin_deferred_actor_spawn_from_class"))
+        # Expected False, permanently: UAIBlueprintHelperLibrary is renamed to
+        # AIHelperLibrary by meta=(ScriptName=...) (AIBlueprintHelperLibrary.h:25).
+        # Kept as a row because this exact name is what spawn_enemy failed on
+        # twice; seeing it False next to AIHelperLibrary True is the whole
+        # explanation.
+        _row("unreal.AIBlueprintHelperLibrary (expected False -- ScriptName rename)",
+             lambda: hasattr(unreal, "AIBlueprintHelperLibrary"))
+        _row("AIHelperLibrary (resolved name for UAIBlueprintHelperLibrary)",
+             lambda: common.ai_helper_library().__name__)
+        # The route spawn_enemy actually uses.
+        _row("AIHelperLibrary.spawn_ai_from_class",
+             lambda: hasattr(common.ai_helper_library(), "spawn_ai_from_class"))
+        _row("AIHelperLibrary.get_blackboard",
+             lambda: hasattr(common.ai_helper_library(), "get_blackboard"))
+        _row("AIPerceptionComponent.get_currently_perceived_actors",
+             lambda: _has("AIPerceptionComponent",
+                          "get_currently_perceived_actors"))
+        _row("AISenseConfig_Hearing.hearing_range (readable)",
+             lambda: _has("AISenseConfig_Hearing", "hearing_range"))
+        _row("MathLibrary.find_look_at_rotation",
+             lambda: _has("MathLibrary", "find_look_at_rotation"))
 
         vigil = {}
         for name in (
@@ -101,10 +144,13 @@ class VigilPIETools(unreal.ToolsetDefinition):
         return common.as_json({
             "api": api,
             "vigil_classes": vigil,
-            "probe_metrics": probe.available_metrics(),
-            "in_pie": common.pie_world() is not None,
-            "note": "Any False under api means the tool depending on it returns "
-                    "a clear error rather than wrong data.",
+            "probe_metrics": common.try_read(probe.available_metrics),
+            "in_pie": common.try_read(lambda: common.pie_world() is not None),
+            "note": "Any False or 'unavailable: ...' under api means the tool "
+                    "depending on it returns a clear error rather than wrong "
+                    "data. An 'unavailable' string naming an AttributeError on "
+                    "a class is almost always a meta=(ScriptName=...) rename, "
+                    "not a removed feature.",
         })
 
     # ----------------------------------------------------------------------

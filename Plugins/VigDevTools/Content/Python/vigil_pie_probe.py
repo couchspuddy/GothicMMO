@@ -302,13 +302,78 @@ def _m_gear_power(actor):
 
 @_reader("active_gear_power")
 def _m_active_gear_power(actor):
-    """The ACTIVE weapon's own Gear Power, as distinct from the aggregate."""
+    """The ACTIVE weapon slot's own Gear Power. Usually 0, and that is CORRECT.
+
+    WHY THIS DISAGREES WITH gear_power, AND WHY NEITHER IS WRONG
+    -----------------------------------------------------------
+    Reading 0 here against gear_power's 100 on the same pawn looks like a broken
+    probe. It is not. The two metrics read two different stores:
+
+      gear_power        AGothicPlayerCharacter::GetAggregateGearPower
+                        (GothicPlayerCharacter.cpp:1275-1280) -> the PlayerState's
+                        inventory, averaged across equipped items.
+      active_gear_power AGothicPlayerCharacter::GetActiveGearPower
+                        (GothicPlayerCharacter.cpp:1266-1273) -> literally
+                        WeaponSlots[ActiveWeaponIndex].GearPower.
+
+    FGothicWeaponSlot::GearPower defaults to 0 and is only filled when the slot
+    is populated FROM THE INVENTORY with a rolled copy. A weapon assigned
+    directly on the Blueprint default loadout leaves it at 0, and that zero means
+    "baseline, no scaling" by design (GothicWeaponData.h:310-314,
+    GothicPlayerCharacter.h:290-293).
+
+    It also feeds nothing. GetActiveGearPower has no callers anywhere in
+    Source/; the damage math in UGA_Fire::PerformFireTrace scales off the
+    AGGREGATE (GA_Fire.cpp:336-339). So this metric is a loadout-provenance
+    signal, not a damage input -- do not put it in a damage regression.
+
+    Returned as a dict rather than a bare int precisely so that zero cannot be
+    mistaken for a failed read or for a damage-relevant measurement.
+    """
     getter = getattr(actor, "get_active_gear_power", None)
     if getter is None:
         raise LookupError(
             "get_active_gear_power not on %s (GothicPlayerCharacter.h:295-296)."
             % actor.get_name())
-    return int(getter())
+    value = int(getter())
+
+    index = common.try_read(
+        lambda: int(actor.get_editor_property("active_weapon_index")))
+    slots = common.try_read(
+        lambda: len(actor.get_editor_property("weapon_slots") or []))
+
+    if isinstance(index, dict) or isinstance(slots, dict):
+        meaning = ("could not read active_weapon_index / weapon_slots to "
+                   "disambiguate; see the error objects in this row")
+    elif not isinstance(slots, int) or slots == 0:
+        meaning = ("WeaponSlots is EMPTY, so GetActiveGearPower short-circuits "
+                   "to 0 (GothicPlayerCharacter.cpp:1272). This is a missing "
+                   "loadout, not a gear reading.")
+    elif not (0 <= index < slots):
+        meaning = ("active_weapon_index %s is out of range for %d slot(s), so "
+                   "GetActiveGearPower returns its fallback 0 "
+                   "(GothicPlayerCharacter.cpp:1268-1272). Suspect the slot "
+                   "state, not the gear." % (index, slots))
+    elif value == 0:
+        meaning = ("slot %d exists and its GearPower is genuinely 0 -- a "
+                   "Blueprint default-loadout weapon with no rolled copy behind "
+                   "it. Expected, and treated as baseline/no scaling." % index)
+    else:
+        meaning = "slot %d carries a rolled copy with GearPower %d." % (
+            index, value)
+
+    return {
+        "value": value,
+        "active_weapon_index": index,
+        "weapon_slot_count": slots,
+        "meaning": meaning,
+        "feeds_damage": False,
+        "note": "GetActiveGearPower has zero callers in Source/; GA_Fire scales "
+                "off GetAggregateGearPower (the gear_power metric) instead "
+                "(GA_Fire.cpp:336-339). Compare against gear_power only to see "
+                "whether the loadout came from the inventory or the Blueprint "
+                "default -- never as a contradiction.",
+    }
 
 
 @_reader("archetype_bonus_pct")
