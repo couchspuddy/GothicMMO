@@ -45,27 +45,21 @@ class VigEncounterTools(unreal.ToolsetDefinition):
             world, unreal.Character
         )
 
-        boss = None
-        for actor in actors:
-            if actor_label:
-                if actor.get_actor_label() == actor_label:
-                    boss = actor
-                    break
-            else:
-                # Look for Boss/Champion tier by checking class name
-                class_name = actor.get_class().get_name()
-                if any(
-                    tag in class_name.lower()
-                    for tag in ["boss", "lucid", "bestial", "champion"]
-                ):
-                    boss = actor
-                    break
+        boss = VigEncounterTools._find_boss(actors, actor_label)
+        if isinstance(boss, dict):
+            return boss
 
-        if not boss:
-            return {"error": f"No boss found (filter: '{actor_label}')"}
-
+        # Two names, reported together on purpose. get_name() is the runtime
+        # object name ("BP_Enemy_BestialLucid_C_1") and is what list_combatants,
+        # describe_combatant, the probe and every scenario step accept.
+        # get_actor_label() is the editor label the level author typed
+        # ("BP_Enemy_BestialLucid1") and matches nothing else in the harness.
+        # This tool used to report only the label, so its output could not be
+        # pasted into any other tool. `actor` is now the portable one.
         result = {
-            "actor": boss.get_actor_label(),
+            "actor": boss.get_name(),
+            "actor_label": common.try_read(
+                lambda: boss.get_actor_label(), default="<no label>"),
             "class": boss.get_class().get_name(),
             "location": VigEncounterTools._vec_to_dict(
                 boss.get_actor_location()
@@ -140,63 +134,9 @@ class VigEncounterTools(unreal.ToolsetDefinition):
                                     type(exc).__name__, exc)}
 
         # ── Active gameplay tags ─────────────────────────────────────────────
-        #
-        # Enumerated off the ASC, not probed against a hardcoded list.
-        #
-        # The old probe called unreal.GameplayTag.request_gameplay_tag(str).
-        # FGameplayTag::RequestGameplayTag is a plain static C++ function with no
-        # UFUNCTION and no ScriptMethod alias (GameplayTagContainer.h:60), so that
-        # attribute does not exist in Python at all -- every iteration raised into
-        # `except: pass` and active_state_tags was ALWAYS an empty list. A boss
-        # mid-phase-transition and a boss standing idle produced identical output.
-        #
-        # UBlueprintGameplayTagLibrary is the reflected surface:
-        #   GetOwnedGameplayTags   (BlueprintGameplayTagLibrary.h:285)
-        #   BreakGameplayTagContainer (:200)
-        #   GetTagName             (:57)
-        # None of them need a string-to-tag conversion, so the whole failure mode
-        # is gone rather than papered over.
-        asc = common.try_read(
-            lambda: unreal.AbilitySystemBlueprintLibrary
-            .get_ability_system_component(boss), default=None)
-        if asc is None:
-            result["active_state_tags"] = {
-                "error": "No AbilitySystemComponent on this boss -- gameplay "
-                         "tags unreadable."}
-        else:
-            tags = None
-            for attempt in (
-                lambda: unreal.BlueprintGameplayTagLibrary
-                .get_owned_gameplay_tags(asc),
-                lambda: unreal.BlueprintGameplayTagLibrary
-                .get_owned_gameplay_tags(
-                    unreal.BlueprintGameplayTagLibrary
-                    .conv_object_to_gameplay_tag_asset_interface(asc)),
-            ):
-                try:
-                    tags = attempt()
-                    if tags is not None:
-                        break
-                except Exception:
-                    continue
-
-            if tags is None:
-                result["active_state_tags"] = {
-                    "error": "BlueprintGameplayTagLibrary.get_owned_gameplay_tags "
-                             "did not resolve on this build (tried the ASC "
-                             "directly and via "
-                             "conv_object_to_gameplay_tag_asset_interface)."}
-            else:
-                try:
-                    broken = unreal.BlueprintGameplayTagLibrary \
-                        .break_gameplay_tag_container(tags)
-                    result["active_state_tags"] = sorted(
-                        str(unreal.BlueprintGameplayTagLibrary.get_tag_name(t))
-                        for t in broken)
-                except Exception as exc:
-                    result["active_state_tags"] = {
-                        "error": "break_gameplay_tag_container/get_tag_name "
-                                 "failed: %s: %s" % (type(exc).__name__, exc)}
+        # Enumerated off the live ASC. See _owned_gameplay_tags for the two
+        # ScriptName traps that made this an error object for two rewrites.
+        result["active_state_tags"] = VigEncounterTools._owned_gameplay_tags(boss)
 
         # Blackboard: phase and transition state.
         #
@@ -288,35 +228,57 @@ class VigEncounterTools(unreal.ToolsetDefinition):
                 ),
             }
 
-            # Get Selah from PlayerState's ASC
-            try:
-                # Try actor first, then player state
-                asc = None
-                asc = unreal.AbilitySystemBlueprintLibrary \
-                    .get_ability_system_component(actor)
+            # ── Balances, read off the attribute set ─────────────────────────
+            #
+            # This block built unreal.GameplayAttribute(attribute_name="Selah")
+            # and handed it to get_gameplay_attribute_value. It can never
+            # resolve: AttributeName is a VisibleAnywhere display cache DERIVED
+            # from the payload (AttributeSet.h:84, 141, 150-151), while the
+            # field that identifies the attribute is the TFieldPath `Attribute`
+            # (:159-163), left null when the struct is built from a string. Every
+            # read raised into `except: pass`, so the Selah balance -- the entire
+            # point of dump_selah_state -- was silently absent from every dump
+            # this tool ever produced.
+            #
+            # Same fix shape as the boss health block: go through the attribute
+            # set's BlueprintReadOnly FGameplayAttributeData UPROPERTYs
+            # (GothicAttributeSet.h:77-124) and read CurrentValue, itself
+            # BlueprintReadOnly (AttributeSet.h:53-54). No FGameplayAttribute
+            # construction anywhere.
+            attr_set = None
+            for fetch in (
+                lambda: actor.get_attribute_set(),   # GothicCharacterBase.h:71-72
+                lambda: actor.get_player_state().get_attribute_set(),
+            ):
+                try:
+                    candidate = fetch()
+                except Exception:
+                    continue
+                if candidate:
+                    attr_set = candidate
+                    break
 
-                if not asc:
-                    ps = actor.get_player_state()
-                    if ps:
-                        asc = unreal.AbilitySystemBlueprintLibrary \
-                            .get_ability_system_component(ps)
-
-                if asc:
-                    for attr_name in [
-                        "Selah", "Health", "MaxHealth",
-                        "SuperMeter", "MaxSuperMeter",
-                    ]:
-                        try:
-                            val = asc.get_gameplay_attribute_value(
-                                unreal.GameplayAttribute(
-                                    attribute_name=attr_name
-                                )
-                            )
-                            entry[attr_name] = val
-                        except Exception:
-                            pass
-            except Exception as e:
-                entry["error"] = str(e)
+            if attr_set is None:
+                entry["attributes_error"] = (
+                    "No UGothicAttributeSet on this player or its PlayerState. "
+                    "Tried AGothicCharacterBase::GetAttributeSet "
+                    "(GothicCharacterBase.h:71-72) on both.")
+            else:
+                for label, prop in (
+                    ("Selah", "selah"),
+                    ("Health", "health"),
+                    ("MaxHealth", "max_health"),
+                    ("SuperMeter", "super_meter"),
+                    ("MaxSuperMeter", "max_super_meter"),
+                ):
+                    try:
+                        entry[label] = float(
+                            attr_set.get_editor_property(prop)
+                            .get_editor_property("current_value"))
+                    except Exception as exc:
+                        entry[label] = {
+                            "error": "GothicAttributeSet.%s.current_value: %s: %s"
+                                     % (prop, type(exc).__name__, exc)}
 
             players.append(entry)
 
@@ -495,6 +457,156 @@ class VigEncounterTools(unreal.ToolsetDefinition):
             VigEncounterTools._check_pillar_destruction_impl())
 
     # -- Internal helpers --
+
+    # Class-name fragments that mark a Boss/Champion tier pawn when no filter
+    # is supplied.
+    _BOSS_CLASS_HINTS = ("boss", "lucid", "bestial", "champion")
+
+    @staticmethod
+    def _find_boss(actors, actor_label):
+        """Resolve the boss, or return an error dict listing the candidates.
+
+        The old filter was `actor.get_actor_label() == actor_label` -- an EXACT
+        match against the editor label only. So dump_boss_state(actor_label=
+        "BestialLucid") reported "No boss found" for an actor it resolved
+        perfectly well with an empty filter, and the docstring's promise that a
+        substring works was fiction. Matching now mirrors
+        vigil_pie_common.resolve_actor: exact first, then unique
+        case-insensitive substring, across BOTH the runtime name and the editor
+        label -- and it reports every candidate on failure instead of a bare
+        "not found".
+        """
+        if not actor_label:
+            for actor in actors:
+                lowered = actor.get_class().get_name().lower()
+                if any(hint in lowered
+                       for hint in VigEncounterTools._BOSS_CLASS_HINTS):
+                    return actor
+            return {
+                "error": "No Boss/Champion-tier Character in the PIE world.",
+                "matched_on": "class name containing any of %s"
+                              % (VigEncounterTools._BOSS_CLASS_HINTS,),
+                "characters_present": [a.get_class().get_name() for a in actors],
+            }
+
+        def names(actor):
+            label = common.try_read(
+                lambda: actor.get_actor_label(), default="")
+            return [n for n in (actor.get_name(), label)
+                    if isinstance(n, str) and n]
+
+        for actor in actors:
+            if actor_label in names(actor):
+                return actor
+
+        needle = actor_label.lower()
+        matches = [a for a in actors
+                   if any(needle in n.lower() for n in names(a))]
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            return {
+                "error": "No Character matches '%s' by name or editor label."
+                         % actor_label,
+                "candidates": ["%s (label %s)" % (a.get_name(),
+                                                  names(a)[-1] if names(a) else "?")
+                               for a in actors],
+            }
+        return {
+            "error": "'%s' is ambiguous." % actor_label,
+            "matches": [a.get_name() for a in matches],
+        }
+
+    @staticmethod
+    def _owned_gameplay_tags(boss):
+        """Every gameplay tag the boss's ASC currently owns, enumerated.
+
+        Two dead ends preceded this, and both were name errors rather than
+        missing functionality:
+
+        1. unreal.GameplayTag.request_gameplay_tag(str) -- FGameplayTag::
+           RequestGameplayTag is a plain static with no UFUNCTION
+           (GameplayTagContainer.h:60), so it is absent from Python entirely.
+        2. unreal.BlueprintGameplayTagLibrary.* -- UBlueprintGameplayTagLibrary
+           carries meta=(ScriptName="GameplayTagLibrary")
+           (BlueprintGameplayTagLibrary.h:14), so Python publishes it as
+           unreal.GameplayTagLibrary and the BlueprintGameplayTagLibrary name
+           does not exist. vigil_combat_driver.py:196 has been calling the
+           correct name all along.
+
+        The same trap sat one line above the tag block:
+        UAbilitySystemBlueprintLibrary declares meta=(ScriptName=
+        "AbilitySystemLibrary") (AbilitySystemBlueprintLibrary.h:68), so
+        unreal.AbilitySystemBlueprintLibrary is equally imaginary. The ASC now
+        comes from AGothicCharacterBase::GetGothicASC, a BlueprintPure UFUNCTION
+        (GothicCharacterBase.h:67-68), with the correctly-named engine library
+        as the fallback for a non-Gothic pawn.
+
+        Enumerate, never probe: GetOwnedGameplayTags returns the whole container
+        (BlueprintGameplayTagLibrary.h:285), so a state tag nobody thought to
+        list still shows up.
+        """
+        asc = None
+        asc_attempts = []
+        for describe, fetch in (
+            ("AGothicCharacterBase::GetGothicASC (GothicCharacterBase.h:67-68)",
+             lambda: boss.get_gothic_asc()),
+            ("AbilitySystemLibrary.get_ability_system_component "
+             "(AbilitySystemBlueprintLibrary.h:75)",
+             lambda: unreal.AbilitySystemLibrary
+             .get_ability_system_component(boss)),
+        ):
+            try:
+                candidate = fetch()
+            except Exception as exc:
+                asc_attempts.append("%s -> %s: %s"
+                                    % (describe, type(exc).__name__, exc))
+                continue
+            if candidate:
+                asc = candidate
+                break
+            asc_attempts.append("%s -> None" % describe)
+
+        if asc is None:
+            return {"error": "No AbilitySystemComponent reachable on %s. Tried: %s"
+                             % (boss.get_name(), "; ".join(asc_attempts))}
+
+        container = None
+        tag_attempts = []
+        for describe, fetch in (
+            ("GameplayTagLibrary.get_owned_gameplay_tags(ASC) "
+             "(BlueprintGameplayTagLibrary.h:285)",
+             lambda: unreal.GameplayTagLibrary.get_owned_gameplay_tags(asc)),
+            ("GameplayTagLibrary.get_owned_gameplay_tags via "
+             "conv_object_to_gameplay_tag_asset_interface "
+             "(BlueprintGameplayTagLibrary.h:288-289)",
+             lambda: unreal.GameplayTagLibrary.get_owned_gameplay_tags(
+                 unreal.GameplayTagLibrary
+                 .conv_object_to_gameplay_tag_asset_interface(asc))),
+        ):
+            try:
+                container = fetch()
+            except Exception as exc:
+                tag_attempts.append("%s -> %s: %s"
+                                    % (describe, type(exc).__name__, exc))
+                continue
+            if container is not None:
+                break
+
+        if container is None:
+            return {"error": "Could not read owned tags off %s's ASC. Tried: %s"
+                             % (boss.get_name(), "; ".join(tag_attempts))}
+
+        try:
+            tags = unreal.GameplayTagLibrary.break_gameplay_tag_container(
+                container)   # BlueprintGameplayTagLibrary.h:200
+            return sorted(
+                str(unreal.GameplayTagLibrary.get_tag_name(t))   # :57
+                for t in tags)
+        except Exception as exc:
+            return {"error": "break_gameplay_tag_container/get_tag_name failed "
+                             "on a container that DID resolve: %s: %s"
+                             % (type(exc).__name__, exc)}
 
     @staticmethod
     def _get_world():
