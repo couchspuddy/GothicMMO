@@ -72,52 +72,131 @@ class VigEncounterTools(unreal.ToolsetDefinition):
             ),
         }
 
-        # Health from ASC
-        try:
-            asc = unreal.AbilitySystemBlueprintLibrary \
-                .get_ability_system_component(boss)
-            if asc:
-                # Read health attributes
-                for attr_name in [
-                    "Health", "MaxHealth", "AttackPower", "Defense"
-                ]:
-                    try:
-                        val = asc.get_gameplay_attribute_value(
-                            unreal.GameplayAttribute(
-                                attribute_name=attr_name
-                            )
-                        )
-                        result[attr_name] = val
-                    except Exception:
-                        pass
+        # ── Vitals ───────────────────────────────────────────────────────────
+        #
+        # This used to build unreal.GameplayAttribute(attribute_name="Health")
+        # and hand it to get_gameplay_attribute_value. That can never work:
+        # FGameplayAttribute::AttributeName is a VisibleAnywhere display-only
+        # cache DERIVED from the payload (AttributeSet.h:84, 141, 150-151), while
+        # the field that actually identifies the attribute is the TFieldPath
+        # `Attribute` (:159-163) -- null when the struct is built from a string.
+        # Every read failed into a bare `except: pass`, so Health, MaxHealth and
+        # health_percent silently vanished and the dump looked merely terse.
+        #
+        # The fix is not a cleverer FGameplayAttribute: it is to use the path
+        # that already works everywhere else in this harness. AGothicCharacterBase
+        # exposes BlueprintPure convenience getters (GothicCharacterBase.h:77-90)
+        # and vigil_pie_toolset.list_combatants has been reading health through
+        # them all along.
+        #
+        # Loud on purpose. The boss search below matches on CLASS NAME, so it can
+        # land on a Character that is not an AGothicCharacterBase at all; that has
+        # to read as a harness failure, never as a dump that happens to omit
+        # health. There is no path through this function that returns without
+        # Health and MaxHealth.
+        missing = [name for name in ("get_health", "get_max_health")
+                   if not hasattr(boss, name)]
+        if missing:
+            raise LookupError(
+                "%s (%s) does not expose %s. Tried the AGothicCharacterBase "
+                "BlueprintPure getters GetHealth/GetMaxHealth "
+                "(GothicCharacterBase.h:77-81); this actor matched the boss "
+                "class-name filter but is not a Gothic character."
+                % (result["actor"], result["class"], " and ".join(missing)))
 
-                if "Health" in result and "MaxHealth" in result:
-                    max_hp = result["MaxHealth"]
-                    if max_hp > 0:
-                        result["health_percent"] = round(
-                            result["Health"] / max_hp * 100, 1
-                        )
+        result["Health"] = float(boss.get_health())
+        result["MaxHealth"] = float(boss.get_max_health())
+        if result["MaxHealth"] > 0:
+            result["health_percent"] = round(
+                result["Health"] / result["MaxHealth"] * 100, 1
+            )
+        else:
+            result["health_percent"] = None
+            result["health_warning"] = (
+                "MaxHealth is 0 -- attributes are not initialised on this pawn.")
 
-                # Check state tags
-                state_tags = [
-                    "State.Dead",
-                    "State.PhaseTransition",
-                    "State.Attacking",
-                    "State.Stunned",
-                ]
-                active_states = []
-                for tag_str in state_tags:
-                    try:
-                        tag = unreal.GameplayTag.request_gameplay_tag(
-                            tag_str
-                        )
-                        if asc.has_matching_gameplay_tag(tag):
-                            active_states.append(tag_str)
-                    except Exception:
-                        pass
-                result["active_state_tags"] = active_states
-        except Exception as e:
-            result["asc_error"] = str(e)
+        # AttackPower and Defense have no character-level getter, so they come
+        # off the attribute set directly. GetAttributeSet is BlueprintPure
+        # (GothicCharacterBase.h:70-71); each attribute is a BlueprintReadOnly
+        # FGameplayAttributeData UPROPERTY (GothicAttributeSet.h:148-155) whose
+        # CurrentValue is itself BlueprintReadOnly (AttributeSet.h:53-54). All
+        # reflected, no FGameplayAttribute construction anywhere.
+        attr_set = boss.get_attribute_set()
+        if attr_set is None:
+            result["attribute_set_error"] = (
+                "GetAttributeSet() returned null -- AttackPower/Defense "
+                "unreadable on this pawn.")
+        else:
+            for label, prop in (("AttackPower", "attack_power"),
+                                ("Defense", "defense")):
+                try:
+                    result[label] = float(
+                        attr_set.get_editor_property(prop)
+                        .get_editor_property("current_value"))
+                except Exception as exc:
+                    result[label] = {
+                        "error": "%s.%s.current_value: %s: %s"
+                                 % ("GothicAttributeSet", prop,
+                                    type(exc).__name__, exc)}
+
+        # ── Active gameplay tags ─────────────────────────────────────────────
+        #
+        # Enumerated off the ASC, not probed against a hardcoded list.
+        #
+        # The old probe called unreal.GameplayTag.request_gameplay_tag(str).
+        # FGameplayTag::RequestGameplayTag is a plain static C++ function with no
+        # UFUNCTION and no ScriptMethod alias (GameplayTagContainer.h:60), so that
+        # attribute does not exist in Python at all -- every iteration raised into
+        # `except: pass` and active_state_tags was ALWAYS an empty list. A boss
+        # mid-phase-transition and a boss standing idle produced identical output.
+        #
+        # UBlueprintGameplayTagLibrary is the reflected surface:
+        #   GetOwnedGameplayTags   (BlueprintGameplayTagLibrary.h:285)
+        #   BreakGameplayTagContainer (:200)
+        #   GetTagName             (:57)
+        # None of them need a string-to-tag conversion, so the whole failure mode
+        # is gone rather than papered over.
+        asc = common.try_read(
+            lambda: unreal.AbilitySystemBlueprintLibrary
+            .get_ability_system_component(boss), default=None)
+        if asc is None:
+            result["active_state_tags"] = {
+                "error": "No AbilitySystemComponent on this boss -- gameplay "
+                         "tags unreadable."}
+        else:
+            tags = None
+            for attempt in (
+                lambda: unreal.BlueprintGameplayTagLibrary
+                .get_owned_gameplay_tags(asc),
+                lambda: unreal.BlueprintGameplayTagLibrary
+                .get_owned_gameplay_tags(
+                    unreal.BlueprintGameplayTagLibrary
+                    .conv_object_to_gameplay_tag_asset_interface(asc)),
+            ):
+                try:
+                    tags = attempt()
+                    if tags is not None:
+                        break
+                except Exception:
+                    continue
+
+            if tags is None:
+                result["active_state_tags"] = {
+                    "error": "BlueprintGameplayTagLibrary.get_owned_gameplay_tags "
+                             "did not resolve on this build (tried the ASC "
+                             "directly and via "
+                             "conv_object_to_gameplay_tag_asset_interface)."}
+            else:
+                try:
+                    broken = unreal.BlueprintGameplayTagLibrary \
+                        .break_gameplay_tag_container(tags)
+                    result["active_state_tags"] = sorted(
+                        str(unreal.BlueprintGameplayTagLibrary.get_tag_name(t))
+                        for t in broken)
+                except Exception as exc:
+                    result["active_state_tags"] = {
+                        "error": "break_gameplay_tag_container/get_tag_name "
+                                 "failed: %s: %s" % (type(exc).__name__, exc)}
 
         # Blackboard: phase and transition state.
         #
