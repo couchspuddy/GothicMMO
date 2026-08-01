@@ -185,6 +185,29 @@ void UGothicAbilitySystemComponent::RegisterAbilitySlot(
     SlotToAbilityMap.Add(Slot, Handle);
 }
 
+FGameplayEffectContextHandle UGothicAbilitySystemComponent::MakeDamageContext(
+    UAbilitySystemComponent* SourceASC,
+    AActor* SourceAvatar)
+{
+    if (!SourceASC)
+    {
+        return FGameplayEffectContextHandle();
+    }
+
+    FGameplayEffectContextHandle Context = SourceASC->MakeEffectContext();
+
+    if (SourceAvatar)
+    {
+        Context.AddSourceObject(SourceAvatar);
+
+        // Both slots are the avatar: instigator drives AttackPower and the
+        // Killer attribution, effect causer drives hit feedback. See the header.
+        Context.AddInstigator(SourceAvatar, SourceAvatar);
+    }
+
+    return Context;
+}
+
 void UGothicAbilitySystemComponent::ApplyEffectToASC(
     UAbilitySystemComponent* TargetASC,
     TSubclassOf<UGameplayEffect> EffectClass,

@@ -1,6 +1,7 @@
 // GA_HuntersStrike.cpp
 
 #include "AbilitySystem/GA_HuntersStrike.h"
+#include "AbilitySystem/GothicAttributeSet.h"
 #include "AI/GothicEnemyBase.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "DrawDebugHelpers.h"
@@ -85,6 +86,18 @@ void UGA_HuntersStrike::PerformMeleeTrace()
     DrawDebugSphere(GetWorld(), End, HitSphereRadius, 12, FColor::Red, false, 1.0f);
 #endif
 
+    // AttackPowerCoefficient is a coefficient on the wielder's AttackPower, so
+    // it has to be resolved into a number of hit points before it goes out as
+    // the flat Data.Damage SetByCaller. Read off the source ASC — the player's
+    // lives on the PlayerState — so a weapon or buff that raises AttackPower
+    // raises the strike with it.
+    const UAbilitySystemComponent* SourceASC = GetAbilitySystemComponentFromActorInfo();
+    const float AttackPower = SourceASC
+        ? SourceASC->GetNumericAttribute(UGothicAttributeSet::GetAttackPowerAttribute())
+        : 0.f;
+
+    const float RawDamage = AttackPowerCoefficient * AttackPower;
+
     TArray<AActor*> AlreadyHit;
 
     for (const FHitResult& Hit : HitResults)
@@ -106,7 +119,10 @@ void UGA_HuntersStrike::PerformMeleeTrace()
             }
         }
 
-        ApplyDamageToTarget(HitActor, DamageEffectClass, DamageMultiplier);
+        // Resolve the coefficient against AttackPower here. ApplyDamageToTarget
+        // takes FLAT damage — the GEs have no multiplier semantics — so passing
+        // the raw coefficient made the strike deal 0.5 damage, floored to 1.
+        ApplyDamageToTarget(HitActor, DamageEffectClass, RawDamage);
         AlreadyHit.Add(HitActor);
 
         // Super meter gain on hit

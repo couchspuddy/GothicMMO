@@ -68,11 +68,15 @@ protected:
     /**
      * Raw damage sent as the Data.Damage SetByCaller when the charge connects.
      *
-     * 45 raw becomes ~57 after the pipeline (+20 boss AttackPower, -8 player
+     * 45 raw becomes 57 after the pipeline (+20 boss AttackPower, -8 player
      * Defense), roughly 24% of the player's ~242 pool. Sized — in
      * UBTTask_BossCharge, from which this is carried over unchanged — to make
      * the charge the most expensive thing the boss does that the player can see
      * coming, without two-shotting anyone.
+     *
+     * True only since 2026-08-01. The context used to name the AIController as
+     * instigator; a Controller has no ASC, so the +20 was silently dropped and
+     * the charge landed 37. Fixed by stamping the boss pawn as instigator.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge")
     float ChargeDamage = 45.f;

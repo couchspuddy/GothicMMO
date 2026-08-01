@@ -52,6 +52,20 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Combat")
     bool IsHitboxActive() const { return bHitboxActive; }
 
+    /**
+     * True if this hitbox damaged Target within the last WindowSeconds.
+     *
+     * Exists so graph-side direct damage can tell that the swing already paid
+     * out and stand down, WITHOUT inspecting the montage's notify list.
+     * UGothicGameplayAbility::IsHitboxDrivenMelee does inspect that list, which
+     * makes the anti-double-apply safety a property of the asset: FeralRend is
+     * suppressed only because it shares Melee_A_Montage with the Claw, so
+     * retiming or removing that notify would quietly re-arm the duplicate.
+     * This answer comes from what actually happened instead.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Combat")
+    bool HasRecentlyDamaged(const AActor* Target, float WindowSeconds = 1.0f) const;
+
 protected:
     virtual void BeginPlay() override;
 
@@ -83,6 +97,13 @@ private:
     /** Actors already hit during this swing — prevents multi-hit per attack. */
     UPROPERTY()
     TArray<TObjectPtr<AActor>> AlreadyHitThisSwing;
+
+    /**
+     * When each actor was last damaged by this hitbox (world seconds).
+     * Survives DisableHitbox — HasRecentlyDamaged has to answer honestly for a
+     * graph-side call that arrives a frame or two after the window closed.
+     */
+    TMap<TWeakObjectPtr<const AActor>, double> LastDamagedTime;
 
     UFUNCTION()
     void OnHitboxOverlap(

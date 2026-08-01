@@ -36,7 +36,34 @@ class GOTHICMMO_API UGothicAbilitySystemComponent : public UAbilitySystemCompone
 
 public:
     UGothicAbilitySystemComponent();
-    
+
+    /**
+     * THE way a damage effect context is built in Vigil.
+     *
+     * GothicAttributeSet reads the attacker's AttackPower off
+     * Context.GetOriginalInstigatorAbilitySystemComponent(), so the instigator
+     * has to be an actor that can actually answer "what is your ASC?".
+     * MakeEffectContext alone does NOT give you that: it stamps the ASC's
+     * OwnerActor as instigator, and AGothicCharacterBase::InitializeGAS passes
+     * GetOwner() — the Controller — for players and enemies alike. A Controller
+     * has no ASC and implements no IAbilitySystemInterface, so every damage
+     * site that relied on the default silently contributed AttackPower 0.
+     * Measured in PIE 2026-08-01: boss claw landed 7 (15 + 0 - 8) instead of 27.
+     *
+     * The AVATAR is the right instigator, not the owner. It is the pawn that
+     * swung, it implements IAbilitySystemInterface, and it resolves to the same
+     * ASC for a player (whose ASC lives on the PlayerState) as for an enemy
+     * (whose ASC lives on itself). GA_Fire had always done this by hand; this
+     * makes it the one shape every site uses.
+     *
+     * @param SourceASC     ASC that will make the outgoing spec.
+     * @param SourceAvatar  The pawn/actor that dealt the blow. Becomes both the
+     *                      source object and the instigator.
+     */
+    static FGameplayEffectContextHandle MakeDamageContext(
+        UAbilitySystemComponent* SourceASC,
+        AActor* SourceAvatar);
+
     /** Static convenience — applies a GE from one ASC to another without building a full spec inline. */
     static void ApplyEffectToASC(
         UAbilitySystemComponent* TargetASC,

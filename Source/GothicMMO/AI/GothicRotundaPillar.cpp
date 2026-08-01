@@ -420,12 +420,20 @@ void AGothicRotundaPillar::ApplyCollapseDamageAtImpact()
         // Percentage of the VICTIM'S pool, not a flat number.
         //
         // The damage pipeline is FinalDamage = max(1, Raw + SourceAttackPower -
-        // TargetDefense). The pillar has no ASC, so SourceAttackPower is 0 (see
-        // GothicAttributeSet::PostGameplayEffectExecute — the bonus is read off
-        // the instigator precisely so ASC-less sources don't inherit the
-        // victim's own AttackPower). That leaves Defense as the only distortion,
-        // and adding it back here is what makes the post-pipeline result land on
-        // the fraction exactly instead of the fraction minus armour.
+        // TargetDefense), where SourceAttackPower is read off the context's
+        // ORIGINAL INSTIGATOR. The pillar has no ASC, so naming the pillar as
+        // instigator contributes 0 — which is what the +TargetDefense
+        // compensation below assumes, and it is only true because the
+        // AddInstigator call is made explicitly.
+        //
+        // It was NOT true before: the context was built from TargetASC and left
+        // to default, which stamps that ASC's OwnerActor as instigator. For a
+        // player that resolves through the PlayerState to the victim's OWN ASC,
+        // so the ceiling would have hit them for their own AttackPower on top —
+        // and once the other damage sites started resolving instigators
+        // properly, this site's compensation would have been double-counting.
+        // The pillar is the source object AND the instigator; it always was in
+        // intent, and now it is in fact.
         const float TargetMaxHealth =
             TargetASC->GetNumericAttribute(UGothicAttributeSet::GetMaxHealthAttribute());
         const float TargetDefense =
@@ -437,6 +445,7 @@ void AGothicRotundaPillar::ApplyCollapseDamageAtImpact()
 
         FGameplayEffectContextHandle Context = TargetASC->MakeEffectContext();
         Context.AddSourceObject(this);
+        Context.AddInstigator(this, this);
 
         FGameplayEffectSpecHandle Spec = TargetASC->MakeOutgoingSpec(
             CollapseDamageEffect, 1.f, Context);

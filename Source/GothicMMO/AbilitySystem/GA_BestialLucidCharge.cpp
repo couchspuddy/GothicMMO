@@ -1,6 +1,7 @@
 // GA_BestialLucidCharge.cpp
 
 #include "AbilitySystem/GA_BestialLucidCharge.h"
+#include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystem/GothicGameplayTags.h"
@@ -145,13 +146,15 @@ void UGA_BestialLucidCharge::SweepChargeDamage()
         }
 
         // Same construction as GothicMeleeHitboxComponent and the BT task the
-        // sweep came from: the source ASC makes the spec so the boss's
-        // AttackPower is read off a real instigator, flat damage rides
-        // Data.Damage, and the target's Defense is subtracted by the attribute
-        // set. Nothing charge-specific about the pipeline.
-        FGameplayEffectContextHandle Context = BossASC->MakeEffectContext();
-        Context.AddSourceObject(Avatar);
-        Context.AddInstigator(GetOwningActorFromActorInfo(), Avatar);
+        // sweep came from: flat damage rides Data.Damage and the target's
+        // Defense is subtracted by the attribute set. Nothing charge-specific.
+        //
+        // The instigator is the boss AVATAR. It used to be
+        // GetOwningActorFromActorInfo() — the AIController — which has no ASC,
+        // so the boss's AttackPower never reached the pipeline and the charge
+        // landed 37 rather than the 57 its tuning comment claimed.
+        FGameplayEffectContextHandle Context =
+            UGothicAbilitySystemComponent::MakeDamageContext(BossASC, Avatar);
 
         FGameplayEffectSpecHandle Spec = BossASC->MakeOutgoingSpec(
             ChargeDamageEffect, GetAbilityLevel(), Context);

@@ -1,6 +1,7 @@
 // GA_Slicer.cpp
 
 #include "AbilitySystem/GA_Slicer.h"
+#include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AI/GothicEnemyBase.h"
 #include "AbilitySystem/AGothicSlicerProjectile.h"
 #include "AbilitySystemBlueprintLibrary.h"
@@ -108,7 +109,13 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
         {
             if (DamageEffectClass)
             {
-                FGameplayEffectContextHandle DamageContext = SourceASC->MakeEffectContext();
+                // Avatar as instigator, same as GA_Fire. Without it the context
+                // named the ASC's OwnerActor — the PlayerController — and the
+                // player's AttackPower never reached the Slicer's damage.
+                FGameplayEffectContextHandle DamageContext =
+                    UGothicAbilitySystemComponent::MakeDamageContext(
+                        SourceASC, GetAvatarActorFromActorInfo());
+
                 FGameplayEffectSpecHandle DamageSpec =
                     SourceASC->MakeOutgoingSpec(DamageEffectClass, 1.f, DamageContext);
 

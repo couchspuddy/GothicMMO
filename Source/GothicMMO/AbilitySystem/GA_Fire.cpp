@@ -325,9 +325,11 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         }
     }
 
-    FGameplayEffectContextHandle Context = SourceASC->MakeEffectContext();
-    Context.AddSourceObject(Char);
-    Context.AddInstigator(Char, Char);
+    // Unchanged behaviour, now expressed through the shared helper — GA_Fire is
+    // where the avatar-as-instigator pattern was already correct, and it is the
+    // shape every other damage site has been brought up to.
+    FGameplayEffectContextHandle Context =
+        UGothicAbilitySystemComponent::MakeDamageContext(SourceASC, Char);
 
     FGameplayEffectSpecHandle Spec =
         SourceASC->MakeOutgoingSpec(EffectiveDamageGE, GetAbilityLevel(), Context);

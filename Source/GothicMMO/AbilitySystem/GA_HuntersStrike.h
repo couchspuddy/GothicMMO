@@ -48,9 +48,28 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     float HitRange = 200.f;
 
-    /** Damage multiplier. 1.0 = base AttackPower. */
+    /**
+     * Coefficient on the wielder's AttackPower. 1.0 = one AttackPower's worth
+     * of raw damage; 0.5 = half.
+     *
+     * Renamed from DamageMultiplier, which described the intent but not the
+     * behaviour: the value was passed straight through as the flat Data.Damage
+     * SetByCaller, and no damage GE in the project has multiplier semantics
+     * (all three bind Data.Damage to IncomingDamage as a plain AddBase). At the
+     * Blueprint's 0.5 that meant the strike sent 0.5 raw damage and landed
+     * max(1, 0.5 + AttackPower - Defense) — measured as exactly 1.00 against
+     * everything in PIE, because AttackPower was also resolving to 0.
+     *
+     * Now resolved against AttackPower before it is sent, so 0.5 with the
+     * player's AttackPower of 15 sends 7.5 raw. Note the pipeline adds
+     * AttackPower AGAIN as the attacker's flat contribution — that is the
+     * project-wide shape of every damage source, not something specific here.
+     *
+     * A CoreRedirect in DefaultEngine.ini carries the Blueprint's 0.5 across
+     * the rename.
+     */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
-    float DamageMultiplier = 1.0f;
+    float AttackPowerCoefficient = 1.0f;
 
     /** Tags on targets that prevent them from being hit. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
@@ -68,6 +87,15 @@ protected:
     // Base class montage callbacks — override hit window for our damage logic
     virtual void OnMontageHitWindow(FGameplayEventData Payload) override;
 
-    /** Performs the actual sphere trace and applies damage. Server only. */
+    /**
+     * Performs the actual sphere trace and applies damage. Server only.
+     *
+     * This is an AoE, which nothing previously said out loud: it is a
+     * SweepMultiByChannel and it damages EVERY distinct actor the swept sphere
+     * touches, once each. Confirmed in PIE — one swing hit two Thralls standing
+     * ~180uu apart. With HitSphereRadius 80 and HitRange 200 the swept volume is
+     * a 160uu-wide capsule reaching 250uu forward, so a cluster of enemies takes
+     * the strike together. Deliberate, and left as is.
+     */
     void PerformMeleeTrace();
 };
