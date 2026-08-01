@@ -11,6 +11,8 @@
 #include "Abilities/Tasks/AbilityTask_PlayMontageAndWait.h"
 #include "Abilities/Tasks/AbilityTask_WaitGameplayEvent.h"
 #include "Animation/AnimMontage.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
 
 UGothicGameplayAbility::UGothicGameplayAbility()
 {
@@ -51,14 +53,31 @@ bool UGothicGameplayAbility::PlayOptionalMontage()
         return false;
     }
 
+    // bAllowInterruptAfterBlendOut = true is load-bearing, not a preference.
+    // With it false (the engine default), a montage that gets interrupted
+    // AFTER its blend-out has already begun broadcasts nothing at all:
+    // OnMontageEnded takes neither the OnCompleted branch (bInterrupted) nor
+    // the OnInterrupted branch (gated on this very flag) and simply EndTasks.
+    // Since we no longer end on OnBlendOut, that silence would leave the
+    // ability alive forever and deadlock the BT task waiting on it. With the
+    // flag true, that case reaches OnInterrupted. See UE 5.8
+    // AbilityTask_PlayMontageAndWait.cpp OnMontageEnded/OnMontageBlendingOut.
     UAbilityTask_PlayMontageAndWait* MontageTask =
         UAbilityTask_PlayMontageAndWait::CreatePlayMontageAndWaitProxy(
-            this, NAME_None, MontageToPlay, MontagePlayRate);
+            this, NAME_None, MontageToPlay, MontagePlayRate,
+            NAME_None, /*bStopWhenAbilityEnds=*/true,
+            /*AnimRootMotionTranslationScale=*/1.f, /*StartTimeSeconds=*/0.f,
+            /*bAllowInterruptAfterBlendOut=*/true);
 
+    // OnBlendOut is deliberately NOT bound to OnMontageEnd. Blend-out is the
+    // START of the montage's tail, not its end: on Melee_A_Montage at 0.85
+    // rate it fires at 0.921s of a 1.216s swing, so ending there truncated
+    // every attack's recovery and let the next activation restart the montage
+    // mid-swing. The ability now lives until the montage actually ends.
     MontageTask->OnCompleted.AddDynamic(this, &UGothicGameplayAbility::OnMontageEnd);
-    MontageTask->OnBlendOut.AddDynamic(this, &UGothicGameplayAbility::OnMontageEnd);
     MontageTask->OnInterrupted.AddDynamic(this, &UGothicGameplayAbility::OnMontageCancel);
     MontageTask->OnCancelled.AddDynamic(this, &UGothicGameplayAbility::OnMontageCancel);
+    MontageTask->OnBlendOut.AddDynamic(this, &UGothicGameplayAbility::OnMontageBlendOut);
 
     MontageTask->ReadyForActivation();
 
@@ -83,14 +102,65 @@ void UGothicGameplayAbility::OnMontageHitWindow(FGameplayEventData Payload)
     // AOE stun, etc. at the moment the animation connects.
 }
 
+void UGothicGameplayAbility::OnMontageBlendOut()
+{
+    // Blend-out no longer ends the ability. It only arms a watchdog: from here
+    // the montage has at most its blend-out duration left to live, so if
+    // neither OnCompleted nor OnInterrupted has arrived a comfortable margin
+    // after that, something swallowed the callback and the ability would hang.
+    // Belt and braces for the one path the engine only covers while
+    // AbilitySystem.PlayMontage.FireInterruptOnAnimEndInterrupt is on.
+    UWorld* World = GetWorld();
+    if (!World || !MontageToPlay)
+    {
+        return;
+    }
+
+    const float Rate = FMath::Max(MontagePlayRate, KINDA_SMALL_NUMBER);
+    const float Grace = 0.5f;
+    const float Delay = (MontageToPlay->GetDefaultBlendOutTime() / Rate) + Grace;
+
+    World->GetTimerManager().SetTimer(
+        MontageWatchdogHandle, this,
+        &UGothicGameplayAbility::OnMontageWatchdog,
+        FMath::Max(Delay, 0.1f), false);
+}
+
+void UGothicGameplayAbility::OnMontageWatchdog()
+{
+    // Reaching this at all means the montage's end callback never landed.
+    // EndAbility is a no-op if the ability already ended, so this is safe.
+    UE_LOG(LogTemp, Warning,
+        TEXT("%s: montage '%s' ended without an end callback — watchdog ending the ability"),
+        *GetName(), *GetNameSafe(MontageToPlay));
+
+    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+}
+
 void UGothicGameplayAbility::OnMontageEnd()
 {
+    ClearMontageWatchdog();
+
     EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
 }
 
 void UGothicGameplayAbility::OnMontageCancel()
 {
+    ClearMontageWatchdog();
+
     EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+}
+
+void UGothicGameplayAbility::ClearMontageWatchdog()
+{
+    if (MontageWatchdogHandle.IsValid())
+    {
+        if (UWorld* World = GetWorld())
+        {
+            World->GetTimerManager().ClearTimer(MontageWatchdogHandle);
+        }
+        MontageWatchdogHandle.Invalidate();
+    }
 }
 
 bool UGothicGameplayAbility::IsHitboxDrivenMelee() const

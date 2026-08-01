@@ -105,13 +105,28 @@ protected:
     UFUNCTION()
     virtual void OnMontageHitWindow(FGameplayEventData Payload);
 
-    /** Called when the montage finishes normally. Default: EndAbility. */
+    /** Called when the montage finishes normally (OnCompleted). Default: EndAbility. */
     UFUNCTION()
     virtual void OnMontageEnd();
 
     /** Called when the montage is interrupted or cancelled. Default: EndAbility(cancelled). */
     UFUNCTION()
     virtual void OnMontageCancel();
+
+    /**
+     * Called when the montage STARTS blending out. Does not end the ability —
+     * it only arms the watchdog below. Ending here was the bug that cut every
+     * swing's recovery short.
+     */
+    UFUNCTION()
+    virtual void OnMontageBlendOut();
+
+    /** Watchdog fallback: ends the ability if no end callback ever arrives. */
+    UFUNCTION()
+    void OnMontageWatchdog();
+
+    /** Cancels a pending watchdog. Called from both real end paths. */
+    void ClearMontageWatchdog();
 
     // -------------------------------------------------------------------------
     // Centralized damage application
@@ -205,4 +220,7 @@ protected:
 private:
     /** Tri-state cache for IsHitboxDrivenMelee: -1 unresolved, 0 no, 1 yes. */
     mutable int8 CachedHitboxDrivenMelee = -1;
+
+    /** Timer for the montage end watchdog armed at blend-out. */
+    FTimerHandle MontageWatchdogHandle;
 };
