@@ -25,7 +25,8 @@ AGothicSlicerProjectile::AGothicSlicerProjectile()
     ProjectileMovement->bShouldBounce = false;
     ProjectileMovement->ProjectileGravityScale = 0.f;
 
-    InitialLifeSpan = 3.f;
+    // Lifetime is NOT set here. MaxLifetime is the single source of truth and is
+    // applied in BeginPlay — see the note there.
 }
 
 void AGothicSlicerProjectile::BeginPlay()
@@ -37,11 +38,15 @@ void AGothicSlicerProjectile::BeginPlay()
         CollisionComponent->IgnoreActorWhenMoving(ProjectileInstigator, true);
     }
 
-    GetWorldTimerManager().SetTimer(
-        LifetimeTimerHandle,
-        [this]() { Destroy(); },
-        MaxLifetime,
-        false);
+    // One destruction path, one tunable. This actor used to carry two independent
+    // 3.0s timers — InitialLifeSpan in the constructor and a MaxLifetime timer
+    // here — so editing MaxLifetime changed nothing: whichever fired first won,
+    // and they were set to the same value. MaxLifetime is the property a designer
+    // can see and edit, so it wins; the engine's lifespan is the mechanism.
+    //
+    // Either way expiry routes through Destroyed(), which broadcasts
+    // OnSlicerExpired — GA_Slicer still gets told, so the ability cannot strand.
+    SetLifeSpan(MaxLifetime);
 }
 
 void AGothicSlicerProjectile::InitializeProjectile(AActor* InInstigator)

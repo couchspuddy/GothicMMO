@@ -43,6 +43,11 @@ protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Slicer")
     TObjectPtr<UProjectileMovementComponent> ProjectileMovement;
 
+    /**
+     * Seconds before the projectile despawns. The ONLY lifetime control on this
+     * actor — applied via SetLifeSpan in BeginPlay, which also overrides anything
+     * set in the Blueprint's Initial Life Span field.
+     */
     UPROPERTY(EditDefaultsOnly, Category = "Gothic|Slicer")
     float MaxLifetime = 3.f;
 
@@ -54,5 +59,4 @@ private:
     UPROPERTY()
     TObjectPtr<AActor> ProjectileInstigator;
 
-    FTimerHandle LifetimeTimerHandle;
 };

@@ -124,15 +124,24 @@ bool UGothicInventoryComponent::EquipItem(const FGuid& InstanceID)
         return false;
     }
 
-    // Unequip current item in that slot first
+    // Copy BEFORE touching Items. `Item` points INTO the Items array, and the
+    // unequip below does Items.Add() — a reallocation there left the old code
+    // reading freed memory on the very next line. Copy first, then never
+    // dereference the pointer again.
+    const FGothicItemInstance ItemCopy = *Item;
+    Item = nullptr;
+
+    // Remove before unequipping, not after. UnequipSlot now refuses at
+    // MaxInventorySize, and a swap at a full inventory is net-zero — taking this
+    // item out first guarantees the outgoing one has somewhere to land.
+    RemoveItem(InstanceID);
+
+    // Unequip whatever is in that slot; it returns to inventory.
     if (EquippedItems.Contains(Slot))
     {
         UnequipSlot(Slot);
     }
 
-    // Move from inventory to equipped
-    FGothicItemInstance ItemCopy = *Item;
-    RemoveItem(InstanceID);
     EquippedItems.Add(Slot, ItemCopy);
     ApplyEquipmentStats(Slot, ItemCopy);
 
@@ -151,6 +160,20 @@ bool UGothicInventoryComponent::UnequipSlot(EGothicEquipSlot Slot)
     }
 
     FGothicItemInstance Unequipped = EquippedItems[Slot];
+
+    // The cap is checked BEFORE anything is torn down. AddItem refuses at
+    // MaxInventorySize; this path used to Items.Add() unconditionally, so
+    // unequipping into a full inventory silently pushed it over the cap. Failing
+    // here leaves the item equipped, which is the recoverable state — dropping it
+    // on the floor would be a design decision, not a repair.
+    if (Items.Num() >= MaxInventorySize)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("Inventory: Cannot unequip slot %d — inventory full (%d/%d). Item stays equipped."),
+            (int32)Slot, Items.Num(), MaxInventorySize);
+        return false;
+    }
+
     RemoveEquipmentStats(Slot);
     EquippedItems.Remove(Slot);
 
@@ -158,6 +181,17 @@ bool UGothicInventoryComponent::UnequipSlot(EGothicEquipSlot Slot)
     Items.Add(Unequipped);
     RecalculateStrain();
 
+    // Mirror what the equip path broadcasts. Only OnStrainChanged (from
+    // RecalculateStrain) used to fire, so GothicInventoryWidget refreshed its
+    // strain bar while the item list and equipment panel went stale — and
+    // AGothicPlayerCharacter::OnEquipmentChanged, which is bound to
+    // OnItemEquipped, never ran at all: the weapon slot, mesh, crosshair, ammo
+    // and RefreshMovementSpeed() all kept the unequipped weapon's state.
+    OnItemAdded.Broadcast(Unequipped);
+
+    // An empty instance is the "slot is now bare" signal — OnEquipmentChanged
+    // reads Item.Definition and clears the weapon slot when it is null.
+    OnItemEquipped.Broadcast(Slot, FGothicItemInstance());
 
     return true;
 }
@@ -568,7 +602,22 @@ void UGothicInventoryComponent::ApplyEquipmentStats(EGothicEquipSlot Slot, const
             FGameplayTag::RequestGameplayTag(Pair.Key), Pair.Value);
     }
 
-    FActiveGameplayEffectHandle Handle = ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+    // A failed application returns an invalid handle. Storing it anyway left a
+    // dead entry in ActiveStatEffects that RemoveEquipmentStats then skips, so
+    // the slot looked stat-bearing forever while contributing nothing — and the
+    // failure itself was silent.
+    const FActiveGameplayEffectHandle Handle = ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+    if (!Handle.WasSuccessfullyApplied())
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("Inventory: Equipment stat effect failed to apply for slot %d (%s) — ")
+            TEXT("the item is equipped but grants no stats."),
+            (int32)Slot,
+            Item.Definition ? *Item.Definition->ItemID.ToString() : TEXT("Unknown"));
+        ActiveStatEffects.Remove(Slot);
+        return;
+    }
+
     ActiveStatEffects.Add(Slot, Handle);
 }
 

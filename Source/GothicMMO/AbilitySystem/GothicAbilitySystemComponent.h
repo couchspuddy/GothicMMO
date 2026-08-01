@@ -99,8 +99,15 @@ public:
     float GetCooldownRemainingForSlot(EGothicAbilitySlot Slot) const;
 
     /**
-     * Returns the total cooldown duration for the active cooldown on a slot.
-     * 0 if no cooldown is active. Used by HUD for fill-percentage calculation.
+     * Returns the designed total cooldown duration for a slot, whether or not a
+     * cooldown is currently running — the HUD needs it as the denominator of
+     * Remaining/Total on every frame, not only while the ability is recharging.
+     *
+     * Returns 0 only when the slot's duration has never been observed: an
+     * ability with a SetByCaller duration (GA_Fire, whose interval comes from the
+     * equipped weapon's fire rate) has no static magnitude to read, so its total
+     * is learned from the first cooldown it runs and remembered after that.
+     * Callers must still treat 0 as "unknown" and not divide by it.
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|Abilities")
     float GetCooldownTotalForSlot(EGothicAbilitySlot Slot) const;
@@ -123,4 +130,12 @@ public:
 protected:
     /** Maps slot enum → ability spec handle for quick input lookup. */
     TMap<EGothicAbilitySlot, FGameplayAbilitySpecHandle> SlotToAbilityMap;
+
+    /**
+     * Last observed full cooldown duration per slot, for abilities whose duration
+     * is a SetByCaller and therefore unreadable from the GE CDO. Written while a
+     * cooldown is running, read back once it ends. Mutable because the getter is
+     * const and this is a cache, not state.
+     */
+    mutable TMap<EGothicAbilitySlot, float> LastObservedCooldownTotals;
 };

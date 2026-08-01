@@ -1,6 +1,13 @@
 // GothicItemDefinition.cpp
 
 #include "Items/GothicItemDefinition.h"
+#include "Game/GothicDeterminism.h"
+
+// Every roll below goes through FGothicDeterminism rather than FMath directly.
+// Off (the default) it IS FMath. On, the whole starting kit — 10 pieces, 2
+// secondaries each out of a pool where 11 entries are Damage_* percentages —
+// rolls the same way every session, which is the only way a damage measurement
+// taken on Tuesday means anything on Wednesday.
 
 FGothicItemInstance UGothicItemDefinition::RollInstance() const
 {
@@ -13,10 +20,10 @@ FGothicItemInstance UGothicItemDefinition::RollInstance() const
 	Instance.CurrentStars = 0;
 
 	// Roll star ceiling within range
-	Instance.StarCeiling = FMath::RandRange(MinStarCeiling, MaxStarCeiling);
+	Instance.StarCeiling = FGothicDeterminism::RandRange(MinStarCeiling, MaxStarCeiling);
 
 	// Roll primary stat
-	Instance.PrimaryStatValue = FMath::FRandRange(PrimaryStatRange.X, PrimaryStatRange.Y);
+	Instance.PrimaryStatValue = FGothicDeterminism::FRandRange(PrimaryStatRange.X, PrimaryStatRange.Y);
 
 	// Roll secondaries — pick random stats from the pool without repeats
 	if (SecondaryStatSlots > 0 && SecondaryStatPool.Num() > 0)
@@ -30,7 +37,7 @@ FGothicItemInstance UGothicItemDefinition::RollInstance() const
 		const int32 NumToRoll = FMath::Min(SecondaryStatSlots, SecondaryStatPool.Num());
 		for (int32 i = 0; i < NumToRoll; ++i)
 		{
-			const int32 PickIdx = FMath::RandRange(0, AvailableIndices.Num() - 1);
+			const int32 PickIdx = FGothicDeterminism::RandRange(0, AvailableIndices.Num() - 1);
 			const int32 PoolIdx = AvailableIndices[PickIdx];
 			AvailableIndices.RemoveAtSwap(PickIdx);
 
@@ -38,7 +45,7 @@ FGothicItemInstance UGothicItemDefinition::RollInstance() const
 
 			FGothicStatRoll Roll;
 			Roll.StatType = Range.StatType;
-			Roll.Value = FMath::FRandRange(Range.MinValue, Range.MaxValue);
+			Roll.Value = FGothicDeterminism::FRandRange(Range.MinValue, Range.MaxValue);
 			Instance.SecondaryStats.Add(Roll);
 		}
 	}

@@ -288,9 +288,14 @@ public:
     const UGothicWeaponData* GetActiveWeaponData() const;
 
     /**
-     * Gear Power of the copy in the active weapon slot, or 0 when the slot was
+     * Gear Power of the item in the active weapon slot, or 0 when the slot was
      * filled from the Blueprint default loadout rather than a rolled drop.
-     * Callers treat 0 as "baseline, no scaling" — see UGA_Fire::PerformFireTrace.
+     *
+     * Has no callers anywhere in Source/ — in particular NOT
+     * UGA_Fire::PerformFireTrace, which the old comment named and which never
+     * consults it. It exists for weapon damage scaling that has not been
+     * implemented. Do not assume equipping a higher-tier weapon changes damage
+     * through this path.
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
     int32 GetActiveGearPower() const;

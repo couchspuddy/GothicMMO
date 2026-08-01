@@ -1666,9 +1666,18 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
     if (Item.Definition && Item.Definition->IsWeapon())
     {
         WeaponSlots[WeaponIndex].WeaponData = Item.Definition->WeaponData;
-        // Carry the rolled copy's Gear Power across. Without this the slot keeps
-        // only the shared archetype asset, and every copy of a Revolver deals
-        // identical damage regardless of what it rolled.
+
+        // Carry the item's Gear Power across so the slot knows its tier.
+        //
+        // This does NOT make two Revolvers differ, whatever the comment here used
+        // to claim. FGothicItemInstance::GearPower is set from
+        // UGothicItemDefinition::GetGearPower(), which is `GearTier * 100` — a
+        // property of the definition, identical for every copy rolled from it.
+        // Per-copy variation lives in the rolled secondaries, not here.
+        //
+        // Nothing currently reads it either: GetActiveGearPower() has no callers
+        // anywhere in Source/, and GA_Fire's damage does not consult the slot's
+        // GearPower. It is stored for the damage scaling that has not been built.
         WeaponSlots[WeaponIndex].GearPower = Item.GearPower;
         WeaponSlots[WeaponIndex].InitFromData();
     }

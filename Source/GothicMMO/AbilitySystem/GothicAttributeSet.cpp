@@ -11,6 +11,7 @@
 #include "Engine/Engine.h"
 #include "Character/GothicCharacterBase.h"
 #include "AI/GothicEnemyBase.h"
+#include "Game/GothicDeterminism.h"
 
 UGothicAttributeSet::UGothicAttributeSet()
 {
@@ -187,8 +188,13 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
         // Evasion is rolled here rather than at the damage source: this runs on
         // the server only (IncomingDamage is never replicated), so the roll is
         // authoritative and a predicting client cannot influence it.
+        // Routed through FGothicDeterminism so a measurement run can switch the
+        // dice off (vigil.Deterministic 1). Armor rolls 2-5% evasion per piece,
+        // so a kitted run carries a double-digit chance of an incoming hit
+        // silently vanishing — which is enough to corrupt any enemy-DPS or
+        // player-TTK number taken across sessions. Unseeded by default.
         const float Evasion = GetEvasionChance();
-        if (Evasion > 0.f && FMath::FRandRange(0.f, 100.f) < Evasion)
+        if (Evasion > 0.f && FGothicDeterminism::FRandRange(0.f, 100.f) < Evasion)
         {
             // Evaded — no health change, and deliberately no combat-state
             // notification, since nothing landed.
