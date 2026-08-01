@@ -122,6 +122,27 @@ void AGothicBossAIController_BestialLucid::CompletePhase2Transition()
     OnPhaseAdvance(); // generic bookkeeping (Blackboard write, broadcast) + vital freeze below
 }
 
+void AGothicBossAIController_BestialLucid::OnLeashReset()
+{
+    Super::OnLeashReset(); // health restore + CurrentPhase back to 1
+
+    // Order matters only in that all three must happen. The guard is the one
+    // that silently breaks the fight: leave it set and health can cross the
+    // threshold again on the next pull without HandleHealthChanged reacting,
+    // so she stays in Phase 1 forever with no transition and no vital lock.
+    bTransitionTriggered = false;
+
+    if (Blackboard && TransitionPendingBlackboardKey != NAME_None)
+    {
+        Blackboard->SetValueAsBool(TransitionPendingBlackboardKey, false);
+    }
+
+    if (CachedVitalPointComponent)
+    {
+        CachedVitalPointComponent->UnfreezeVitalPoint();
+    }
+}
+
 void AGothicBossAIController_BestialLucid::OnPhaseAdvance()
 {
     Super::OnPhaseAdvance(); // generic bookkeeping, Blackboard write, broadcast

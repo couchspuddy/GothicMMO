@@ -32,7 +32,26 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Gothic|Boss")
 	FOnBossPhaseChanged OnBossPhaseChanged;
 
+	/**
+	 * Leash reset for a boss: the base health restore, plus phase state.
+	 *
+	 * A boss that resets to full health while still in Phase 2 is a boss the
+	 * player can never finish — Phase 2's entry condition is a health threshold
+	 * that has already fired and cannot fire again. Phase and health reset
+	 * together or the encounter is left in a state no fresh pull can resolve.
+	 */
+	virtual void OnLeashReset() override;
+
 protected:
+	/**
+	 * Reset CurrentPhase to 1 when the boss leashes home. Off means she keeps
+	 * her phase across a leash — only coherent alongside
+	 * bRestoreHealthOnLeashReset = false, i.e. a boss that resumes rather than
+	 * resets.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|Boss|Leash")
+	bool bResetPhaseOnLeashReset = true;
+
 	/**
 	 * Called by subclasses when their specific trigger condition for
 	 * advancing to the next phase is met. Increments CurrentPhase,

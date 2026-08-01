@@ -63,9 +63,29 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Enemy")
     float GetExperienceReward() const { return ExperienceReward; }
 
-    /** Called by the AI Controller when combat is entered/exited. */
+    /**
+     * Called by the AI Controller when combat is entered/exited.
+     *
+     * Ignored while the controller is leashing home — see
+     * AGothicEnemyAIController::IsAcceptingCombatTargets. This is the single
+     * choke point every aggro source shares (perception, encounter volumes,
+     * pack propagation), so gating it here is what makes a disengage stick.
+     */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Enemy")
     void SetCombatTarget(AActor* NewTarget);
+
+    /**
+     * Drops the pawn-side combat latch.
+     *
+     * Nothing cleared CombatTarget before this existed. Because
+     * GothicBTService_CombatSync reconciles the pawn against the Blackboard at
+     * 5Hz, a latch left set re-created the Blackboard target within 0.2s of any
+     * disengage — which is why the leash in AGothicEnemyAIController never once
+     * held. Call the controller's ClearCombatTarget rather than this directly
+     * unless you specifically want only the pawn half.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Enemy")
+    void ClearCombatTarget() { CombatTarget = nullptr; }
 
     UFUNCTION(BlueprintPure, Category = "Gothic|Enemy")
     AActor* GetCombatTarget() const { return CombatTarget; }

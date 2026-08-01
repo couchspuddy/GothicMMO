@@ -137,6 +137,19 @@ public:
     void FreezeVitalPoint(int32 LockIndex = -1);
 
     /**
+     * Releases a frozen vital: the point shifts again and the shift timer
+     * restarts (if bShiftOnTimer). The inverse of FreezeVitalPoint, added for
+     * the boss leash reset — a boss who resets to Phase 1 with her Phase 2 vital
+     * still locked is a boss whose weak spot is permanently solved.
+     *
+     * Leaves the vital on whatever index it was frozen at; the next shift moves
+     * it. Re-snapping to index 0 here would teleport the weak spot at a moment
+     * nobody is looking at her.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|VitalPoint")
+    void UnfreezeVitalPoint();
+
+    /**
      * Returns true if the given world position is close enough to the
      * current vital point to count as a vital hit.
      * Called by the damage pipeline to determine bonus damage.
