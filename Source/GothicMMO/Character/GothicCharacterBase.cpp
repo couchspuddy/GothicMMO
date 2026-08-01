@@ -91,24 +91,35 @@ void AGothicCharacterBase::InitializeGAS()
     }
 
     AbilitySystemComponent->GrantStartupAbilities(StartupAbilities, 1);
-    
-
-    for (auto& Ab : StartupAbilities)
-    {
-    }
 }
 
 void AGothicCharacterBase::OnDeath_Implementation(AActor* Killer)
 {
-    if (AbilitySystemComponent->HasMatchingGameplayTag(
-        FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
+    // The ASC is null on the player pawn until PossessedBy runs
+    // InitGASFromPlayerState, and this is reachable from Blueprint and from the
+    // fall-respawn path. Every other method in this file null-checks it; this one
+    // did not, which is the same shape as the respawn crash already fixed.
+    // The tag work is skipped without an ASC — the physical death is not, or the
+    // corpse keeps its collision and keeps walking.
+    if (AbilitySystemComponent)
     {
-        return;
-    }
-    AbilitySystemComponent->AddLooseGameplayTag(
-        FGameplayTag::RequestGameplayTag(FName("State.Dead")));
+        if (AbilitySystemComponent->HasMatchingGameplayTag(
+            FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
+        {
+            return;
+        }
+        AbilitySystemComponent->AddLooseGameplayTag(
+            FGameplayTag::RequestGameplayTag(FName("State.Dead")));
 
-    AbilitySystemComponent->CancelAllAbilities();
+        AbilitySystemComponent->CancelAllAbilities();
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("%s died with no AbilitySystemComponent — State.Dead not applied, so the ")
+            TEXT("re-entry guard is inactive for this death."),
+            *GetName());
+    }
 
     GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 

@@ -2,8 +2,21 @@
 // Manages the player's item inventory, equipped gear, and Resonance Strain.
 // Lives on PlayerState to survive respawns (same pattern as ASC/AttributeSet).
 //
-// The inventory is server-authoritative — all mutations require authority.
-// Clients read the state via replication.
+// NOT replicated, and NOT server-authoritative — despite what this header said
+// until it was checked against the code.
+//
+// The component calls SetIsReplicatedByDefault(true), and nothing else: there is
+// no GetLifetimeReplicatedProps, and neither Items nor EquippedItems carries a
+// Replicated specifier, so no inventory state crosses the wire. Nor is there an
+// authority check on any mutation — AddItem, RemoveItem, EquipItem, UnequipSlot,
+// DismantleItem, RerollSecondaries and ImbueStar are all BlueprintCallable and
+// all run wherever they are called. (RecalculateStrain is the one function that
+// tests HasAuthority, and only to skip applying a GE on a client.)
+//
+// That is survivable today because the game is solo, so the only instance that
+// exists IS the authority. It is a real gap for multiplayer, not a design
+// decision, and closing it is a deliberate piece of work — replicating these
+// arrays and routing mutations through server RPCs — not a comment fix.
 
 #pragma once
 

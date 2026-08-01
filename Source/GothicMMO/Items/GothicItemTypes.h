@@ -55,7 +55,18 @@ enum class EGothicPrimaryStat : uint8
     Conviction  UMETA(DisplayName = "Conviction"),    // Repay — Steadfast, resource gen
 };
 
-/** Secondary stats — flat values rolled on gear. */
+/**
+ * Secondary stats rolled on gear.
+ *
+ * Units vary by entry — these are NOT uniformly "flat values", as this comment
+ * used to say. The eleven Damage_* lines are PERCENTAGES (armor rolls them at
+ * 4-15%), and so are EvasionChance (rolled 2-5%, compared against a 0-100 roll
+ * in UGothicAttributeSet) and AbilityHaste (divided by 100 in UGA_Fire).
+ * Check the consuming code before doing arithmetic with a roll.
+ *
+ * HealingReceived and ReloadSpeed are rollable but deliberately inert — they are
+ * deferred until self-healing and reload animations exist. Not bugs; leave them.
+ */
 UENUM(BlueprintType)
 enum class EGothicSecondaryStat : uint8
 {

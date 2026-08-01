@@ -8,6 +8,7 @@
 #include "TimerManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "Game/GothicGameState.h"
+#include "Game/GothicDeterminism.h"
 
 AGothicGameMode::AGothicGameMode()
 {
@@ -17,6 +18,16 @@ AGothicGameMode::AGothicGameMode()
     PlayerStateClass          = AGothicPlayerState::StaticClass();
     GameStateClass = AGothicGameState::StaticClass();
     // HUDClass and GameStateClass set in Blueprint child BP_GothicGameMode.
+}
+
+void AGothicGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
+{
+    Super::InitGame(MapName, Options, ErrorMessage);
+
+    // Restart the seeded stream at the top of every level load, so run N and run
+    // N+1 draw the same sequence instead of run N+1 continuing where N stopped.
+    // Logs the seed when deterministic mode is on; silent otherwise.
+    FGothicDeterminism::ResetStream();
 }
 
 void AGothicGameMode::PostLogin(APlayerController* NewPlayer)
@@ -75,6 +86,19 @@ AActor* AGothicGameMode::FindPlayerStart_Implementation(AController* Player, con
     {
         // Fallback to default behavior if no player starts exist.
         return Super::FindPlayerStart_Implementation(Player, IncomingName);
+    }
+
+    // Deterministic mode pins the start rather than seeding the pick: a seeded
+    // draw would still move the player when a designer adds a PlayerStart to the
+    // level, and time-to-contact is measured from where the player lands. Sorted
+    // by name because GetAllActorsOfClass order is not contractually stable.
+    if (FGothicDeterminism::IsEnabled())
+    {
+        PlayerStarts.Sort([](const AActor& A, const AActor& B)
+        {
+            return A.GetName() < B.GetName();
+        });
+        return PlayerStarts[0];
     }
 
     // Simple random selection for prototype.
