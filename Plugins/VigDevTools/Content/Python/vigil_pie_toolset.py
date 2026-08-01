@@ -283,21 +283,51 @@ class VigilPIETools(unreal.ToolsetDefinition):
                     lambda: vital.get_editor_property("hit_detection_radius")),
                 "shift_threshold": common.try_read(
                     lambda: vital.get_editor_property("shift_threshold")),
+                # bDebugDrawVital in C++ (GothicVitalPointComponent.h:197). The
+                # Python name drops the bool "b" prefix -- see set_vital_debug_draw.
                 "debug_draw": common.try_read(
-                    lambda: vital.get_editor_property("b_debug_draw_vital")),
+                    lambda: vital.get_editor_property("debug_draw_vital")),
             }
 
+        # In-combat has two sources and only one of them exists per pawn type:
+        # the component is Blueprint-added and only BP_GothicPlayerCharacter has
+        # it, while enemies carry the state on the blackboard's bIsInCombat key
+        # (AGothicEnemyAIController::SetBlackboardTarget, .cpp:98). Report which
+        # one answered -- an unlabelled bool here is how this rotted unnoticed.
+        blackboard = common.blackboard(actor)
         combat = common.component(actor, "GothicCombatStateComponent")
         if combat is not None:
             out["combat_state"] = {
-                "in_combat": common.try_read(lambda: bool(combat.is_in_combat()))}
+                "in_combat": common.try_read(lambda: bool(combat.is_in_combat())),
+                "source": "GothicCombatStateComponent",
+            }
+        elif blackboard is not None:
+            out["combat_state"] = {
+                "in_combat": common.try_read(
+                    lambda: bool(blackboard.get_value_as_bool("bIsInCombat"))),
+                "source": "blackboard bIsInCombat",
+            }
+        else:
+            out["combat_state"] = {
+                "error": "no GothicCombatStateComponent and no blackboard on "
+                         "this pawn -- in-combat state is unreadable"}
 
         # Enemy-only reads. NAME_None on pack_id is the diagnostic for the
         # PackSubsystem registration gap.
         if hasattr(actor, "get_pack_id"):
+            # combat_target comes from the blackboard: the pawn's own CombatTarget
+            # is never cleared (ClearCombatTarget clears only the key,
+            # GothicEnemyAIController.cpp:116-124), so it is reported separately
+            # and labelled as the latched value rather than mistaken for live truth.
             out["pack"] = {
                 "pack_id": common.try_read(lambda: str(actor.get_pack_id())),
                 "combat_target": common.try_read(
+                    lambda: blackboard.get_value_as_object("TargetActor").get_name()
+                    if (blackboard is not None
+                        and common.is_valid(
+                            blackboard.get_value_as_object("TargetActor")))
+                    else None),
+                "combat_target_pawn_latched": common.try_read(
                     lambda: actor.get_combat_target().get_name()
                     if common.is_valid(actor.get_combat_target()) else None),
             }
@@ -425,13 +455,43 @@ class VigilPIETools(unreal.ToolsetDefinition):
                 "set": False,
                 "reason": "%s has no GothicVitalPointComponent" % actor.get_name(),
             })
-        vital.set_editor_property("b_debug_draw_vital", bool(enabled))
+
+        # C++ declares `bool bDebugDrawVital` (GothicVitalPointComponent.h:197).
+        # Unreal's Python bindings strip the leading "b" from BOOL property names
+        # before pythonizing (PyGenUtil::PythonizePropertyName), so the reflected
+        # name is debug_draw_vital, NOT b_debug_draw_vital. This tool asked for
+        # the latter and every call raised -- write and read the same wrong name
+        # and nothing ever reported a mismatch.
+        prop = "debug_draw_vital"
+        try:
+            vital.set_editor_property(prop, bool(enabled))
+        except Exception as exc:
+            return common.as_json({
+                "set": False,
+                "reason": "set_editor_property('%s') failed on %s: %s: %s"
+                          % (prop, actor.get_name(), type(exc).__name__, exc),
+                "cpp_property": "bDebugDrawVital (GothicVitalPointComponent.h:197)",
+                "hint": "If the property was renamed in C++, fix it here rather "
+                        "than letting this tool report a value it never wrote.",
+            })
+
+        readback = vital.get_editor_property(prop)
         common.audit("set_vital_debug_draw\t%s\t%s" % (actor.get_name(), bool(enabled)))
+        if bool(readback) != bool(enabled):
+            # Loud on purpose: a silent no-op here is indistinguishable from a
+            # radius that is genuinely invisible, which is the exact confusion
+            # this tool exists to remove.
+            return common.as_json({
+                "set": False,
+                "actor": actor.get_name(),
+                "requested": bool(enabled),
+                "read_back": bool(readback),
+                "reason": "Write to '%s' did not stick." % prop,
+            })
         return common.as_json({
             "set": True,
             "actor": actor.get_name(),
-            "debug_draw": common.try_read(
-                lambda: vital.get_editor_property("b_debug_draw_vital")),
+            "debug_draw": bool(readback),
         })
 
     @toolset_registry.tool_call

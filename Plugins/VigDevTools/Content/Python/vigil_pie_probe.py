@@ -119,10 +119,36 @@ def _m_vital_location(actor):
 
 @_reader("in_combat")
 def _m_in_combat(actor):
+    """True while this pawn is fighting.
+
+    Two sources, because there are genuinely two -- and the harness only ever
+    read the one the Accursed do not have:
+
+    1. UGothicCombatStateComponent::IsInCombat (GothicCombatStateComponent.h:44).
+       Real, but the component is never created in C++ (no CreateDefaultSubobject
+       anywhere in GothicEnemyBase.cpp) and only BP_GothicPlayerCharacter adds it
+       in Blueprint. On every enemy this column was an error object, which is why
+       the recorded fights came back with an empty in_combat.
+    2. The AI blackboard's bIsInCombat key, written by
+       AGothicEnemyAIController::SetBlackboardTarget (GothicEnemyAIController.cpp:98)
+       and cleared by ClearCombatTarget (:124). This is the enemy-side truth and
+       the same value every BT decorator gates on.
+
+    Note the State.InCombat gameplay tag is NOT a third source for enemies: it is
+    applied only by the component above, so an enemy ASC never carries it.
+    """
     comp = common.component(actor, "GothicCombatStateComponent")
-    if comp is None:
-        raise LookupError("no GothicCombatStateComponent")
-    return bool(comp.is_in_combat())
+    if comp is not None:
+        return bool(comp.is_in_combat())
+
+    bb = common.blackboard(actor)
+    if bb is not None:
+        return bool(bb.get_value_as_bool("bIsInCombat"))
+
+    raise LookupError(
+        "no GothicCombatStateComponent (only BP_GothicPlayerCharacter has one) "
+        "and no blackboard exposing bIsInCombat -- nothing on this pawn knows "
+        "whether it is in combat")
 
 
 @_reader("pack_id")
@@ -133,7 +159,35 @@ def _m_pack_id(actor):
 
 @_reader("combat_target")
 def _m_combat_target(actor):
-    target = actor.get_combat_target()
+    """Who this pawn is currently fighting.
+
+    Reads the blackboard TargetActor key FIRST, not the pawn.
+
+    AGothicEnemyBase::CombatTarget (GothicEnemyBase.h:256) is set by
+    SetCombatTarget (GothicEnemyBase.cpp:294) and then NEVER CLEARED:
+    AGothicEnemyAIController::ClearCombatTarget (GothicEnemyAIController.cpp:116-124)
+    clears the blackboard key and the focus, and leaves the pawn's pointer latched
+    at the last target forever. Sampling get_combat_target() therefore produced a
+    column that went high once and stayed high for the rest of the recording --
+    it could never show a disengage, which is exactly the transition the boss-fight
+    loop is trying to observe.
+
+    The blackboard TargetActor key (set at GothicEnemyAIController.cpp:96, cleared
+    at :122) is the value every BT task actually resolves, and it does go back to
+    None. GothicBTService_CombatSync reconciles the two each tick, so the pawn-side
+    latch remains a useful fallback when no blackboard exists yet.
+    """
+    bb = common.blackboard(actor)
+    if bb is not None:
+        target = bb.get_value_as_object("TargetActor")
+        return target.get_name() if common.is_valid(target) else None
+
+    getter = getattr(actor, "get_combat_target", None)
+    if getter is None:
+        raise LookupError(
+            "no blackboard and no GetCombatTarget -- this pawn has no combat "
+            "target concept (AGothicEnemyBase only)")
+    target = getter()
     return target.get_name() if common.is_valid(target) else None
 
 
