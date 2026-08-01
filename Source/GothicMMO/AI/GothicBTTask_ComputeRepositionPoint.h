@@ -70,7 +70,16 @@ protected:
     UPROPERTY(EditAnywhere, Category = "Reposition")
     float MaxAngleOffset = 110.f;
 
-    /** Distance from the target the computed point sits at. */
+    /**
+     * MAXIMUM distance from the target the computed point sits at.
+     *
+     * Not the exact distance: the strafe orbits at whatever separation the
+     * pawn already has, and only clamps down to this when the pawn is farther
+     * out. Seating the point at this radius unconditionally turned every
+     * reposition into a retreat — an enemy in contact was pushed back out
+     * past its own attack reach, and then had to walk the whole way in again,
+     * which is the orbit-and-never-swing behavior this pairs with.
+     */
     UPROPERTY(EditAnywhere, Category = "Reposition")
     float RepositionRadius = 450.f;
 
