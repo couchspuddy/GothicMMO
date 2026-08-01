@@ -1046,6 +1046,47 @@ void AGothicPlayerCharacter::ConsumeRound()
 
 
         PushAmmoToHUD();
+
+        // Auto-reload on the shot that empties the magazine, not on the next fire
+        // attempt — the player should never have to pull a trigger that does nothing.
+        //
+        // This sits INSIDE the decrement branch on purpose. It is the only place
+        // in the class where a magazine reaches zero by being spent; every other
+        // path to CurrentMagazine = 0 (InitFromData, and the slot-clearing branch
+        // of OnEquipmentChanged) assigns the field directly and never reaches
+        // here, so a weapon swap or an unequip cannot masquerade as an empty gun.
+        if (Slot.CurrentMagazine == 0 && Slot.WeaponData && Slot.WeaponData->bAutoReloadWhenEmpty)
+        {
+            // Nothing below may touch Slot: the reload fires a Blueprint event
+            // that could resize WeaponSlots out from under this reference.
+            TryAutoReload();
+        }
+    }
+}
+
+void AGothicPlayerCharacter::TryAutoReload()
+{
+    // ReloadActiveWeapon fires OnReloadPerformed, a Blueprint event free to do
+    // anything at all — including firing again, which lands back in ConsumeRound.
+    // The guard makes that a no-op rather than a recursion.
+    if (bAutoReloadInProgress)
+    {
+        return;
+    }
+
+    bAutoReloadInProgress = true;
+
+    // Deliberately a single attempt, never a loop. An empty reserve makes
+    // ReloadActiveWeapon return false, and that is the end of it — the player is
+    // dry and must reload or convert Steadfast themselves. Spending a defensive
+    // resource without being asked is a design decision, not part of this.
+    const bool bReloaded = ReloadActiveWeapon();
+
+    bAutoReloadInProgress = false;
+
+    if (bReloaded)
+    {
+        OnAutoReloadPerformed();
     }
 }
 
