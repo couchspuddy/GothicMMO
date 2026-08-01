@@ -214,7 +214,7 @@ protected:
      *     contributed AttackPower 0.
      *   - Magnitude goes out on GothicTags::Data_Damage as a SetByCaller, and
      *     it is FLAT DAMAGE, always. Every damage GE in the project (
-     *     GE_Damage, GE_EnemyMeleeDamage, GE_BossDamage) binds Data.Damage to
+     *     GE_Damage, GE_EnemyMeleeDamage) binds Data.Damage to
      *     IncomingDamage as a plain AddBase — none of them has multiplier
      *     semantics, so a coefficient passed here is consumed as an absolute
      *     number of hit points. Callers holding a coefficient must resolve it

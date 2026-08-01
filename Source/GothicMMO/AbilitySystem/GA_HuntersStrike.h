@@ -78,6 +78,15 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     TSubclassOf<UGameplayEffect> SuperGainOnHitEffect;
 
+    /**
+     * Super meter granted per enemy hit by a strike, sent to SuperGainOnHitEffect
+     * on the GothicTags::Data_SuperMeter SetByCaller. Was a hardcoded 15 in the .cpp;
+     * it is the reference point the ranged per-shot value was derived from, so it
+     * needs to be authorable alongside it.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike", meta = (ClampMin = "0.0"))
+    float SuperGainOnHit = 15.f;
+
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     TSubclassOf<UGameplayEffect> SuperGainOnKillEffect;
 

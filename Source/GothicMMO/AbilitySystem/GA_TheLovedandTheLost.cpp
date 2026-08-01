@@ -1,6 +1,7 @@
 // GA_TheLovedAndTheLost.cpp
 
 #include "AbilitySystem/GA_TheLovedAndTheLost.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "AbilitySystemComponent.h"
 #include "GameplayEffect.h"
 #include "TimerManager.h"
@@ -68,7 +69,7 @@ void UGA_TheLovedAndTheLost::StartRamping()
         if (Spec.IsValid())
         {
             Spec.Data->SetSetByCallerMagnitude(
-                FGameplayTag::RequestGameplayTag(FName("Data.RampMagnitude")), 0.f);
+                GothicTags::Data_RampMagnitude, 0.f);
 
             ActiveRampHandle = CachedASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
         }
@@ -97,7 +98,7 @@ void UGA_TheLovedAndTheLost::TickRamp()
         if (Spec.IsValid())
         {
             Spec.Data->SetSetByCallerMagnitude(
-                FGameplayTag::RequestGameplayTag(FName("Data.RampMagnitude")), NewMagnitude);
+                GothicTags::Data_RampMagnitude, NewMagnitude);
             ActiveRampHandle = CachedASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
         }
     }

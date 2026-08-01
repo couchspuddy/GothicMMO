@@ -64,7 +64,15 @@ public:
         UAbilitySystemComponent* SourceASC,
         AActor* SourceAvatar);
 
-    /** Static convenience — applies a GE from one ASC to another without building a full spec inline. */
+    /**
+     * Static convenience — applies a GE from one ASC to another without building a
+     * full spec inline. Non-damage effects (stuns, debuffs) go through here.
+     *
+     * SourceActor is the attacker and must be the actor that CAUSED the effect: the
+     * spec is made off its ASC through MakeDamageContext, so the instigator is the
+     * attacker. Passing the target here names the victim as its own instigator,
+     * which is what this used to do.
+     */
     static void ApplyEffectToASC(
         UAbilitySystemComponent* TargetASC,
         TSubclassOf<UGameplayEffect> EffectClass,

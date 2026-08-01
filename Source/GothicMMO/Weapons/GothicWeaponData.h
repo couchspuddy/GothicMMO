@@ -281,9 +281,31 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback")
     float RecoilYawSpread = 0.f;
 
-    /** Super meter gained per hit with this weapon. */
+    /**
+     * GE applied to the shooter on a LANDED hit with this weapon (GE_SuperMeterGain
+     * on every DA_Weapon_*). Read by GA_Fire; a miss builds nothing.
+     *
+     * Authored on all 12 weapon assets since they were written, but nothing read it
+     * until now — shooting built no super meter at all, and melee (GA_HuntersStrike)
+     * plus kills were the only sources.
+     */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback")
     TSubclassOf<UGameplayEffect> SuperGainOnHitEffect;
+
+    /**
+     * Super meter granted per landed hit, sent to SuperGainOnHitEffect as the
+     * GothicTags::Data_SuperMeter SetByCaller — the same contract GA_HuntersStrike
+     * uses for melee.
+     *
+     * The default is DERIVED, not designed: melee grants 15 per swing at roughly one
+     * swing a second, and the class-default 171 RPM is 2.85 shots a second, so 5 per
+     * shot puts ranged super income (~14/sec) at parity with melee. At MaxSuperMeter
+     * 100 that is 20 landed shots to a full bar. Wants a real design pass, and per-
+     * weapon values on the 12 DA_Weapon_* assets — a fast Gatling and a bolt-action
+     * should almost certainly not both grant 5.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback", meta = (ClampMin = "0.0"))
+    float SuperGainOnHit = 5.f;
 };
 
 /**
