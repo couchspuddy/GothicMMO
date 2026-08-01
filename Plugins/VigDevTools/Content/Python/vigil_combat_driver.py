@@ -381,18 +381,14 @@ def _weapon_trace(world, start, direction, trace_range, ignore_actors):
     end = unreal.Vector(start.x + direction.x * trace_range,
                         start.y + direction.y * trace_range,
                         start.z + direction.z * trace_range)
-    outcome = unreal.SystemLibrary.line_trace_single(
-        world, start, end, channel, False, list(ignore_actors),
-        unreal.DrawDebugTrace.NONE, True)
-
-    # KismetSystemLibrary.h:1270 returns bool with FHitResult& OutHit, so Python
-    # yields (bHit, HitResult). Guard the shape rather than index blindly.
-    if isinstance(outcome, (tuple, list)) and len(outcome) == 2:
-        did_hit, hit = outcome
-    else:
-        raise LookupError(
-            "SystemLibrary.line_trace_single returned %r, not the (bool, "
-            "HitResult) pair KismetSystemLibrary.h:1270 declares." % (outcome,))
+    # Shape handling lives in common.line_trace, NOT here. KismetSystemLibrary
+    # .h:1270 declares `bool LineTraceSingle(..., FHitResult& OutHit, ...)`,
+    # which implies a (bool, FHitResult) tuple -- but this engine build's
+    # binding returns a BARE FHitResult, and pinning to the header's implied
+    # shape is what made every aim_at_vital call raise. See THE RETURN-SHAPE
+    # TRAP in vigil_pie_common.
+    did_hit, hit, _shape = common.line_trace(
+        world, start, end, channel, ignore_actors=ignore_actors)
 
     if not did_hit:
         return None
@@ -620,9 +616,16 @@ def _a_aim_at_vital(world, step):
     inside the vital sphere, verifies it against the component's own
     IsVitalPointHit, and raises when no such point exists.
 
-    Step fields:
-        actor:  the shooter
-        target: the pawn whose vital to aim at
+    READING THE DAMAGE THIS PRODUCES
+    --------------------------------
+    Do NOT sanity-check VitalDamageMultiplier by dividing a vital number by a
+    body number. The flat terms sit OUTSIDE the multiplier -- the execution is
+    (Raw * VitalMult) + AttackPower - Defense -- so at the session's measured
+    raw of 24.33 against a Thrall (Defense 3, AttackPower 15) a body shot lands
+    36.34 and a geometric vital lands 72.83. That ratio is ~2.06, not the 2.5
+    the multiplier is set to, and 2.06 is CORRECT. The multiplier was
+    independently confirmed at 2.5 (70.84 vital vs 34.34 body on the boss,
+    reconciling to the same formula).
     """
     pawn = _actor(world, step)
     target = common.resolve_actor(world, step["target"])
@@ -658,6 +661,12 @@ def _a_aim_at_vital(world, step):
         "note": "Control rotation reaches the camera NEXT frame; schedule the "
                 "fire step at least ~0.1s after this one. camera_shot_now "
                 "reports what firing on THIS tick would have done.",
+        "damage_reading_note": "Do not divide vital damage by body damage to "
+                              "check VitalDamageMultiplier. The flat terms are "
+                              "outside it: (Raw * VitalMult) + AttackPower - "
+                              "Defense. At raw 24.33 vs a Thrall (Def 3, AP 15) "
+                              "body = 36.34 and vital = 72.83, a ratio of ~2.06 "
+                              "even though the multiplier is 2.5.",
     }
 
 

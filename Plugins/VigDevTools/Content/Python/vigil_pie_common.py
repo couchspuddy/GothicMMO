@@ -392,6 +392,173 @@ def _check_trace_ordinal(value, index, route, channel_name):
                _trace_type_members(type(value))))
 
 
+# --------------------------------------------------------------------------
+# Line tracing
+#
+# THE RETURN-SHAPE TRAP
+# --------------------
+# KismetSystemLibrary.h:1270 declares
+#     static bool LineTraceSingle(..., FHitResult& OutHit, ...)
+# i.e. a bool return plus one out param, which by the documented PyGenUtil rule
+# should surface in Python as the tuple (bool, HitResult).
+#
+# ON THIS ENGINE BUILD IT DOES NOT. unreal.SystemLibrary.line_trace_single
+# returns a BARE FHitResult -- no tuple, no bool. That was measured, not
+# reasoned: aim_at_vital raised
+#     "line_trace_single returned <Struct 'HitResult' {}>, not the (bool,
+#      HitResult) pair KismetSystemLibrary.h:1270 declares"
+# on all six calls of a verification run. The header is not the authority on
+# the binding shape; the running build is. Read FHitResult.bBlockingHit for the
+# boolean the tuple would have carried.
+#
+# This is the third binding-shape assumption to break in this harness (after
+# the meta=(ScriptName=...) renames above and UCollisionProfile never being
+# exported at all), so this helper does not pin to either shape. It accepts the
+# 2-tuple, accepts the bare struct, and raises a named error enumerating what
+# was actually returned if it is neither. Every trace in every toolset routes
+# through here so the two call sites cannot drift apart again -- they already
+# had: vig_blackboard_tools used `bool(hit)` as the truth test, and bool() on a
+# UE struct is unconditionally True, so its LOS readout reported "blocked" on
+# every trace it ever ran.
+# --------------------------------------------------------------------------
+
+class TraceReturnShapeError(LookupError):
+    """line_trace_single returned a shape this harness cannot interpret."""
+
+
+def describe_value(value):
+    """A short, honest description of an arbitrary binding return value."""
+    if isinstance(value, (tuple, list)):
+        return "%s of %d: [%s]" % (
+            type(value).__name__, len(value),
+            ", ".join(type(item).__name__ for item in value))
+    return "%s (%r)" % (type(value).__name__, value)
+
+
+def _looks_like_hit_result(value):
+    """Is this a FHitResult? Three routes, because none alone is dependable.
+
+    isinstance against unreal.HitResult is the real test but assumes that
+    spelling survives; the name check covers a ScriptName rename that keeps the
+    stem; the duck-type check covers a rename that does not. A bool or an int
+    passes none of them, which is what keeps the unknown-shape error reachable.
+    """
+    hit_result_type = getattr(unreal, "HitResult", None)
+    if hit_result_type is not None and isinstance(value, hit_result_type):
+        return True
+    if "HitResult" in type(value).__name__:
+        return True
+    if isinstance(value, (bool, int, float, str, bytes, tuple, list, dict)):
+        return False
+    try:
+        value.get_editor_property("blocking_hit")
+    except Exception:
+        return False
+    return True
+
+
+def hit_blocking(hit):
+    """FHitResult -> bBlockingHit, via whichever access route this build has.
+
+    Never bool(hit): a UE struct has no __bool__, so bool() on it is always
+    True. That exact mistake is what made the AI LOS readout report a blocked
+    line of sight on every call.
+    """
+    routes = []
+    for label, fn in (
+        ("get_editor_property('blocking_hit')",
+         lambda: hit.get_editor_property("blocking_hit")),
+        (".blocking_hit", lambda: hit.blocking_hit),
+    ):
+        routes.append(label)
+        try:
+            return bool(fn())
+        except Exception as exc:
+            routes[-1] = "%s (%s: %s)" % (label, type(exc).__name__, exc)
+    raise TraceReturnShapeError(
+        "could not read bBlockingHit from %s. Tried: %s. Fields the struct "
+        "exposes: %s"
+        % (describe_value(hit), routes,
+           sorted(n for n in dir(hit) if not n.startswith("_"))))
+
+
+def unpack_trace_result(outcome):
+    """(did_hit, hit, shape) from whatever line_trace_single handed back.
+
+    Shape-agnostic by design -- see THE RETURN-SHAPE TRAP above. `shape` is a
+    human-readable label for which form was observed, so a caller can surface
+    it and the next person does not have to rediscover this.
+    """
+    if _looks_like_hit_result(outcome):
+        # This build's actual behaviour: the out param IS the return value.
+        return hit_blocking(outcome), outcome, "bare FHitResult"
+
+    if isinstance(outcome, (tuple, list)):
+        # The header-derived form. Do not assume element order: find the
+        # FHitResult and treat any remaining element as the bool.
+        hits = [v for v in outcome if _looks_like_hit_result(v)]
+        if len(hits) == 1 and len(outcome) == 2:
+            hit = hits[0]
+            flag = next(v for v in outcome if v is not hit)
+            return bool(flag), hit, "(bool, FHitResult) tuple"
+        if len(hits) == 1 and len(outcome) == 1:
+            hit = hits[0]
+            return hit_blocking(hit), hit, "1-tuple wrapping FHitResult"
+
+    raise TraceReturnShapeError(
+        "SystemLibrary.line_trace_single returned %s. This harness accepts a "
+        "bare FHitResult (the shape this engine build actually produces), a "
+        "(bool, FHitResult) pair (the shape KismetSystemLibrary.h:1270's "
+        "`bool LineTraceSingle(..., FHitResult& OutHit, ...)` signature "
+        "implies), or a 1-tuple wrapping a FHitResult -- and nothing else. "
+        "The declared signature is NOT authoritative for the Python binding "
+        "shape; extend unpack_trace_result in vigil_pie_common rather than "
+        "special-casing at the call site."
+        % describe_value(outcome))
+
+
+def line_trace(world, start, end, trace_type, ignore_actors=(),
+               trace_complex=False, ignore_self=True):
+    """Run a line trace and return (did_hit, hit, shape).
+
+    The single trace entry point for every Vigil toolset. `hit` is returned
+    even when did_hit is False, because a non-blocking FHitResult still carries
+    a usable TraceEnd.
+    """
+    outcome = unreal.SystemLibrary.line_trace_single(
+        world, start, end, trace_type, trace_complex, list(ignore_actors),
+        unreal.DrawDebugTrace.NONE, ignore_self)
+    return unpack_trace_result(outcome)
+
+
+def probe_trace_return_shape(world=None):
+    """Report the OBSERVED return shape of line_trace_single on this build.
+
+    Diagnostic only; runs a zero-length Visibility trace at the origin. Exists
+    so the shape is one capabilities call away instead of one failed
+    verification run away.
+    """
+    if world is None:
+        world = pie_world()
+    if world is None:
+        return ("unknown -- not in PIE; line_trace_single needs a world. "
+                "Re-run capabilities during a PIE session.")
+    trace_type, _ = trace_type_for_channel("Visibility")
+    outcome = unreal.SystemLibrary.line_trace_single(
+        world, unreal.Vector(0.0, 0.0, 0.0), unreal.Vector(0.0, 0.0, 1.0),
+        trace_type, False, [], unreal.DrawDebugTrace.NONE, True)
+    try:
+        _, _, shape = unpack_trace_result(outcome)
+    except TraceReturnShapeError as exc:
+        return "UNHANDLED SHAPE -- raw return was %s. %s" % (
+            describe_value(outcome), exc)
+    return ("%s -- raw return %s. KismetSystemLibrary.h:1270 declares "
+            "`bool LineTraceSingle(..., FHitResult& OutHit, ...)`, which "
+            "implies a (bool, FHitResult) tuple; the runtime binding on this "
+            "build differs from the header. Trust this row, not the header."
+            % (shape, describe_value(outcome)))
+
+
 def ai_helper_library():
     """UAIBlueprintHelperLibrary's Python binding.
 

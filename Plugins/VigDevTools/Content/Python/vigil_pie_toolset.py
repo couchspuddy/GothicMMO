@@ -163,6 +163,16 @@ class VigilPIETools(unreal.ToolsetDefinition):
              lambda: common.collision_channel_table()["trace_types"])
         _row("Weapon trace type (what aim_at_vital fires on)",
              lambda: common.trace_type_for_channel("Weapon")[1])
+        # The binding SHAPE, not just the channel. KismetSystemLibrary.h:1270
+        # declares `bool LineTraceSingle(..., FHitResult& OutHit, ...)`, which
+        # implies Python yields (bool, FHitResult) -- and on this build it does
+        # not, it yields a bare FHitResult. Assuming the header cost a whole
+        # verification run (six raised calls) and left the AI LOS readout
+        # silently reporting blocked=True forever. Observed, not declared:
+        # requires PIE, and says so when there is no world.
+        _row("line_trace_single return shape (OBSERVED -- header is not "
+             "authoritative; needs PIE)",
+             lambda: common.probe_trace_return_shape())
 
         vigil = {}
         for name in (
