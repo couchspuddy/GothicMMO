@@ -391,9 +391,31 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons", meta = (ClampMin = 1))
     int32 SteadfastChargesPerFullBar = 3;
 
-    /** Fired after a successful tap reload — play the reload montage and audio here. */
+    /**
+     * Fired after any successful reload — tap, or the automatic one that follows
+     * the shot emptying the magazine. Play the reload montage and audio here.
+     *
+     * Its signature is deliberately unchanged now that it can fire without input:
+     * every Blueprint already wired to it keeps working, and the shared feedback
+     * (a reload is a reload) stays in one place. Feedback that must ONLY happen
+     * on an automatic reload goes in OnAutoReloadPerformed, which fires after
+     * this one.
+     */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Weapons")
     void OnReloadPerformed();
+
+    /**
+     * Fired after OnReloadPerformed when the reload was automatic — the magazine
+     * ran dry mid-fire and the weapon's bAutoReloadWhenEmpty topped it back up.
+     * Never fires for a player-initiated reload.
+     *
+     * Use it for the extra beat that only makes sense unprompted: a dry click, a
+     * distinct cycling cue, a HUD flash telling the player what just happened to
+     * their reserve. Leave it unimplemented and an automatic reload is
+     * indistinguishable from a manual one.
+     */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Weapons")
+    void OnAutoReloadPerformed();
 
     /**
      * Fired on each Steadfast conversion while the key is held, including the
@@ -862,6 +884,20 @@ private:
     /** Re-parents FirstPersonCamera onto CameraAttachBoneName. No-op if the name
      *  is None or the bone does not exist. */
     void AnchorCameraToBone();
+
+    /**
+     * Runs the automatic reload triggered by ConsumeRound emptying the magazine.
+     * Single attempt, no Steadfast, and a no-op if one is already in flight.
+     */
+    void TryAutoReload();
+
+    /**
+     * True for the duration of an automatic reload. ReloadActiveWeapon calls into
+     * Blueprint via OnReloadPerformed, and Blueprint can fire the weapon again
+     * from there; without this the second shot's ConsumeRound would start another
+     * auto-reload inside the first.
+     */
+    bool bAutoReloadInProgress = false;
 
     /** True while conversions are actually running — gates OnSteadfastConversionEnded. */
     bool bSteadfastConversionFired = false;

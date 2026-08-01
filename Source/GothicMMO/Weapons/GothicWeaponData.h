@@ -257,6 +257,23 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo", meta = (EditCondition = "bUsesAmmo", ClampMin = 0))
     int32 SteadfastRefillAmount = 12;
 
+    /**
+     * When the shot that empties the magazine lands, reload from reserve at once
+     * without waiting for the reload key.
+     *
+     * Per-weapon rather than a character-wide policy because it is a property of
+     * the action the gun models: a revolver or a repeater topping itself off is
+     * invisible bookkeeping, while a bolt-action's cycle is the point of firing
+     * one. Authoring it here also means a weapon that should NOT do it is a data
+     * edit rather than a code branch.
+     *
+     * Ignored when bUsesAmmo is false — those weapons never reload at all. Does
+     * nothing when the reserve is empty: the reload simply fails and the player
+     * is left dry, and Steadfast is NEVER spent automatically to cover it.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Ammo", meta = (EditCondition = "bUsesAmmo"))
+    bool bAutoReloadWhenEmpty = true;
+
     /** Steadfast cost to refill this weapon. Zero for weapons that carry no ammo. */
     UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
     int32 GetSteadfastRefillCost() const { return bUsesAmmo ? SteadfastRefillCost : 0; }
