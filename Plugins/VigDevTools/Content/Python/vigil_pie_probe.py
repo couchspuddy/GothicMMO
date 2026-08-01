@@ -266,6 +266,73 @@ def _m_speed(actor):
     return round((v.x ** 2 + v.y ** 2 + v.z ** 2) ** 0.5, 1)
 
 
+# --------------------------------------------------------------------------
+# Loadout power. Record these alongside ANY damage measurement.
+#
+# The starting kit is rolled with unseeded RNG on every spawn, so raw shot
+# damage has been observed between 22.0 and ~31 across sessions with nothing
+# else changed. Both multipliers in UGA_Fire::PerformFireTrace
+# (GA_Fire.cpp:289-298) come from that roll:
+#
+#     FinalDamage = EffectiveDamage
+#                 * (AggregateGearPower / BaselineGearPower)
+#                 * (1 + ArchetypeBonusPct / 100)
+#
+# Every banked combat number carries that spread as an unlabelled confound.
+# Sampling these turns it from a confound into a covariate.
+#
+# NOTE, against the brief that asked for these: both values were ALREADY
+# reflected -- AGothicPlayerCharacter::GetAggregateGearPower and
+# GetArchetypeDamageBonusPct are BlueprintPure UFUNCTIONs
+# (GothicPlayerCharacter.h:300-306). No reconstruction from
+# PlayerState.InventoryComponent.EquippedItems is needed.
+# --------------------------------------------------------------------------
+
+@_reader("gear_power")
+def _m_gear_power(actor):
+    """Aggregate Gear Power -- the damage floor across ALL equipped gear."""
+    getter = getattr(actor, "get_aggregate_gear_power", None)
+    if getter is None:
+        raise LookupError(
+            "get_aggregate_gear_power not on %s; it is declared on "
+            "AGothicPlayerCharacter (GothicPlayerCharacter.h:300-301), so this "
+            "is probably not the player pawn." % actor.get_name())
+    return int(getter())
+
+
+@_reader("active_gear_power")
+def _m_active_gear_power(actor):
+    """The ACTIVE weapon's own Gear Power, as distinct from the aggregate."""
+    getter = getattr(actor, "get_active_gear_power", None)
+    if getter is None:
+        raise LookupError(
+            "get_active_gear_power not on %s (GothicPlayerCharacter.h:295-296)."
+            % actor.get_name())
+    return int(getter())
+
+
+@_reader("archetype_bonus_pct")
+def _m_archetype_bonus_pct(actor):
+    """Armour's damage bonus for the ACTIVE weapon's archetype, in percent.
+
+    Archetype-matched, exactly as GA_Fire reads it (GA_Fire.cpp:294-296): a
+    Revolver line contributes nothing while a Rifle is equipped, so this must be
+    resolved against the live weapon rather than summed blind.
+    """
+    weapon_getter = getattr(actor, "get_active_weapon_data", None)
+    bonus_getter = getattr(actor, "get_archetype_damage_bonus_pct", None)
+    if weapon_getter is None or bonus_getter is None:
+        raise LookupError(
+            "get_active_weapon_data / get_archetype_damage_bonus_pct not on %s "
+            "(GothicPlayerCharacter.h:287-306)." % actor.get_name())
+    weapon = weapon_getter()
+    if weapon is None:
+        raise LookupError(
+            "No active weapon data on %s, so no archetype to score against."
+            % actor.get_name())
+    return round(float(bonus_getter(weapon.get_editor_property("archetype"))), 3)
+
+
 def available_metrics():
     return sorted(_METRIC_READERS.keys())
 

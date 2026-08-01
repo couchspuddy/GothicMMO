@@ -120,6 +120,68 @@ def component(actor, class_name):
         return None
 
 
+class PerceptionComponentMissing(LookupError):
+    """No UAIPerceptionComponent on the pawn OR its controller.
+
+    Named on purpose. The previous perception dump swallowed this and reported
+    perceived_count: 0, which reads as "the enemy sees nothing" when it actually
+    means "the harness never found the component". That silent zero produced a
+    false 'enemy perception is dead' finding and cost two diagnosis runs.
+    """
+
+
+def component_names(actor):
+    """Every component name on an actor, for error messages that show the miss."""
+    try:
+        return sorted(c.get_name() for c in actor.get_components_by_class(
+            unreal.ActorComponent))
+    except Exception as exc:
+        return ["<unreadable: %s: %s>" % (type(exc).__name__, exc)]
+
+
+def perception_component(pawn):
+    """The live UAIPerceptionComponent for `pawn`. Raises if absent.
+
+    THE PAWN IS CHECKED FIRST, AND THAT ORDER IS THE WHOLE POINT.
+    AGothicEnemyBase creates the component on the PAWN
+    (Source/GothicMMO/AI/GothicEnemyBase.cpp:39, CreateDefaultSubobject
+    "AIPerception"), not on the controller. UAIPerceptionComponent::OnRegister
+    only back-links the controller when the component's owner is an
+    AAIController -- `AIOwner = Cast<AAIController>(Owner)` then
+    SetPerceptionComponent, AIPerceptionComponent.cpp:214-221 -- so on this project
+    AAIController::GetAIPerceptionComponent() is null forever and every
+    controller-first lookup finds nothing.
+
+    Returns (component, owner_description).
+    """
+    searched = []
+    controller = None
+    try:
+        controller = pawn.get_controller()
+    except Exception:
+        controller = None
+
+    for owner, label in ((pawn, "pawn"), (controller, "controller")):
+        if owner is None:
+            searched.append("controller: pawn has no controller")
+            continue
+        try:
+            found = owner.get_component_by_class(unreal.AIPerceptionComponent)
+        except Exception as exc:
+            searched.append("%s %s: %s: %s"
+                            % (label, owner.get_name(), type(exc).__name__, exc))
+            continue
+        if found:
+            return found, "%s (%s)" % (label, owner.get_name())
+        searched.append("%s %s: no AIPerceptionComponent among %s"
+                        % (label, owner.get_name(), component_names(owner)))
+
+    raise PerceptionComponentMissing(
+        "No AIPerceptionComponent found for '%s'. Looked, in order: %s. "
+        "This is NOT 'perceives nothing' -- it is 'component not found'."
+        % (pawn.get_name(), "; ".join(searched)))
+
+
 def blackboard(actor):
     """The live UBlackboardComponent driving `actor`, or None.
 

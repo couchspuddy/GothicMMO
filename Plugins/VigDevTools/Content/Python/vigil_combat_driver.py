@@ -1123,36 +1123,87 @@ def dump(filename_stem="scenario"):
 # Spawning and cleanup
 # --------------------------------------------------------------------------
 
-def spawn(world, class_path, location, rotation=(0.0, 0.0, 0.0)):
-    """Spawn an actor into the PIE world and track it for cleanup.
+def spawn(world, class_path, location, rotation=(0.0, 0.0, 0.0),
+          behavior_tree=None, no_collision_fail=True):
+    """Spawn a PAWN into the PIE world and track it for cleanup.
 
     class_path for a Blueprint needs the _C suffix, e.g.
     "/Game/Blueprints/Enemies/BP_Enemy_FeralRetained.BP_Enemy_FeralRetained_C"
 
-    This is the highest-risk call in the harness -- deferred spawn into a PIE
-    world from editor Python is exactly the kind of thing that behaves
-    differently between engine versions. Verify it before trusting a scenario
-    that depends on it.
+    WHY THIS IS NOT THE DEFERRED-SPAWN ROUTE ANY MORE
+    -------------------------------------------------
+    The old body called GameplayStatics.begin_deferred_actor_spawn_from_class
+    and failed with "type object 'GameplayStatics' has no attribute ...". That
+    is not a version wobble, it is permanent: both
+    UGameplayStatics::BeginDeferredActorSpawnFromClass (GameplayStatics.h:65-67)
+    and UGameplayStatics::FinishSpawningActor (GameplayStatics.h:69-71) are
+    tagged meta=(BlueprintInternalUseOnly="true"), and the Python bindings skip
+    any function carrying that key (PyGenUtil.cpp:1621, in
+    IsBlueprintExposedFunction). Those two names will never exist in Python, so
+    there is nothing to retry.
+
+    THE ROUTE ACTUALLY USED
+    -----------------------
+    UAIBlueprintHelperLibrary::SpawnAIFromClass
+    (AIBlueprintHelperLibrary.h:44-45) -- a plain BlueprintCallable UFUNCTION
+    with a WorldContext, so passing the PIE world spawns into the PIE world, not
+    the editor world. Its body (AIBlueprintHelperLibrary.cpp:207-240) does
+    World->SpawnActor<APawn>, then SpawnDefaultController (which possesses), and
+    runs a BehaviorTree if one is supplied.
+
+    Two behaviour differences from the old code, both deliberate and visible:
+      * Pawns only. TSubclassOf<APawn> is enforced here with a named error
+        rather than being discovered as a null return. There is no reflected
+        route to spawn an arbitrary AActor into a PIE world from editor Python;
+        EditorActorSubsystem.spawn_actor_from_class targets the EDITOR world and
+        would silently put the actor in the wrong world.
+      * Collision handling is AlwaysSpawn (no_collision_fail=True) or
+        AdjustIfPossibleButDontSpawnIfColliding (False) -- those are the only
+        two the helper exposes (AIBlueprintHelperLibrary.cpp:216). The old
+        AdjustIfPossibleButAlwaysSpawn is not reachable this way; AlwaysSpawn is
+        the closer match and is the default, so a spawn point inside geometry
+        interpenetrates instead of failing.
     """
     cls = unreal.load_class(None, class_path)
     if cls is None:
         raise LookupError("Could not load class '%s' (Blueprints need _C)" % class_path)
 
-    transform = unreal.Transform(
+    if not _is_pawn_class(cls):
+        raise TypeError(
+            "'%s' is not a Pawn subclass. SpawnAIFromClass takes "
+            "TSubclassOf<APawn>, and there is no reflected way to spawn a "
+            "non-pawn actor into the PIE world from editor Python. Place the "
+            "actor in the level instead." % class_path)
+
+    pawn = unreal.AIBlueprintHelperLibrary.spawn_ai_from_class(
+        world,
+        cls,
+        behavior_tree,
         unreal.Vector(*location),
         unreal.Rotator(*rotation),
-        unreal.Vector(1.0, 1.0, 1.0))
+        bool(no_collision_fail))
+    if pawn is None:
+        raise RuntimeError(
+            "SpawnAIFromClass returned None for '%s' at %s. With "
+            "no_collision_fail=%s the spawn %s. Check the class loaded and the "
+            "location is inside the streamed level."
+            % (class_path, list(location), bool(no_collision_fail),
+               "should not fail on collision, so suspect the class"
+               if no_collision_fail else "was probably refused for colliding"))
 
-    actor = unreal.GameplayStatics.begin_deferred_actor_spawn_from_class(
-        world, cls, transform,
-        unreal.SpawnActorCollisionHandlingMethod.ADJUST_IF_POSSIBLE_BUT_ALWAYS_SPAWN)
-    if actor is None:
-        raise RuntimeError("Deferred spawn returned None for '%s'" % class_path)
-    unreal.GameplayStatics.finish_spawning_actor(actor, transform)
+    _spawned.append(pawn)
+    common.audit("spawn\t%s\t%s" % (class_path, pawn.get_name()))
+    return pawn
 
-    _spawned.append(actor)
-    common.audit("spawn\t%s\t%s" % (class_path, actor.get_name()))
-    return actor
+
+def _is_pawn_class(cls):
+    """True if cls is APawn or a subclass. Blueprint classes included."""
+    try:
+        return bool(unreal.MathLibrary.class_is_child_of(cls, unreal.Pawn))
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not test '%s' against APawn: %s: %s"
+            % (cls, type(exc).__name__, exc))
 
 
 def cleanup():
