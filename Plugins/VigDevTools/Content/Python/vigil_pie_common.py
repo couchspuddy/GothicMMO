@@ -18,6 +18,7 @@ accident.
 
 import json
 import os
+import re
 import time
 
 import unreal
@@ -86,6 +87,309 @@ def resolve_class(candidates, purpose, hint_tokens=()):
         "Related names that DO exist: %s"
         % (list(candidates), purpose,
            ", ".join(near) if near else "(none matching %s)" % list(tokens)))
+
+
+# --------------------------------------------------------------------------
+# Custom collision trace channels
+#
+# THE SECOND TRAP, WHICH IS NOT A RENAME
+# --------------------------------------
+# UCollisionProfile is NOT a ScriptName rename -- it is not exported to Python
+# at all, and no spelling will ever find it. PyGenUtil::ShouldExportClass
+# (PyGenUtil.cpp:1769) requires IsScriptExposedClass OR HasScriptExposedFields:
+#
+#   * IsScriptExposedClass wants BlueprintType on the UCLASS. UCollisionProfile
+#     is declared UCLASS(config=Engine, defaultconfig, MinimalAPI,
+#     meta=(DisplayName="Collision")) (CollisionProfile.h:159) -- no
+#     BlueprintType. DisplayName does not affect the Python name or export.
+#   * HasScriptExposedFields wants a UFUNCTION with BlueprintCallable/
+#     BlueprintEvent, or a UPROPERTY with CPF_BlueprintVisible/Assignable
+#     (PyGenUtil.cpp:1609-1621). UCollisionProfile declares zero UFUNCTIONs,
+#     and every one of its UPROPERTYs -- DefaultChannelResponses included
+#     (CollisionProfile.h:167-183) -- is a bare UPROPERTY(globalconfig), which
+#     sets neither flag.
+#
+# FCustomChannelSetup is dead the same way: USTRUCT() with no BlueprintType
+# (CollisionProfile.h:95) and plain UPROPERTY() members. So the CDO route the
+# previous implementation took could never have worked on any UE build.
+#
+# UEngineTypes::ConvertToTraceType (EngineTypes.h:4075) is a plain static, not
+# a UFUNCTION, so that route is closed too.
+#
+# What IS reachable is the config file the CDO would have been loaded from.
+# DefaultChannelResponses is UPROPERTY(globalconfig) on a `defaultconfig`
+# class, so Config/DefaultEngine.ini's [/Script/Engine.CollisionProfile]
+# section IS the mapping's source of truth. Parsing it is deterministic and
+# needs no reflection at all.
+# --------------------------------------------------------------------------
+
+# UCollisionProfile::LoadProfileConfig seeds TraceTypeMapping with
+# ECC_Visibility then ECC_Camera (CollisionProfile.cpp:373-377) before
+# appending each bTraceType custom channel in array order (:447-450). So
+# ETraceTypeQuery ordinal = 2 + position among the bTraceType entries.
+_BUILTIN_TRACE_TYPES = ("Visibility", "Camera")
+
+_COLLISION_PROFILE_SECTION = "/Script/Engine.CollisionProfile"
+
+_trace_type_cache = {}
+
+
+def project_config_dir():
+    """Absolute path to the project's Config/ directory.
+
+    UPaths is exposed as unreal.Paths via meta=(ScriptName="Paths") on
+    UBlueprintPathsLibrary, which is exactly the rename class of bug this
+    module exists to absorb -- so it goes through resolve_class rather than a
+    hard-coded spelling, and falls back to deriving Config/ from the project
+    directory if the paths library moves again.
+    """
+    paths_failure = None
+    try:
+        paths = resolve_class(
+            ("Paths", "BlueprintPathsLibrary"),
+            "locating Config/DefaultEngine.ini",
+            hint_tokens=("Path",))
+        getter = getattr(paths, "project_config_dir", None)
+        if getter is None:
+            paths_failure = "%s has no project_config_dir" % paths.__name__
+        else:
+            value = str(getter())
+            if value:
+                return os.path.abspath(value)
+            paths_failure = "project_config_dir returned an empty string"
+    except LookupError as exc:
+        # Not swallowed: carried into the error below if the fallback also
+        # fails, so both routes are visible in one message.
+        paths_failure = str(exc)
+
+    system = resolve_class(
+        ("SystemLibrary", "KismetSystemLibrary"),
+        "locating Config/DefaultEngine.ini (Paths route failed: %s)"
+        % paths_failure,
+        hint_tokens=("System",))
+    root = str(system.get_project_directory())
+    if not root:
+        raise LookupError(
+            "SystemLibrary.get_project_directory returned an empty path and "
+            "the Paths route failed (%s), so Config/DefaultEngine.ini cannot "
+            "be located" % paths_failure)
+    return os.path.abspath(os.path.join(root, "Config"))
+
+
+def _read_ini_text(path):
+    """Config ini text. Tries the encodings UE actually writes, then reports."""
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    errors = []
+    for encoding in ("utf-8-sig", "utf-16", "latin-1"):
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, UnicodeError) as exc:
+            errors.append("%s: %s" % (encoding, exc))
+    raise LookupError(
+        "could not decode %s with any of utf-8-sig/utf-16/latin-1 (%s)"
+        % (path, "; ".join(errors)))
+
+
+def _parse_channel_responses(text):
+    """DefaultChannelResponses entries from [/Script/Engine.CollisionProfile].
+
+    Returns a list of dicts with at least `channel`, `name` and `trace` keys,
+    in the order the engine would hold them in DefaultChannelResponses.
+
+    Honours the ini array operators: `+` and a bare key append, `-` removes a
+    previously-added entry for the same ECC_ channel. `.` is treated as an
+    append, which is what UE does for a fresh array in a single file.
+    """
+    entries = []
+    in_section = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped[1:-1] == _COLLISION_PROFILE_SECTION
+            continue
+        if not in_section or not stripped or stripped.startswith(";"):
+            continue
+
+        match = re.match(
+            r'^([+\-.]?)DefaultChannelResponses\s*=\s*\((.*)\)\s*$', stripped)
+        if match is None:
+            continue
+
+        operator, body = match.group(1), match.group(2)
+        channel = re.search(r'\bChannel\s*=\s*(\w+)', body)
+        if channel is None:
+            continue
+        channel = channel.group(1)
+
+        if operator == "-":
+            entries = [e for e in entries if e["channel"] != channel]
+            continue
+
+        name = re.search(r'\bName\s*=\s*"([^"]*)"', body)
+        trace = re.search(r'\bbTraceType\s*=\s*(\w+)', body)
+        entries = [e for e in entries if e["channel"] != channel]
+        entries.append({
+            "channel": channel,
+            "name": name.group(1) if name else "",
+            "trace": bool(trace) and trace.group(1).lower() == "true",
+        })
+    return entries
+
+
+def collision_channel_table():
+    """The project's custom collision channels, plus the trace-type ordering.
+
+    Read straight out of Config/DefaultEngine.ini. Raises rather than returning
+    an empty table if the file or the section is missing -- a silent empty
+    result here would present as "the shot missed", which is the exact failure
+    this whole path exists to eliminate.
+    """
+    path = os.path.join(project_config_dir(), "DefaultEngine.ini")
+    if not os.path.isfile(path):
+        raise LookupError(
+            "%s does not exist, so the custom collision channels cannot be "
+            "derived" % path)
+
+    entries = _parse_channel_responses(_read_ini_text(path))
+    if not entries:
+        raise LookupError(
+            "%s has no DefaultChannelResponses entries under [%s]; this "
+            "project defines ECC_Weapon there (DefaultEngine.ini:219), so an "
+            "empty parse means the file layout changed, not that the channel "
+            "is gone" % (path, _COLLISION_PROFILE_SECTION))
+
+    trace_types = list(_BUILTIN_TRACE_TYPES) + [
+        e["name"] for e in entries if e["trace"]]
+    return {
+        "config_file": path,
+        "channels": entries,
+        "trace_types": trace_types,
+    }
+
+
+def trace_type_for_channel(channel_name):
+    """(ETraceTypeQuery, provenance) for a named custom collision channel.
+
+    `channel_name` is the Name= from DefaultEngine.ini -- "Weapon", not
+    "ECC_Weapon" and not "ECC_GameTraceChannel1".
+
+    Never guesses. If the ordinal cannot be derived from config, or the derived
+    ordinal has no member on unreal.TraceTypeQuery, this raises with everything
+    it tried and everything the enum actually exposes, so the answer comes out
+    of the error text rather than another investigation.
+    """
+    cached = _trace_type_cache.get(channel_name)
+    if cached is not None:
+        return cached
+
+    table = collision_channel_table()
+    trace_types = table["trace_types"]
+    if channel_name not in trace_types:
+        raise LookupError(
+            "no trace channel named '%s' in %s. Channels declared there: %s. "
+            "Trace-enabled channels, in ETraceTypeQuery order: %s. A channel "
+            "with bTraceType=False (ArenaBlock is one) can never be traced by "
+            "ETraceTypeQuery -- it is reachable only by object type or profile."
+            % (channel_name, table["config_file"],
+               [(e["name"], e["channel"], e["trace"]) for e in table["channels"]],
+               trace_types))
+
+    index = trace_types.index(channel_name)
+    channel = _trace_type_member(index, channel_name)
+    source = next((e for e in table["channels"] if e["name"] == channel_name),
+                  None)
+    if source is None:
+        # An engine built-in (Visibility/Camera); its ordinal is fixed by
+        # CollisionProfile.cpp:373-377, not by this project's config.
+        provenance = (
+            "engine built-in trace type '%s' at fixed index %d "
+            "(CollisionProfile.cpp:373-377)" % (channel_name, index))
+    else:
+        provenance = (
+            "derived from %s: '%s' is %s and is trace-enabled, making it "
+            "trace-type index %d (%s occupy 0 and 1 -- "
+            "CollisionProfile.cpp:373-377, :447-450)"
+            % (table["config_file"], channel_name, source["channel"], index,
+               " and ".join(_BUILTIN_TRACE_TYPES)))
+
+    resolved = (channel, provenance)
+    _trace_type_cache[channel_name] = resolved
+    return resolved
+
+
+def _trace_type_member(index, channel_name):
+    """unreal.TraceTypeQuery's value for a 0-based trace index.
+
+    The Python spelling of ETraceTypeQuery::TraceTypeQuery3 is NOT assumed.
+    PyGenUtil upper-snakes enum entry names through a camel-case break iterator
+    (PyGenUtil.cpp:3161, 1859), and whether that iterator splits the trailing
+    digit decides between TRACE_TYPE_QUERY3 and TRACE_TYPE_QUERY_3. Rather than
+    reason about ICU tokenisation, try both spellings and then fall back to
+    constructing the enum from its integer value -- ETraceTypeQuery is a plain
+    `enum : int` starting at TraceTypeQuery1 = 0 (EngineTypes.h:1274-1276), so
+    the ordinal IS the underlying value.
+
+    Whatever route wins is cross-checked against `index`, so a member that
+    exists under an unexpected spelling cannot quietly select the wrong channel.
+    """
+    enum_type = getattr(unreal, "TraceTypeQuery", None)
+    if enum_type is None:
+        raise LookupError(
+            "unreal.TraceTypeQuery does not exist on this build, so no "
+            "ETraceTypeQuery value can be produced for '%s'. Related names on "
+            "unreal: %s"
+            % (channel_name,
+               sorted(n for n in dir(unreal) if "TraceType" in n) or "(none)"))
+
+    ordinal = index + 1
+    attempts = []
+    for spelling in ("TRACE_TYPE_QUERY%d" % ordinal,
+                     "TRACE_TYPE_QUERY_%d" % ordinal,
+                     "TraceTypeQuery%d" % ordinal):
+        value = getattr(enum_type, spelling, None)
+        attempts.append(spelling)
+        if value is not None:
+            _check_trace_ordinal(value, index, spelling, channel_name)
+            return value
+
+    for label, factory in (("TraceTypeQuery.cast(%d)" % index,
+                            lambda: enum_type.cast(index)),
+                           ("TraceTypeQuery(%d)" % index,
+                            lambda: enum_type(index))):
+        attempts.append(label)
+        try:
+            value = factory()
+        except Exception as exc:
+            attempts[-1] = "%s (%s: %s)" % (label, type(exc).__name__, exc)
+            continue
+        if value is not None:
+            _check_trace_ordinal(value, index, label, channel_name)
+            return value
+
+    raise LookupError(
+        "could not obtain ETraceTypeQuery index %d (the '%s' channel) from "
+        "unreal.TraceTypeQuery. Tried: %s. What the enum actually exposes: %s"
+        % (index, channel_name, attempts, _trace_type_members(enum_type)))
+
+
+def _trace_type_members(enum_type):
+    return sorted(n for n in dir(enum_type) if not n.startswith("_"))
+
+
+def _check_trace_ordinal(value, index, route, channel_name):
+    """Fail loudly if the resolved enum value is not the ordinal we derived."""
+    try:
+        actual = int(value)
+    except (TypeError, ValueError):
+        return  # not convertible; the spelling is the only evidence we have
+    if actual != index:
+        raise LookupError(
+            "%s resolved to underlying value %d but the '%s' channel derives "
+            "to trace-type index %d. Refusing to trace on the wrong channel. "
+            "unreal.TraceTypeQuery exposes: %s"
+            % (route, actual, channel_name, index,
+               _trace_type_members(type(value))))
 
 
 def ai_helper_library():

@@ -318,9 +318,6 @@ def _a_aim_at(world, step):
 
 WEAPON_CHANNEL_NAME = "Weapon"        # DefaultEngine.ini:219, ECC_GameTraceChannel1
 _FALLBACK_TRACE_RANGE = 10000.0
-_ASSUMED_WEAPON_TRACE_INDEX = 2       # see _resolve_weapon_trace_type
-
-_weapon_trace_type = None             # (ETraceTypeQuery, provenance str), resolved once
 
 
 def _resolve_weapon_trace_type():
@@ -328,65 +325,21 @@ def _resolve_weapon_trace_type():
 
     UEngineTypes::ConvertToTraceType (EngineTypes.h:4075) is the obvious call and
     it is NOT a UFUNCTION -- UEngineTypes exposes four plain statics and nothing
-    else, so Python cannot reach any of them. The mapping therefore has to be
-    reconstructed.
+    else, so Python cannot reach any of them.
 
-    UCollisionProfile builds TraceTypeMapping as [ECC_Visibility, ECC_Camera]
-    (CollisionProfile.cpp:373-377) followed by every DefaultChannelResponses entry
-    with bTraceType=true, in array order (:447-450). ETraceTypeQuery::TraceTypeQuery1
-    is index 0 of that array. DefaultChannelResponses is a UPROPERTY(globalconfig)
-    on the UCollisionProfile CDO (CollisionProfile.h:171-172) and FCustomChannelSetup
-    exposes Name and bTraceType as UPROPERTYs (CollisionProfile.h:96-118), so the
-    whole mapping is reflectable.
+    The previous implementation reconstructed the mapping off the
+    UCollisionProfile CDO. That route is not merely broken on this build, it is
+    unreachable on every build: UCollisionProfile has no BlueprintType and no
+    script-exposed field, so PyGenUtil never generates it (the full derivation
+    is in vigil_pie_common, above collision_channel_table). It also carried an
+    _ASSUMED_WEAPON_TRACE_INDEX fallback, which meant a config change could have
+    pointed live fire at the wrong channel while the tool still answered.
 
-    If that read fails, fall back to the ordinal this project's config implies
-    (Weapon is the only bTraceType custom channel, so index 2 = TraceTypeQuery3)
-    and SAY SO in the provenance string. A wrong channel here would silently
-    produce traces that hit nothing, which is the exact failure this fix exists
-    to remove -- so the guess never gets to look like a derivation.
+    Both are gone. common.trace_type_for_channel derives the ordinal from
+    Config/DefaultEngine.ini -- the actual source of the globalconfig property
+    the CDO would have loaded -- and raises rather than guessing.
     """
-    global _weapon_trace_type
-    if _weapon_trace_type is not None:
-        return _weapon_trace_type
-
-    index = None
-    provenance = None
-    try:
-        cdo = unreal.get_default_object(unreal.CollisionProfile)
-        responses = cdo.get_editor_property("default_channel_responses") or []
-        trace_channels = [r for r in responses
-                          if bool(r.get_editor_property("b_trace_type"))]
-        for i, entry in enumerate(trace_channels):
-            if str(entry.get_editor_property("name")) == WEAPON_CHANNEL_NAME:
-                index = i + 2   # Visibility and Camera occupy 0 and 1
-                provenance = (
-                    "derived from the UCollisionProfile CDO's "
-                    "DefaultChannelResponses (CollisionProfile.h:171-172)")
-                break
-        if index is None:
-            raise LookupError(
-                "no DefaultChannelResponses entry named '%s' with bTraceType=true; "
-                "found trace channels %s"
-                % (WEAPON_CHANNEL_NAME,
-                   [str(r.get_editor_property("name")) for r in trace_channels]))
-    except Exception as exc:
-        index = _ASSUMED_WEAPON_TRACE_INDEX
-        provenance = (
-            "ASSUMED TraceTypeQuery%d -- could not derive the mapping from the "
-            "UCollisionProfile CDO (%s: %s). Verify against DefaultEngine.ini "
-            "[/Script/Engine.CollisionProfile] before trusting a miss."
-            % (index + 1, type(exc).__name__, exc))
-
-    member = "TRACE_TYPE_QUERY%d" % (index + 1)
-    channel = getattr(unreal.TraceTypeQuery, member, None)
-    if channel is None:
-        raise LookupError(
-            "unreal.TraceTypeQuery has no member '%s' -- the Weapon channel "
-            "resolved to trace index %d, which this build does not define. %s"
-            % (member, index, provenance))
-
-    _weapon_trace_type = (channel, provenance)
-    return _weapon_trace_type
+    return common.trace_type_for_channel(WEAPON_CHANNEL_NAME)
 
 
 def _break_hit(hit):

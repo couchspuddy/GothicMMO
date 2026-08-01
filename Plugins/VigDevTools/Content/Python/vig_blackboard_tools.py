@@ -666,7 +666,10 @@ def _los_trace(world, pawn, target, cone):
     which comes from the AISystem's DefaultSightCollisionChannel setting and is
     ECC_Visibility unless DefaultGame.ini overrides it -- this project sets no
     override. ECollisionChannel is not directly traceable from Python, so this
-    uses TraceTypeQuery1, the Visibility trace channel.
+    uses the Visibility trace channel, resolved through
+    common.trace_type_for_channel rather than a hard-coded TRACE_TYPE_QUERY1:
+    the Python spelling of ETraceTypeQuery entries is generated, not declared,
+    and assuming it is what broke aim_at_vital.
 
     Labelled approx because that mapping is a config assumption and because the
     engine's own trace ignores the listener actor via a query param this route
@@ -680,11 +683,17 @@ def _los_trace(world, pawn, target, cone):
     if not isinstance(eye, list):
         return {"error": "no eye location from the cone step"}
     try:
+        visibility, visibility_note = common.trace_type_for_channel("Visibility")
+    except LookupError as exc:
+        return {"error": "could not resolve the Visibility trace type: %s: %s"
+                         % (type(exc).__name__, exc)}
+
+    try:
         hit = unreal.SystemLibrary.line_trace_single(
             world,
             unreal.Vector(eye[0], eye[1], eye[2]),
             target.get_actor_location(),
-            unreal.TraceTypeQuery.TRACE_TYPE_QUERY1,
+            visibility,
             False,
             [pawn],
             unreal.DrawDebugTrace.NONE,
@@ -695,8 +704,9 @@ def _los_trace(world, pawn, target, cone):
 
     blocked, result = (hit[0], hit[1]) if isinstance(hit, tuple) else (bool(hit), None)
     row = {
-        "channel": "TraceTypeQuery1 (Visibility) -- assumed equal to the AI "
-                   "system's DefaultSightCollisionChannel (ECC_Visibility)",
+        "channel": "Visibility (%s) -- assumed equal to the AI system's "
+                   "DefaultSightCollisionChannel (ECC_Visibility)"
+                   % visibility_note,
         "blocked": bool(blocked),
     }
     if blocked and result is not None:
