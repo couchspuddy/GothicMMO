@@ -1,6 +1,7 @@
 // AnimNotify_GroundPoundImpact.cpp
 
 #include "AI/AnimNotify_GroundPoundImpact.h"
+#include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -68,8 +69,10 @@ void UAnimNotify_GroundPoundImpact::Notify(
 
         if (!PlayerASC) continue;
 
-        FGameplayEffectContextHandle Context = BossASC->MakeEffectContext();
-        Context.AddSourceObject(BossActor);
+        // Boss pawn as instigator — MakeEffectContext alone names the ASC's
+        // OwnerActor, the AIController, which has no ASC to read AttackPower off.
+        FGameplayEffectContextHandle Context =
+            UGothicAbilitySystemComponent::MakeDamageContext(BossASC, BossActor);
 
         FGameplayEffectSpecHandle Spec = BossASC->MakeOutgoingSpec(
             DamageEffect, 1.f, Context);

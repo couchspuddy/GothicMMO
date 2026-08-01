@@ -222,6 +222,52 @@ void UGothicGameplayAbility::ApplyDamageToTarget(
         return;
     }
 
+    AActor* AvatarActor = GetAvatarActorFromActorInfo();
+
+    // Structural double-apply guard. IsHitboxDrivenMelee() above reads the
+    // montage's notify list, which makes the safety a property of the ASSET:
+    // FeralRend is suppressed today only because it shares Melee_A_Montage with
+    // the Claw, and retiming or removing that notify would silently restore
+    // Rend's graph-side rangeless damage ON TOP of the hitbox. This asks the
+    // hitbox itself instead — if it already paid out on this target inside the
+    // current swing, the graph's copy is a duplicate whatever the montage says.
+    if (const AGothicEnemyBase* AvatarEnemy = Cast<AGothicEnemyBase>(AvatarActor))
+    {
+        if (const UGothicMeleeHitboxComponent* Hitbox = AvatarEnemy->GetMeleeHitbox())
+        {
+            if (Hitbox->HasRecentlyDamaged(Target))
+            {
+                UE_LOG(LogTemp, Verbose,
+                    TEXT("%s on %s: hitbox already damaged %s this swing — graph-side copy dropped"),
+                    *GetName(), *AvatarEnemy->GetName(), *Target->GetName());
+                return;
+            }
+        }
+    }
+
+    // Reach. Without this the fallback is not a melee attack at all: no trace,
+    // no arc, no distance — if the ability activated, the target is damaged
+    // wherever they are standing. BP_GA_FeralPounce is exactly that today
+    // (bUseDirectDamageFallback true, MontageToPlay None, so the notify check
+    // above can never catch it) and pays out across the whole arena.
+    //
+    // Horizontal, matching every other combat range in this project: the
+    // avatar's origin sits at capsule centre, so a 3D distance quietly shrinks
+    // every reach by the capsule half-height.
+    if (AvatarActor && DirectDamageMaxRange > 0.f)
+    {
+        const float Distance = FVector::Dist2D(
+            AvatarActor->GetActorLocation(), Target->GetActorLocation());
+
+        if (Distance > DirectDamageMaxRange)
+        {
+            UE_LOG(LogTemp, Verbose,
+                TEXT("%s: %s is %.0fuu away, past DirectDamageMaxRange %.0f — no damage"),
+                *GetName(), *Target->GetName(), Distance, DirectDamageMaxRange);
+            return;
+        }
+    }
+
     UAbilitySystemComponent* TargetASC =
         UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Target);
     UAbilitySystemComponent* SourceASC = GetAbilitySystemComponentFromActorInfo();
@@ -231,13 +277,12 @@ void UGothicGameplayAbility::ApplyDamageToTarget(
         return;
     }
 
-    AActor* Avatar = GetAvatarActorFromActorInfo();
-
-    // Context carries both source object and instigator so the damage
-    // pipeline (and its Killer attribution) always knows who hit them.
-    FGameplayEffectContextHandle Context = SourceASC->MakeEffectContext();
-    Context.AddSourceObject(Avatar);
-    Context.AddInstigator(GetOwningActorFromActorInfo(), Avatar);
+    // The instigator is the AVATAR, not GetOwningActorFromActorInfo(). The
+    // owning actor is the Controller (InitializeGAS passes GetOwner()), which
+    // has no ASC, so AttackPower resolved to 0 on every ability that damaged
+    // through here — measured as a 7-damage boss claw. See MakeDamageContext.
+    FGameplayEffectContextHandle Context =
+        UGothicAbilitySystemComponent::MakeDamageContext(SourceASC, AvatarActor);
 
     FGameplayEffectSpecHandle SpecHandle =
         SourceASC->MakeOutgoingSpec(DamageEffect, GetAbilityLevel(), Context);

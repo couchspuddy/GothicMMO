@@ -192,8 +192,15 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|VitalPoint")
     float HitDetectionRadius = 30.f;
 
-    /** Editor only — draws the actual hit volume so it can be compared against the shimmer. */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Gothic|VitalPoint")
+    /**
+     * Editor only — draws the actual hit volume so it can be compared against
+     * the shimmer.
+     *
+     * EditAnywhere, not EditDefaultsOnly: a debug toggle you cannot flip on the
+     * placed actor you are actually debugging is no use, and the harness's
+     * set_vital_debug_draw could not set it on instances at all.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gothic|VitalPoint")
     bool bDebugDrawVital = false;
 
     /**

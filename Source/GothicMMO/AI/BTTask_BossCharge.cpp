@@ -1,6 +1,7 @@
 // BTTask_BossCharge.cpp
 
 #include "AI/BTTask_BossCharge.h"
+#include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AI/GothicEnemyAIController.h"
 #include "AI/GothicBossArenaManager.h"
 #include "AI/GothicRotundaPillar.h"
@@ -234,12 +235,12 @@ void UBTTask_BossCharge::ApplyChargeDamage(
             continue;
         }
 
-        // Same construction as GothicMeleeHitboxComponent: source ASC makes the
-        // spec so the boss's AttackPower is read off a real instigator, flat
-        // damage rides Data.Damage, and the target's Defense is subtracted by
-        // the attribute set. Nothing charge-specific about the pipeline.
-        FGameplayEffectContextHandle Context = BossASC->MakeEffectContext();
-        Context.AddSourceObject(BossChar);
+        // Same construction as GothicMeleeHitboxComponent: the boss PAWN is the
+        // instigator so its AttackPower reaches the pipeline, flat damage rides
+        // Data.Damage, and the target's Defense is subtracted by the attribute
+        // set. Nothing charge-specific about the pipeline.
+        FGameplayEffectContextHandle Context =
+            UGothicAbilitySystemComponent::MakeDamageContext(BossASC, BossChar);
 
         FGameplayEffectSpecHandle Spec = BossASC->MakeOutgoingSpec(
             ChargeDamageEffect, 1.f, Context);

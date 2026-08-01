@@ -175,6 +175,24 @@ protected:
     bool bUseDirectDamageFallback = true;
 
     /**
+     * Maximum horizontal distance (cm) from avatar to target for the direct
+     * damage fallback to land. 0 disables the check.
+     *
+     * The fallback has no trace, no arc and no window of its own, so without a
+     * reach it is not a melee attack — it is an arena-wide payout that fires the
+     * instant the ability activates. BP_GA_FeralPounce is precisely that: it
+     * sets bUseDirectDamageFallback true with MontageToPlay None, so
+     * IsHitboxDrivenMelee() can never return true for it and nothing else was
+     * bounding it.
+     *
+     * 250 is a generous melee reach — comfortably past the Thrall's swing so
+     * this cannot silently disarm an ability that was landing legitimately,
+     * while still making the pounce something the player can be outside of.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Ability|Damage")
+    float DirectDamageMaxRange = 250.f;
+
+    /**
      * True when this ability's montage opens a melee hitbox on this avatar, so
      * graph-side damage would double up. Resolved once per activation and
      * cached — InstancingPolicy is InstancedPerExecution, so "once per
@@ -188,13 +206,22 @@ protected:
      * here — GA_Fire, GA_Slicer, GA_HuntersStrike, and every future kit.
      *
      * Owns the whole damage contract in one place:
-     *   - Context carries SourceObject AND Instigator — the July 15 fix that
-     *     closed "Killer: Unknown" in GA_Fire and silently never reached the
-     *     other seven hand-rolled copies. Now it can't miss.
-     *   - Magnitude goes out on GothicTags::Data_Damage as a SetByCaller.
-     *     Semantics belong to the GE: whatever its Data.Damage modifier does
-     *     with the number. Pass flat damage (GA_Fire's FinalDamage) or a
-     *     multiplier (Hunter's Strike) per the GE's design.
+     *   - Context comes from UGothicAbilitySystemComponent::MakeDamageContext,
+     *     which names the AVATAR as both source object and instigator. That is
+     *     what closes "Killer: Unknown" AND what lets the attribute set find
+     *     the attacker's AttackPower — this used to pass the owning actor (the
+     *     Controller), which has no ASC, so every ability damaging through here
+     *     contributed AttackPower 0.
+     *   - Magnitude goes out on GothicTags::Data_Damage as a SetByCaller, and
+     *     it is FLAT DAMAGE, always. Every damage GE in the project (
+     *     GE_Damage, GE_EnemyMeleeDamage, GE_BossDamage) binds Data.Damage to
+     *     IncomingDamage as a plain AddBase — none of them has multiplier
+     *     semantics, so a coefficient passed here is consumed as an absolute
+     *     number of hit points. Callers holding a coefficient must resolve it
+     *     against AttackPower themselves before calling (see GA_HuntersStrike).
+     *   - Suppressed entirely when the avatar's melee hitbox already paid out
+     *     on this target this swing, or when the target is beyond
+     *     DirectDamageMaxRange.
      *   - Hit feedback fans out to every client via the enemy's existing
      *     MulticastOnHit → OnHitFeedback path. Four of five damage sites told
      *     no client anything until July 17; with the fanout living here, a

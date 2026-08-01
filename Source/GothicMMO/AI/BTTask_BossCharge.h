@@ -78,10 +78,15 @@ protected:
     /**
      * Raw damage sent as the Data.Damage SetByCaller when the charge connects.
      *
-     * 45 raw becomes ~57 after the pipeline (+20 boss AttackPower, -8 player
+     * 45 raw becomes 57 after the pipeline (+20 boss AttackPower, -8 player
      * Defense), which is roughly 24% of the player's ~242 pool. Sized to make
      * the charge the single most expensive thing the boss does that the player
      * can actually see coming, without two-shotting anyone.
+     *
+     * This described the intent, not the behaviour, until 2026-08-01: the
+     * effect context named the AIController as instigator, the attribute set
+     * found no ASC on it, and the +20 never happened — the charge measured 37.
+     * The context now names the boss pawn, so the number above is real.
      */
     UPROPERTY(EditAnywhere, Category = "Charge")
     float ChargeDamage = 45.f;

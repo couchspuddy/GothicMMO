@@ -2,6 +2,7 @@
 
 #include "AI/GothicMeleeHitboxComponent.h"
 #include "AI/GothicEnemyBase.h"
+#include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
 #include "GameplayTagContainer.h"
@@ -125,9 +126,13 @@ void UGothicMeleeHitboxComponent::OnHitboxOverlap(
         return;
     }
 
-    // Build and apply the damage effect — same pipeline as all Vigil damage
-    FGameplayEffectContextHandle Context = OwnerASC->MakeEffectContext();
-    Context.AddSourceObject(GetOwner());
+    // Build and apply the damage effect — same pipeline as all Vigil damage.
+    // The owning PAWN is the instigator: MakeEffectContext alone would name the
+    // ASC's OwnerActor, which for an enemy is the AIController, and a Controller
+    // has no ASC for the attribute set to read AttackPower off. That is why
+    // Thrall melee measured 7 (15 + 0 - 8) instead of 17.
+    FGameplayEffectContextHandle Context =
+        UGothicAbilitySystemComponent::MakeDamageContext(OwnerASC, GetOwner());
 
     FGameplayEffectSpecHandle Spec = OwnerASC->MakeOutgoingSpec(
         DamageEffect, 1.f, Context);
@@ -142,5 +147,32 @@ void UGothicMeleeHitboxComponent::OnHitboxOverlap(
 
         AlreadyHitThisSwing.Add(OtherActor);
 
+        if (const UWorld* World = GetWorld())
+        {
+            LastDamagedTime.Add(
+                TWeakObjectPtr<const AActor>(OtherActor), World->GetTimeSeconds());
+        }
     }
+}
+
+bool UGothicMeleeHitboxComponent::HasRecentlyDamaged(
+    const AActor* Target, float WindowSeconds) const
+{
+    if (!Target)
+    {
+        return false;
+    }
+
+    const UWorld* World = GetWorld();
+    if (!World)
+    {
+        return false;
+    }
+
+    if (const double* Stamp = LastDamagedTime.Find(TWeakObjectPtr<const AActor>(Target)))
+    {
+        return (World->GetTimeSeconds() - *Stamp) <= WindowSeconds;
+    }
+
+    return false;
 }
