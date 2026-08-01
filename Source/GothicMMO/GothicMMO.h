@@ -17,3 +17,18 @@
  */
 #define ECC_Weapon ECollisionChannel::ECC_GameTraceChannel1
 
+/**
+ * Combat diagnostics — vital-point geometry, damage resolution.
+ *
+ * The project's first named log category. Everything else still goes to LogTemp,
+ * and that is the reason this exists: LogTemp defaults to Log, so Verbose combat
+ * lines were being dropped silently and read as "the code never fires." A private
+ * category can be raised or suppressed without turning the whole LogTemp firehose
+ * on.
+ *
+ * Default runtime verbosity is Verbose deliberately, so these lines appear without
+ * anyone having to know a console command first. Compile-time ceiling is All.
+ * Quiet it with:  Log LogVigilCombat Warning
+ */
+DECLARE_LOG_CATEGORY_EXTERN(LogVigilCombat, Verbose, All);
+

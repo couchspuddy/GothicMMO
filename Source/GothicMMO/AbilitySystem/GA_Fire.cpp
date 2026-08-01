@@ -345,6 +345,12 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     float FinalDamage = EffectiveDamage * GearFloor * (1.f + ArchetypeBonusPct / 100.f);
     bool bIsVitalHit = false;
 
+    // Diagnostics only — the pre-vital damage and the two "why was this a vital"
+    // flags, kept so the final line below can tie the geometry to the outcome.
+    const float PreVitalDamage = FinalDamage;
+    bool bReckoningForced = false;
+    bool bReadAmplified   = false;
+
     if (UGothicVitalPointComponent* VitalPoint =
             Hit.GetActor()->FindComponentByClass<UGothicVitalPointComponent>())
     {
@@ -354,6 +360,25 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
             UGothicAttributeSet::GetVitalPointRadiusAttribute());
 
         bIsVitalHit = bReckoning || VitalPoint->IsVitalPointHit(Hit.ImpactPoint, RadiusBonus);
+
+        bReckoningForced = bReckoning;
+
+        // Reckoning short-circuits the || — when it is up the geometry test never
+        // runs and no VitalGeometry line is emitted at all. This line exists so a
+        // reader can tell a genuine geometric vital from a forced one instead of
+        // assuming the component silently failed.
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VitalResult: target=%s vital=%s via=%s (RadiusBonus=%.1f)"),
+            *Hit.GetActor()->GetName(),
+            bIsVitalHit ? TEXT("YES") : TEXT("NO"),
+            bReckoning ? TEXT("RECKONING-FORCED, geometry not evaluated") : TEXT("geometry"),
+            RadiusBonus);
+    }
+    else
+    {
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VitalResult: target=%s has no UGothicVitalPointComponent — body hit by definition"),
+            *Hit.GetActor()->GetName());
     }
 
     if (bIsVitalHit)
@@ -369,6 +394,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
                 FGameplayTag::RequestGameplayTag(FName("State.Read.Marked"))))
         {
             FinalDamage *= ReadVitalDamageMultiplier;
+            bReadAmplified = true;
         }
     }
 
@@ -408,6 +434,17 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         FGameplayTag::RequestGameplayTag(FName("Data.Damage")), FinalDamage);
 
     SourceASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
+
+    // One line tying the geometry above to the number the target actually takes.
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("Damage: target=%s applied=%.1f (pre-vital=%.1f vital=%s reckoning=%s read=%s oversurge=%s)"),
+        *Hit.GetActor()->GetName(),
+        FinalDamage,
+        PreVitalDamage,
+        bIsVitalHit      ? TEXT("yes") : TEXT("no"),
+        bReckoningForced ? TEXT("yes") : TEXT("no"),
+        bReadAmplified   ? TEXT("yes") : TEXT("no"),
+        bOversurged      ? TEXT("yes") : TEXT("no"));
 
     // Stun rolls independently of Oversurge -- they are separate hooks and a
     // single shot is allowed to do both.
