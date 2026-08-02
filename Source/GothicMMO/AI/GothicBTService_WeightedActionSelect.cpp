@@ -9,6 +9,7 @@
 #include "AbilitySystemBlueprintLibrary.h"
 #include "Abilities/GameplayAbility.h"
 #include "Character/GothicCharacterBase.h"
+#include "BehaviorTree/BehaviorTree.h"      // Asset.GetName() in InitializeFromAsset
 #include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Name.h"
@@ -102,8 +103,16 @@ UGothicBTService_WeightedActionSelect::UGothicBTService_WeightedActionSelect()
     TargetActorKey.AddObjectFilter(this,
         GET_MEMBER_NAME_CHECKED(UGothicBTService_WeightedActionSelect, TargetActorKey),
         AActor::StaticClass());
+    // OPTIONAL — only the split path uses it, and it must read as unset on the
+    // trees that still run combined. Without AllowNoneAsValue,
+    // FBlackboardKeySelector::ResolveSelectedKey auto-binds an untouched
+    // selector to the first blackboard key matching the type filter, which on
+    // every tree here is ChosenAction — the key the movement decorators
+    // equality-test. That is the catastrophic aliasing InitializeFromAsset now
+    // guards against; this is the line that stops it happening by accident.
     ChosenAttackTagKey.AddNameFilter(this,
         GET_MEMBER_NAME_CHECKED(UGothicBTService_WeightedActionSelect, ChosenAttackTagKey));
+    ChosenAttackTagKey.AllowNoneAsValue(true);
 }
 
 void UGothicBTService_WeightedActionSelect::InitializeFromAsset(UBehaviorTree& Asset)
@@ -115,6 +124,35 @@ void UGothicBTService_WeightedActionSelect::InitializeFromAsset(UBehaviorTree& A
         ChosenActionKey.ResolveSelectedKey(*BBAsset);
         TargetActorKey.ResolveSelectedKey(*BBAsset);
         ChosenAttackTagKey.ResolveSelectedKey(*BBAsset);
+    }
+
+    // ── Aliasing guard ───────────────────────────────────────────────────────
+    // Worse than an unset attack key, and it has to be checked by key ID rather
+    // than by name because two selectors resolving to the same key is exactly
+    // what "the same key" means here. If the attack layer writes a full ability
+    // tag name into the key the movement decorators compare against ActionIDs,
+    // every movement branch fails at once and the pawn freezes — while the
+    // dispatch task and this service both look correctly configured.
+    //
+    // Still checked with AllowNoneAsValue in place: the auto-binding path is
+    // closed, but a designer can still pick the same key by hand from the
+    // dropdown, and trees serialized before the fix keep their bound value.
+    bAttackLayerAliased =
+        bSplitAttackPool
+        && !ChosenAttackTagKey.IsNone()
+        && !ChosenActionKey.IsNone()
+        && ChosenAttackTagKey.GetSelectedKeyID() == ChosenActionKey.GetSelectedKeyID();
+
+    if (bAttackLayerAliased)
+    {
+        UE_LOG(LogVigilCombat, Error,
+            TEXT("WeightedActionSelect[%s|%s]: ChosenAttackTagKey ('%s') and ChosenActionKey ('%s') resolve to the "
+                 "SAME blackboard key. The attack layer would write ability tag names into the key the movement "
+                 "decorators equality-test. Disabling the attack layer for this tree — the pawn will position and "
+                 "never attack until the two keys are set to different blackboard entries."),
+            *Asset.GetName(), *GetNodeName(),
+            *ChosenAttackTagKey.SelectedKeyName.ToString(),
+            *ChosenActionKey.SelectedKeyName.ToString());
     }
 }
 
@@ -730,13 +768,33 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
         return;
     }
 
+    // Aliased keys (see InitializeFromAsset) disable the ATTACK layer only. The
+    // movement layer below is untouched and still writes ChosenActionKey, so a
+    // misconfigured tree positions instead of freezing — and, critically, we
+    // never read or write the attack key, because it IS the movement key.
+    const bool bAttackLayerLive = !bAttackLayerAliased;
+    if (!bAttackLayerLive)
+    {
+        LogTimeline(TEXT("SPLIT-aliased"),
+            FString::Printf(TEXT("attackKey='%s' aliases actionKey='%s' — attack layer disabled, movement only"),
+                *ChosenAttackTagKey.SelectedKeyName.ToString(),
+                *ChosenActionKey.SelectedKeyName.ToString()),
+            /*bAlways=*/false);
+    }
+
     const FBlackboard::FKey AttackKeyID = ChosenAttackTagKey.GetSelectedKeyID();
-    const FName CommittedTag  = BB->GetValue<UBlackboardKeyType_Name>(AttackKeyID);
+
+    // Reads as "nothing committed" while aliased: the real value of that key is
+    // the current movement ActionID, and every commitment branch below would
+    // misread it as an attack in flight.
+    const FName CommittedTag  = bAttackLayerLive
+        ? BB->GetValue<UBlackboardKeyType_Name>(AttackKeyID)
+        : NAME_None;
     const FName CurrentAction = BB->GetValue<UBlackboardKeyType_Name>(ChosenActionKey.GetSelectedKeyID());
 
     auto ReleaseCommitment = [&](bool bClearKey)
     {
-        if (bClearKey)
+        if (bClearKey && bAttackLayerLive)
         {
             BB->SetValue<UBlackboardKeyType_Name>(AttackKeyID, NAME_None);
         }
@@ -970,8 +1028,8 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
     // * (Score / LayerTotal_L) = Score / LayerTotal. The split changes which
     // KEY the answer is written to and what protects it, not the odds — so a
     // regression here would be a lock bug, never a weighting one.
-    const bool bAttackWins =
-        ScaledAttackTotal > 0.f && FMath::FRandRange(0.f, LayerTotal) <= ScaledAttackTotal;
+    const bool bAttackWins = bAttackLayerLive
+        && ScaledAttackTotal > 0.f && FMath::FRandRange(0.f, LayerTotal) <= ScaledAttackTotal;
 
     float RollValue = 0.f;
     float Remainder = 0.f;

@@ -5,6 +5,7 @@
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "Abilities/GameplayAbility.h"
+#include "BehaviorTree/BehaviorTree.h"      // Asset.GetName() in InitializeFromAsset
 #include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/BlackboardData.h"
@@ -58,10 +59,25 @@ UGothicBTTask_ActivateAbilityByTag::UGothicBTTask_ActivateAbilityByTag()
     // node, so each running tree needs its own instance.
     bCreateNodeInstance = true;
 
+    // Both keys are OPTIONAL, and saying so is not cosmetic. A selector left at
+    // None is auto-bound by FBlackboardKeySelector::ResolveSelectedKey to the
+    // FIRST blackboard key matching its type filter unless bNoneIsAllowedValue
+    // is set — so without these calls, every node a designer never touched came
+    // up silently bound to the first Name key in the tree's blackboard
+    // (ChosenAction, on every tree in this project). Measured on BT_BestialLucid:
+    // three untouched nodes read back AbilityTagKey=ChosenAction and
+    // ReleaseKey=ChosenAction, which made them log a spurious tag-resolution
+    // Error every activation and CLEAR a key they do not own.
+    //
+    // It also makes "None" selectable in the editor dropdown, which is the only
+    // way to clear a node that has already been serialized with a bound key.
     AbilityTagKey.AddNameFilter(this,
         GET_MEMBER_NAME_CHECKED(UGothicBTTask_ActivateAbilityByTag, AbilityTagKey));
+    AbilityTagKey.AllowNoneAsValue(true);
+
     ReleaseKey.AddNameFilter(this,
         GET_MEMBER_NAME_CHECKED(UGothicBTTask_ActivateAbilityByTag, ReleaseKey));
+    ReleaseKey.AllowNoneAsValue(true);
 }
 
 void UGothicBTTask_ActivateAbilityByTag::InitializeFromAsset(UBehaviorTree& Asset)
@@ -72,6 +88,24 @@ void UGothicBTTask_ActivateAbilityByTag::InitializeFromAsset(UBehaviorTree& Asse
     {
         AbilityTagKey.ResolveSelectedKey(*BBAsset);
         ReleaseKey.ResolveSelectedKey(*BBAsset);
+    }
+
+    // Key dispatch and a literal tag are alternatives, never a pair: the key
+    // wins at runtime whenever it holds a value, so one of the two is dead
+    // config and which one is dead is not visible from the graph. This is also
+    // the exact fingerprint the auto-binding bug above left behind — a node
+    // authored with a literal AbilityTag that came back with AbilityTagKey
+    // pointing at ChosenAction. Warning rather than Error because a hand-built
+    // node with a deliberate fallback tag still runs correctly; it is just
+    // config nobody can read.
+    if (!AbilityTagKey.IsNone() && AbilityTag.IsValid())
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("ActivateAbilityByTag[%s|%s]: both AbilityTagKey ('%s') and a literal AbilityTag ('%s') are set. "
+                 "The key wins whenever it holds a value, so one of these is dead config. If this node is meant to "
+                 "activate its literal tag, set AbilityTagKey (and ReleaseKey) back to None."),
+            *Asset.GetName(), *GetNodeName(),
+            *AbilityTagKey.SelectedKeyName.ToString(), *AbilityTag.ToString());
     }
 }
 

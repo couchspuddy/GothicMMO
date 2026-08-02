@@ -410,6 +410,17 @@ private:
      */
     float GetArenaAggression(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) const;
 
+    /**
+     * True when ChosenAttackTagKey resolved to the same blackboard key ID as
+     * ChosenActionKey. Resolved once per asset in InitializeFromAsset; the
+     * split path degrades to movement-only while it is set rather than writing
+     * ability tag names into the movement key.
+     *
+     * Not a UPROPERTY: it is a fact about the resolved blackboard, recomputed
+     * every load, and must never survive into a saved asset.
+     */
+    bool bAttackLayerAliased = false;
+
     bool IsAbilityReady(UAbilitySystemComponent* ASC, const FGameplayTag& AbilityTag) const;
 
     /** Distinct from IsAbilityReady — this checks ONLY whether it's currently
