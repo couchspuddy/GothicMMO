@@ -30,3 +30,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Claude Code — local settings and agent worktree scratch
+.claude/
