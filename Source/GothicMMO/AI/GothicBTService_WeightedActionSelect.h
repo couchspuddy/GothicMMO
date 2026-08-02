@@ -36,6 +36,7 @@
 #include "GothicBTService_WeightedActionSelect.generated.h"
 
 class UAbilitySystemComponent;
+class UBlackboardComponent;
 
 /** One candidate in the weighted pool. */
 USTRUCT()
@@ -197,9 +198,107 @@ protected:
      * It is deliberately a window and not a latch: if the ability never goes
      * active (blocked by tags, failed activation), the window lapses and the
      * pool rerolls normally rather than wedging on a pick that never runs.
+     *
+     * OBSOLETE UNDER bSplitAttackPool, and not consulted there. It exists to
+     * protect an ability pick from the MOVEMENT pool, and once the two pools
+     * write different keys there is nothing to protect it from — the attack key
+     * is latched until the dispatch task releases it, which is the thing this
+     * window was approximating with a stopwatch. Retained, unchanged, because
+     * BT_EnemyCombat and BT_FeralRetained still run the combined path and
+     * removing it would change their behaviour today.
      */
     UPROPERTY(EditAnywhere, Category = "Selection")
     float AbilityActivationGrace = 0.5f;
+
+    // ── Attack layer (phase 2) ───────────────────────────────────────────────
+    //
+    // Attacks and movement are different KINDS of decision and were never
+    // really one pool. Movement wants to be responsive — reconsidered as the
+    // fight moves. An attack wants to be COMMITTED: chosen once, run to the
+    // end, learnable by the player. Sharing one pool and one output key meant
+    // every mechanism that protects one of them had to be smuggled past the
+    // other, which is what MinMovementCommitDuration, AbilityActivationGrace
+    // and the HOLD-* phases all are.
+    //
+    // With bSplitAttackPool on, the same authored Actions array is scored as
+    // TWO pools — entries with an AbilityTag are the attack layer, entries
+    // without are the positioning layer — and each writes its own Blackboard
+    // key. The attack write is a LOCK, not a hint: see AttackDispatchTimeout.
+    //
+    // Off by default, deliberately. BT_EnemyCombat (Thralls) and
+    // BT_FeralRetained run the legacy combined path byte-for-byte until their
+    // trees are hand-migrated. This is not a flag-day change.
+
+    /**
+     * Score movement and attacks as separate layers and write the attack pick
+     * to ChosenAttackTagKey instead of ChosenActionKey.
+     *
+     * Requires ChosenAttackTagKey to be set and the tree to have a dispatch
+     * branch gated on it. Turning this on without the BT-side work leaves the
+     * pawn with a movement-only pool — it will position and never attack.
+     */
+    UPROPERTY(EditAnywhere, Category = "Selection|Attack Layer")
+    bool bSplitAttackPool = false;
+
+    /**
+     * Name key the winning attack's ABILITY TAG (full tag name, e.g.
+     * "Ability.Boss.BestialLucid.Claw") is written to — not its ActionID.
+     *
+     * The tag rather than the ID because this key IS the dispatch instruction:
+     * one BT task reads it and activates that ability, replacing the N
+     * hand-authored per-ability branches whose six independent couplings were
+     * the entire bug family this phase exists to delete.
+     *
+     * It is also the commitment latch. Set = an attack is committed; None = the
+     * attack layer is open. GothicBTTask_ActivateAbilityByTag clears it on
+     * every exit path (its ReleaseKey), so "the ability ended" and "the lock
+     * released" are the same event by construction rather than by two systems
+     * agreeing.
+     */
+    UPROPERTY(EditAnywhere, Category = "Selection|Attack Layer")
+    FBlackboardKeySelector ChosenAttackTagKey;
+
+    /**
+     * Multiplies the attack layer's TOTAL weight when deciding which layer wins
+     * the tick. 1.0 (default) reproduces today's distribution exactly: with one
+     * combined roll, an entry's chance is its score over the grand total, and
+     * rolling for the layer first at P(attack) = AttackTotal / (AttackTotal +
+     * MovementTotal) and then within the layer gives every entry the same
+     * probability it had before. Nothing about the split changes the odds.
+     *
+     * Above 1.0 biases towards committing rather than repositioning WITHOUT
+     * re-authoring every entry's BaseWeight — the one knob for "she should
+     * press more" that does not require touching the per-entry tuning.
+     *
+     * Left at 1.0 on purpose: the balance point is a measured design decision,
+     * and the ratchet-towards-movement this phase fixes was a LOCK problem, not
+     * a weight problem. Tune it after measuring the split, not before.
+     */
+    UPROPERTY(EditAnywhere, Category = "Selection|Attack Layer")
+    float AttackLayerWeightScale = 1.f;
+
+    /**
+     * Deadlock breaker, NOT a commitment window. Seconds an attack may sit
+     * committed on the Blackboard without the ability ever going active.
+     *
+     * The distinction from AbilityActivationGrace matters. Grace was a window
+     * during which a pick was PROTECTED, after which it became reroll-eligible
+     * — so the protection was the scarce thing and running out of it was
+     * normal. Here the protection is unconditional and total: once committed,
+     * neither pool is re-scored until the key clears. This timeout only fires
+     * when the ability was never dispatched AT ALL, which cannot happen in a
+     * correctly-wired tree and therefore logs as an Error rather than passing
+     * silently. Once the ability has gone active even once, the timeout is
+     * disarmed permanently for that commitment — a long swing, a chain, or a
+     * charge windup is never cut short by it. Full commitment is the point.
+     *
+     * 1.5s: the tree needs at least two service ticks (worst case 0.25s apart)
+     * to abort the running branch and reach the dispatch task, plus room for a
+     * montage-driven ability whose activation is gated behind a notify. Six
+     * ticks of slack over that.
+     */
+    UPROPERTY(EditAnywhere, Category = "Selection|Attack Layer")
+    float AttackDispatchTimeout = 1.5f;
 
     /**
      * Delay before the one-shot AssetTag validation runs. Matches CombatSync.
@@ -243,6 +342,52 @@ private:
      * every tick re-rolls and interrupts whatever just started.
      */
     void SelectAndWrite(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory);
+
+    /**
+     * The split path (bSplitAttackPool). Two layers, two output keys, one lock.
+     *
+     * Called from SelectAndWrite with everything already resolved, so both
+     * paths read the world exactly once and in the same way. LogTimeline is the
+     * caller's dedupe-aware emitter, passed by reference so the split lines land
+     * in the same VigilTimeline stream as the legacy ones.
+     */
+    void SelectSplit(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory,
+        UBlackboardComponent* BB, APawn* Pawn, UAbilitySystemComponent* ASC,
+        AActor* Target, float DistanceToTarget, float RecklessFactor,
+        float AggressionFactor, float EffectiveCommitDuration, float Now,
+        TFunctionRef<void(const TCHAR*, const FString&, bool)> LogTimeline);
+
+    /** Which half of the authored Actions array a scoring pass looks at. */
+    enum class EPoolFilter : uint8
+    {
+        All,        // legacy combined path — every entry
+        Movement,   // entries with no AbilityTag
+        Attack      // entries with an AbilityTag
+    };
+
+    /**
+     * Scores the entries matching Filter and returns their total weight.
+     * OutIndices/OutScores are parallel and index back into Actions.
+     * OutGateParts always covers EVERY entry in authored order regardless of
+     * Filter, so the diagnostic line is identical in both paths.
+     */
+    float ScoreEntries(UAbilitySystemComponent* ASC, float DistanceToTarget,
+        float RecklessFactor, float AggressionFactor, EPoolFilter Filter,
+        TArray<int32>& OutIndices, TArray<float>& OutScores,
+        TArray<FString>& OutGateParts) const;
+
+    /**
+     * Weighted roll over a scored pool. Returns an index INTO Actions, or
+     * INDEX_NONE if the pool is empty.
+     *
+     * bOutWasTail reports the last-eligible fallthrough — see the comment at
+     * the call site: TotalWeight is accumulated by repeated float addition
+     * while the roll is drawn against that sum, so the final remainder can sit
+     * a few ULPs above the last score purely from rounding, and exiting without
+     * a pick would freeze a sticky key.
+     */
+    int32 RollWeighted(const TArray<int32>& Indices, const TArray<float>& Scores,
+        float TotalWeight, float& OutRoll, float& OutRemainder, bool& bOutWasTail) const;
 
     /**
      * Current Rotunda aggression multiplier, or 1.0 when this pawn's level has

@@ -36,6 +36,37 @@ namespace
         TWeakObjectPtr<AGothicBossArenaManager> ArenaManager;
         bool bSearchedForArena = false;
 
+        // ── Attack commitment (bSplitAttackPool) ─────────────────────────────
+        //
+        // The lock lives HERE and not on the Blackboard key alone, because the
+        // key answers "what is committed" but not "have we seen it dispatch
+        // yet", and the deadlock breaker needs the second question. The key is
+        // still the authority on whether a commitment exists at all — the
+        // dispatch task clears it, and this block reconciles to that.
+        //
+        // PHASE 3 (attack chains): this is the struct a chain lives in. A chain
+        // commitment sets bAttackCommitted once and then, each time the key
+        // clears, advances StepIndex and re-writes the next step's tag instead
+        // of releasing. Nothing else in the lock has to change — release is
+        // driven by "the key went empty AND the service chose not to re-arm",
+        // and only this block gets to make that choice. The dispatch task never
+        // learns that chains exist.
+        bool  bAttackCommitted  = false;
+        bool  bAttackDispatched = false;
+        float AttackCommitTime  = -1.f;
+
+        // FName and not FString for the same reason LastTimelineHash is a hash:
+        // BT node memory is a raw byte block that is never constructed or
+        // destructed. FName is a trivially-copyable index pair that owns no
+        // allocation, and zeroed memory reads as NAME_None, which is exactly
+        // the right "nothing committed" default.
+
+        /** ActionID of the committed entry, for logging and for phase-3 chain lookup. */
+        FName CommittedActionID = NAME_None;
+
+        /** Full tag name written to ChosenAttackTagKey, so release can verify identity. */
+        FName CommittedTagName = NAME_None;
+
         /**
          * Diagnostic only — hash of the last VigilTimeline line emitted for
          * this pawn, so a state that persists across ticks (a hold window, a
@@ -71,6 +102,8 @@ UGothicBTService_WeightedActionSelect::UGothicBTService_WeightedActionSelect()
     TargetActorKey.AddObjectFilter(this,
         GET_MEMBER_NAME_CHECKED(UGothicBTService_WeightedActionSelect, TargetActorKey),
         AActor::StaticClass());
+    ChosenAttackTagKey.AddNameFilter(this,
+        GET_MEMBER_NAME_CHECKED(UGothicBTService_WeightedActionSelect, ChosenAttackTagKey));
 }
 
 void UGothicBTService_WeightedActionSelect::InitializeFromAsset(UBehaviorTree& Asset)
@@ -81,6 +114,7 @@ void UGothicBTService_WeightedActionSelect::InitializeFromAsset(UBehaviorTree& A
     {
         ChosenActionKey.ResolveSelectedKey(*BBAsset);
         TargetActorKey.ResolveSelectedKey(*BBAsset);
+        ChosenAttackTagKey.ResolveSelectedKey(*BBAsset);
     }
 }
 
@@ -105,6 +139,17 @@ void UGothicBTService_WeightedActionSelect::OnBecomeRelevant(UBehaviorTreeCompon
         Memory->ArenaManager.Reset();
         Memory->bSearchedForArena = false;
         Memory->LastTimelineHash  = 0;
+
+        // A branch re-activation (phase change, combat re-entry, death and
+        // respawn) is a hard interrupt by definition — whatever was committed
+        // belongs to the previous activation and must not be inherited. The
+        // Blackboard key is cleared alongside it in TickNode's first pass; here
+        // we only drop our own belief so the two cannot disagree.
+        Memory->bAttackCommitted  = false;
+        Memory->bAttackDispatched = false;
+        Memory->AttackCommitTime  = -1.f;
+        Memory->CommittedActionID = NAME_None;
+        Memory->CommittedTagName  = NAME_None;
     }
 }
 
@@ -145,6 +190,16 @@ void UGothicBTService_WeightedActionSelect::ValidateConfiguration(UBehaviorTreeC
     APawn* Pawn = AIC ? AIC->GetPawn() : nullptr;
     UAbilitySystemComponent* ASC =
         Pawn ? UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Pawn) : nullptr;
+
+    // The one way to turn this node on and get a pawn that positions forever and
+    // never attacks. Cheap to check, impossible to spot in the editor.
+    if (bSplitAttackPool && ChosenAttackTagKey.IsNone())
+    {
+        UE_LOG(LogTemp, Error,
+            TEXT("WeightedActionSelect[%s]: bSplitAttackPool is on but ChosenAttackTagKey is unset — "
+                 "the attack layer has nowhere to write and this pawn will never attack."),
+            *GetNameSafe(Pawn));
+    }
 
     if (!ASC)
     {
@@ -248,6 +303,100 @@ void UGothicBTService_WeightedActionSelect::TickNode(UBehaviorTreeComponent& Own
     SelectAndWrite(OwnerComp, NodeMemory);
 }
 
+float UGothicBTService_WeightedActionSelect::ScoreEntries(
+    UAbilitySystemComponent* ASC, float DistanceToTarget,
+    float RecklessFactor, float AggressionFactor, EPoolFilter Filter,
+    TArray<int32>& OutIndices, TArray<float>& OutScores,
+    TArray<FString>& OutGateParts) const
+{
+    float TotalWeight = 0.f;
+
+    for (int32 i = 0; i < Actions.Num(); ++i)
+    {
+        const FGothicWeightedActionEntry& Entry = Actions[i];
+
+        const bool bIsAttack = Entry.AbilityTag.IsValid();
+        const bool bInFilter =
+            Filter == EPoolFilter::All
+            || (Filter == EPoolFilter::Attack   &&  bIsAttack)
+            || (Filter == EPoolFilter::Movement && !bIsAttack);
+
+        float Score = 0.f;
+
+        const bool bReady = !bIsAttack || IsAbilityReady(ASC, Entry.AbilityTag);
+        const bool bInRange =
+            DistanceToTarget < 0.f
+            || ((Entry.MinRange < 0.f || DistanceToTarget >= Entry.MinRange)
+                && (Entry.MaxRange < 0.f || DistanceToTarget <= Entry.MaxRange));
+
+        if (bInFilter && bReady && bInRange)
+        {
+            // Two bias terms of the same shape, both additive per entry and
+            // both zero at their baseline. Additive and per-entry is the only
+            // form that does anything: a uniform multiplier over every score
+            // cancels out of the weighted roll entirely.
+            Score = FMath::Max(0.f,
+                Entry.BaseWeight
+                + Entry.RecklessnessWeightBonus * RecklessFactor
+                + Entry.AggressionWeightBonus   * AggressionFactor);
+        }
+
+        if (Score > 0.f)
+        {
+            OutIndices.Add(i);
+            OutScores.Add(Score);
+            TotalWeight += Score;
+        }
+
+        // Gate parts cover every entry in authored order whatever the filter,
+        // so a diagnostic line reads the same in both paths and an entry that
+        // is permanently r0 is still visible when it is out of the pool being
+        // rolled. Out-of-filter entries report their gates and a zero weight.
+        OutGateParts.Add(FString::Printf(TEXT("%s:r%d,R%d,w%.2f"),
+            *Entry.ActionID.ToString(), bReady ? 1 : 0, bInRange ? 1 : 0, Score));
+    }
+
+    return TotalWeight;
+}
+
+int32 UGothicBTService_WeightedActionSelect::RollWeighted(
+    const TArray<int32>& Indices, const TArray<float>& Scores,
+    float TotalWeight, float& OutRoll, float& OutRemainder, bool& bOutWasTail) const
+{
+    bOutWasTail = false;
+    OutRoll = 0.f;
+    OutRemainder = 0.f;
+
+    if (Indices.Num() == 0 || TotalWeight <= 0.f)
+    {
+        return INDEX_NONE;
+    }
+
+    float Roll = FMath::FRandRange(0.f, TotalWeight);
+    OutRoll = Roll;
+
+    for (int32 i = 0; i < Indices.Num(); ++i)
+    {
+        if (Roll <= Scores[i])
+        {
+            OutRemainder = Roll;
+            return Indices[i];
+        }
+        Roll -= Scores[i];
+    }
+
+    // Fallthrough. TotalWeight is accumulated by repeated float addition while
+    // Roll is drawn against that sum, so on the last entry the running
+    // remainder can sit a few ULPs above its score purely from rounding. The
+    // loop then exits WITHOUT a pick — and a Blackboard Name key is sticky, so
+    // the enemy silently keeps running whatever it picked last time. Landing on
+    // the last eligible entry is exactly what an exact-arithmetic roll of
+    // TotalWeight would have selected.
+    bOutWasTail = true;
+    OutRemainder = Roll;
+    return Indices.Last();
+}
+
 void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
 {
     UBlackboardComponent* BB = OwnerComp.GetBlackboardComponent();
@@ -319,6 +468,51 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
             ? MinMovementCommitDuration / Aggression
             : MinMovementCommitDuration;
 
+    // Recklessness bias: (1 - HealthPercent), 0 at full health, 1 at death.
+    // Reads straight off the character's own attributes — no Blackboard float
+    // key needed, one less thing to wire per BT asset.
+    //
+    // Hoisted above the two paths below. Pure reads with no logging and no
+    // early return, so the legacy path's observable order is unchanged.
+    float RecklessFactor = 0.f;
+    if (const AGothicCharacterBase* Character = Cast<AGothicCharacterBase>(Pawn))
+    {
+        const float MaxHealth = Character->GetMaxHealth();
+        if (MaxHealth > 0.f)
+        {
+            RecklessFactor = 1.f - FMath::Clamp(Character->GetHealth() / MaxHealth, 0.f, 1.f);
+        }
+    }
+
+    AActor* Target = TargetActorKey.IsNone()
+        ? nullptr
+        : Cast<AActor>(BB->GetValue<UBlackboardKeyType_Object>(TargetActorKey.GetSelectedKeyID()));
+
+    // HORIZONTAL distance. MinRange/MaxRange on the entries are authored against
+    // the reach of an animation — the Bestial Lucid's Claw band is 120-160uu —
+    // and an actor's location is its capsule CENTRE, so a 3D measurement carries
+    // a constant |HalfHeightA - HalfHeightB| offset that has nothing to do with
+    // how far apart the two creatures are on the floor. Her capsule going 88 ->
+    // 253 put a 165uu floor under that number: at 150uu of real contact the 3D
+    // distance read 327uu, outside every band in the pool, and this service
+    // logged "nothing eligible (5 entries, all gated)" for the whole encounter.
+    //
+    // A range band must describe the world, not the rig.
+    const float DistanceToTarget = Target
+        ? FVector::Dist2D(Pawn->GetActorLocation(), Target->GetActorLocation())
+        : -1.f;
+
+    if (bSplitAttackPool)
+    {
+        SelectSplit(OwnerComp, NodeMemory, BB, Pawn, ASC, Target, DistanceToTarget,
+            RecklessFactor, AggressionFactor, EffectiveCommitDuration, Now, LogTimeline);
+        return;
+    }
+
+    // ── Legacy combined path ────────────────────────────────────────────────
+    // Everything below is the pre-split behaviour, unchanged, and is what
+    // BT_EnemyCombat and BT_FeralRetained still run.
+
     // Don't interrupt a decision that's still genuinely running. This is the
     // whole fix for fast-cycling: without it, every 0.2s tick re-rolls and
     // aborts whatever just started, regardless of how long it actually needs.
@@ -384,23 +578,6 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
         }
     }
 
-    // Recklessness bias: (1 - HealthPercent), 0 at full health, 1 at death.
-    // Reads straight off the character's own attributes — no Blackboard float
-    // key needed, one less thing to wire per BT asset.
-    float RecklessFactor = 0.f;
-    if (const AGothicCharacterBase* Character = Cast<AGothicCharacterBase>(Pawn))
-    {
-        const float MaxHealth = Character->GetMaxHealth();
-        if (MaxHealth > 0.f)
-        {
-            RecklessFactor = 1.f - FMath::Clamp(Character->GetHealth() / MaxHealth, 0.f, 1.f);
-        }
-    }
-
-    AActor* Target = TargetActorKey.IsNone()
-        ? nullptr
-        : Cast<AActor>(BB->GetValue<UBlackboardKeyType_Object>(TargetActorKey.GetSelectedKeyID()));
-
     // TargetActorKey is configured but currently empty — no real combat
     // target exists right now (pre-combat, target lost/died, leashing).
     // Nothing in the pool should fire without one, not just range-gated
@@ -416,61 +593,22 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
         return;
     }
 
-    // HORIZONTAL distance. MinRange/MaxRange on the entries are authored against
-    // the reach of an animation — the Bestial Lucid's Claw band is 120-160uu —
-    // and an actor's location is its capsule CENTRE, so a 3D measurement carries
-    // a constant |HalfHeightA - HalfHeightB| offset that has nothing to do with
-    // how far apart the two creatures are on the floor. Her capsule going 88 ->
-    // 253 put a 165uu floor under that number: at 150uu of real contact the 3D
-    // distance read 327uu, outside every band in the pool, and this service
-    // logged "nothing eligible (5 entries, all gated)" for the whole encounter.
-    //
-    // A range band must describe the world, not the rig.
-    const float DistanceToTarget = Target
-        ? FVector::Dist2D(Pawn->GetActorLocation(), Target->GetActorLocation())
-        : -1.f;
-
     // Score every entry, skip anything not ready/out of range, accumulate a
     // running total for the weighted roll below.
-    TArray<float> Scores;
-    Scores.Reserve(Actions.Num());
-    float TotalWeight = 0.f;
-
+    //
     // Diagnostic: per-entry gate verdicts, so a pick line also says what the
     // pick was made FROM. An entry that is permanently `r0` while its readiness
     // key reads true in the CombatSync stream is the two services disagreeing;
     // an entry that is `r1 R1` on ticks where it never wins is just the roll.
+    TArray<int32>   Indices;
+    TArray<float>   Scores;
     TArray<FString> GateParts;
+    Indices.Reserve(Actions.Num());
+    Scores.Reserve(Actions.Num());
     GateParts.Reserve(Actions.Num());
 
-    for (const FGothicWeightedActionEntry& Entry : Actions)
-    {
-        float Score = 0.f;
-
-        const bool bReady = !Entry.AbilityTag.IsValid() || IsAbilityReady(ASC, Entry.AbilityTag);
-        const bool bInRange =
-            DistanceToTarget < 0.f
-            || ((Entry.MinRange < 0.f || DistanceToTarget >= Entry.MinRange)
-                && (Entry.MaxRange < 0.f || DistanceToTarget <= Entry.MaxRange));
-
-        if (bReady && bInRange)
-        {
-            // Two bias terms of the same shape, both additive per entry and
-            // both zero at their baseline. Additive and per-entry is the only
-            // form that does anything: a uniform multiplier over every score
-            // cancels out of the weighted roll entirely.
-            Score = FMath::Max(0.f,
-                Entry.BaseWeight
-                + Entry.RecklessnessWeightBonus * RecklessFactor
-                + Entry.AggressionWeightBonus   * AggressionFactor);
-        }
-
-        Scores.Add(Score);
-        TotalWeight += Score;
-
-        GateParts.Add(FString::Printf(TEXT("%s:r%d,R%d,w%.2f"),
-            *Entry.ActionID.ToString(), bReady ? 1 : 0, bInRange ? 1 : 0, Score));
-    }
+    const float TotalWeight = ScoreEntries(ASC, DistanceToTarget, RecklessFactor,
+        AggressionFactor, EPoolFilter::All, Indices, Scores, GateParts);
 
     const FString Breakdown = FString::Printf(TEXT("dist=%.1f|total=%.2f|gates=[%s]"),
         DistanceToTarget, TotalWeight, *FString::Join(GateParts, TEXT(" ")));
@@ -525,60 +663,389 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
         return;
     }
 
-    float Roll = FMath::FRandRange(0.f, TotalWeight);
+    float InitialRoll = 0.f;
+    float Remainder   = 0.f;
+    bool  bWasTail    = false;
+    const int32 Winner = RollWeighted(Indices, Scores, TotalWeight, InitialRoll, Remainder, bWasTail);
 
-    // Captured before the loop consumes it — the log wants the roll as drawn.
-    const float InitialRoll = Roll;
-
-    // LastEligible is the fallthrough answer, and it is not defensive padding.
-    // TotalWeight is accumulated by repeated float addition while Roll is drawn
-    // against that sum, so on the last entry the running remainder can sit a few
-    // ULPs above Scores[i] purely from rounding. The loop then exits WITHOUT
-    // writing — and ChosenAction is sticky, so the enemy silently keeps running
-    // whatever branch it picked last time. That is the same "frozen key" failure
-    // the TotalWeight <= 0 case above was rewritten to kill, arriving by a
-    // narrower door. Landing on the last eligible entry is exactly what an
-    // exact-arithmetic roll of TotalWeight would have selected.
-    int32 LastEligible = INDEX_NONE;
-
-    for (int32 i = 0; i < Actions.Num(); ++i)
+    if (Actions.IsValidIndex(Winner))
     {
-        if (Scores[i] <= 0.f)
+        LogTimeline(bWasTail ? TEXT("PICK-tail") : TEXT("PICK"),
+            FString::Printf(TEXT("'%s'->'%s'|roll=%.3f|remainder=%.6f|%s"),
+                *CurrentAction.ToString(), *Actions[Winner].ActionID.ToString(),
+                InitialRoll, Remainder, *Breakdown),
+            /*bAlways=*/CurrentAction != Actions[Winner].ActionID);
+
+        BB->SetValue<UBlackboardKeyType_Name>(
+            ChosenActionKey.GetSelectedKeyID(), Actions[Winner].ActionID);
+        if (Memory)
         {
-            continue;
+            Memory->LastDecisionTime = Now;
+        }
+    }
+}
+
+// ============================================================================
+// Split path — the positioning layer and the attack layer
+//
+// The shape, in one paragraph. Both layers are scored from the SAME authored
+// Actions array, partitioned on whether an entry carries an AbilityTag. One
+// roll decides which layer acts this tick — at P(attack) = AttackTotal /
+// (AttackTotal + MovementTotal), which reproduces the combined roll's odds
+// exactly at AttackLayerWeightScale 1.0 — and a second roll picks within the
+// winning layer. Movement writes ChosenAction and is protected only by
+// MinMovementCommitDuration, because nothing about walking is a commitment.
+// An attack writes its ABILITY TAG to ChosenAttackTagKey and LOCKS: from that
+// instant until the key is cleared, neither layer is re-scored at all.
+//
+// Why the lock is the key and not a timer. Everything this phase replaces was
+// a stopwatch approximating "is the decision still in flight" —
+// AbilityActivationGrace guessed 0.5s from the service's own tick rate, and
+// was wrong in both directions (too short for a slow dispatch, too long for a
+// refused activation). The dispatch task now clears the key on every exit path
+// it has, so "the ability is over" and "the lock is open" are the same event,
+// observed rather than estimated. The only timer left is AttackDispatchTimeout,
+// which is not a commitment window: it fires only when the ability NEVER went
+// active, means the tree is miswired, and says so at Error.
+// ============================================================================
+void UGothicBTService_WeightedActionSelect::SelectSplit(
+    UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory,
+    UBlackboardComponent* BB, APawn* Pawn, UAbilitySystemComponent* ASC,
+    AActor* Target, float DistanceToTarget, float RecklessFactor,
+    float AggressionFactor, float EffectiveCommitDuration, float Now,
+    TFunctionRef<void(const TCHAR*, const FString&, bool)> LogTimeline)
+{
+    auto* Memory = CastInstanceNodeMemory<FGothicWeightedActionMemory>(NodeMemory);
+
+    // No output key means the attack layer has nowhere to write. Refusing here
+    // rather than quietly falling back to the combined path: a silent fallback
+    // would present as "the split does nothing", which is the same symptom as
+    // the split being wrong, and this project has already lost sessions to two
+    // failures that looked identical.
+    if (ChosenAttackTagKey.IsNone())
+    {
+        LogTimeline(TEXT("SPLIT-misconfigured"),
+            TEXT("bSplitAttackPool is on but ChosenAttackTagKey is unset — attack layer disabled"),
+            /*bAlways=*/false);
+        return;
+    }
+
+    const FBlackboard::FKey AttackKeyID = ChosenAttackTagKey.GetSelectedKeyID();
+    const FName CommittedTag  = BB->GetValue<UBlackboardKeyType_Name>(AttackKeyID);
+    const FName CurrentAction = BB->GetValue<UBlackboardKeyType_Name>(ChosenActionKey.GetSelectedKeyID());
+
+    auto ReleaseCommitment = [&](bool bClearKey)
+    {
+        if (bClearKey)
+        {
+            BB->SetValue<UBlackboardKeyType_Name>(AttackKeyID, NAME_None);
         }
 
-        LastEligible = i;
-
-        if (Roll <= Scores[i])
+        if (Memory)
         {
-            LogTimeline(TEXT("PICK"),
-                FString::Printf(TEXT("'%s'->'%s'|roll=%.3f|%s"),
-                    *CurrentAction.ToString(), *Actions[i].ActionID.ToString(),
-                    InitialRoll, *Breakdown),
-                /*bAlways=*/CurrentAction != Actions[i].ActionID);
+            Memory->bAttackCommitted  = false;
+            Memory->bAttackDispatched = false;
+            Memory->AttackCommitTime  = -1.f;
+            Memory->CommittedActionID = NAME_None;
+            Memory->CommittedTagName  = NAME_None;
 
-            BB->SetValue<UBlackboardKeyType_Name>(ChosenActionKey.GetSelectedKeyID(), Actions[i].ActionID);
+            // Force the movement layer to re-roll on this very tick instead of
+            // serving out the remainder of a commit window that was frozen for
+            // the whole attack. The positioning decision that was current when
+            // the swing started describes a fight that has since moved.
+            Memory->LastDecisionTime = -1.f;
+        }
+    };
+
+    // ── Hard interrupt: no target ────────────────────────────────────────────
+    // Leash break, target death, disengage. This outranks the commitment lock —
+    // "no bail-outs" means the player cannot make her abandon a swing, not that
+    // she keeps swinging at nothing after the fight is over.
+    if (!TargetActorKey.IsNone() && !Target)
+    {
+        if (Memory && Memory->bAttackCommitted)
+        {
+            LogTimeline(TEXT("ATTACK-interrupt"),
+                FString::Printf(TEXT("committed='%s'|reason=no-target"),
+                    *Memory->CommittedActionID.ToString()),
+                /*bAlways=*/true);
+            ReleaseCommitment(/*bClearKey=*/true);
+        }
+
+        LogTimeline(TEXT("HOLD-no-target"),
+            FString::Printf(TEXT("held='%s'|targetKey=%s"),
+                *CurrentAction.ToString(), *TargetActorKey.SelectedKeyName.ToString()),
+            /*bAlways=*/false);
+        return;
+    }
+
+    // ── Commitment gate ──────────────────────────────────────────────────────
+    if (Memory && Memory->bAttackCommitted)
+    {
+        if (CommittedTag.IsNone())
+        {
+            // The dispatch task cleared the key: this attack is over, however it
+            // ended (finished, refused, cancelled, aborted).
+            //
+            // PHASE 3 HOOK. This is the single place a chain advances. A chain
+            // commitment would, instead of releasing, look up the next step from
+            // the committed entry's chain data, write ITS tag back into the key,
+            // reset AttackCommitTime/bAttackDispatched, and return — the lock
+            // never opens between steps, so a three-hit combo is one commitment
+            // with three dispatches rather than three commitments the movement
+            // layer can wedge itself between. Everything else in this function,
+            // and the whole of the dispatch task, is already chain-agnostic.
+            LogTimeline(TEXT("ATTACK-release"),
+                FString::Printf(TEXT("was='%s'|tag=%s|dispatched=%d|held=%.3f"),
+                    *Memory->CommittedActionID.ToString(),
+                    *Memory->CommittedTagName.ToString(),
+                    Memory->bAttackDispatched ? 1 : 0,
+                    Memory->AttackCommitTime >= 0.f ? (Now - Memory->AttackCommitTime) : -1.f),
+                /*bAlways=*/true);
+
+            ReleaseCommitment(/*bClearKey=*/false);
+            // Fall through and re-plan on this tick — no dead frame between the
+            // end of a swing and the next decision.
+        }
+        else
+        {
+            // Someone other than us wrote the key (a Blueprint, a scripted
+            // sequence, a designer forcing an opener). Adopt it rather than
+            // fight over it — re-arming the timeout from now is the honest
+            // reading of "a new commitment just started."
+            if (CommittedTag != Memory->CommittedTagName)
+            {
+                Memory->CommittedTagName  = CommittedTag;
+                Memory->CommittedActionID = NAME_None;
+                Memory->AttackCommitTime  = Now;
+                Memory->bAttackDispatched = false;
+            }
+
+            const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(CommittedTag, /*ErrorIfNotFound=*/false);
+
+            // Latching, not sampling. Once the ability has been seen active even
+            // once, the deadlock breaker is disarmed for the rest of this
+            // commitment: a swing that is between montage sections, or a chain
+            // between steps, reads inactive and must not be mistaken for a
+            // dispatch that never happened.
+            if (Tag.IsValid() && IsAbilityActive(ASC, Tag))
+            {
+                Memory->bAttackDispatched = true;
+            }
+
+            const float Held = Memory->AttackCommitTime >= 0.f ? (Now - Memory->AttackCommitTime) : 0.f;
+
+            if (!Memory->bAttackDispatched && Held > AttackDispatchTimeout)
+            {
+                // Error, not Verbose. In a correctly wired tree this is
+                // unreachable: the key is set, so the attack branch's decorator
+                // passes, so the dispatch task runs and either activates or
+                // clears the key itself. Reaching it means the BT never entered
+                // the branch — which is exactly the failure that was diagnosed
+                // by hand on July 30 and cost most of a session, so it gets a
+                // line that names its own cause.
+                UE_LOG(LogVigilCombat, Error,
+                    TEXT("WeightedActionSelect[%s]: committed to attack '%s' (%s) %.2fs ago and it never went active. "
+                         "Releasing. The tree never reached the dispatch task — check that the attack branch's "
+                         "decorator is 'ChosenAttackTag Is Set' with Observer Aborts, and that the dispatch task's "
+                         "AbilityTagKey points at the same Blackboard key this service writes."),
+                    *GetNameSafe(Pawn), *Memory->CommittedActionID.ToString(),
+                    *CommittedTag.ToString(), Held);
+
+                LogTimeline(TEXT("ATTACK-dispatch-timeout"),
+                    FString::Printf(TEXT("committed='%s'|tag=%s|held=%.3f|timeout=%.3f"),
+                        *Memory->CommittedActionID.ToString(), *CommittedTag.ToString(),
+                        Held, AttackDispatchTimeout),
+                    /*bAlways=*/true);
+
+                ReleaseCommitment(/*bClearKey=*/true);
+                // Fall through and re-plan.
+            }
+            else
+            {
+                // THE LOCK. Neither layer is scored, neither key is written.
+                // This is the whole of "once in those events it's locked to
+                // those" — there is no weight, no range band and no better
+                // option that can reach past this return.
+                LogTimeline(TEXT("ATTACK-committed"),
+                    FString::Printf(TEXT("committed='%s'|tag=%s|dispatched=%d|held=%.3f|dist=%.1f"),
+                        *Memory->CommittedActionID.ToString(), *CommittedTag.ToString(),
+                        Memory->bAttackDispatched ? 1 : 0, Held, DistanceToTarget),
+                    /*bAlways=*/false);
+                return;
+            }
+        }
+    }
+    else if (!CommittedTag.IsNone())
+    {
+        // The key is set but we hold no commitment — a value left over from a
+        // previous branch activation (OnBecomeRelevant drops our belief but
+        // cannot reach the Blackboard) or a hand-set stray. Clear it, or the
+        // attack branch's decorator passes forever on a ghost.
+        LogTimeline(TEXT("ATTACK-stale-clear"),
+            FString::Printf(TEXT("stale=%s"), *CommittedTag.ToString()), /*bAlways=*/true);
+        BB->SetValue<UBlackboardKeyType_Name>(AttackKeyID, NAME_None);
+    }
+
+    // ── Score both layers ────────────────────────────────────────────────────
+    //
+    // One scoring pass over the whole array, then partitioned — rather than two
+    // filtered passes — so there is exactly one gate breakdown per tick and it
+    // covers every entry in authored order. Two passes would either duplicate
+    // the diagnostic or make each half of it lie about the other half.
+    TArray<int32>   Indices;
+    TArray<float>   Scores;
+    TArray<FString> GateParts;
+    Indices.Reserve(Actions.Num());
+    Scores.Reserve(Actions.Num());
+    GateParts.Reserve(Actions.Num());
+
+    ScoreEntries(ASC, DistanceToTarget, RecklessFactor, AggressionFactor,
+        EPoolFilter::All, Indices, Scores, GateParts);
+
+    TArray<int32> AttackIdx, MoveIdx;
+    TArray<float> AttackScores, MoveScores;
+    float AttackTotal = 0.f;
+    float MoveTotal   = 0.f;
+
+    for (int32 k = 0; k < Indices.Num(); ++k)
+    {
+        const int32 i = Indices[k];
+        if (Actions[i].AbilityTag.IsValid())
+        {
+            AttackIdx.Add(i);
+            AttackScores.Add(Scores[k]);
+            AttackTotal += Scores[k];
+        }
+        else
+        {
+            MoveIdx.Add(i);
+            MoveScores.Add(Scores[k]);
+            MoveTotal += Scores[k];
+        }
+    }
+
+    const float ScaledAttackTotal = AttackTotal * FMath::Max(0.f, AttackLayerWeightScale);
+    const float LayerTotal = ScaledAttackTotal + MoveTotal;
+
+    const FString Breakdown = FString::Printf(
+        TEXT("dist=%.1f|atk=%.2f(x%.2f)|mov=%.2f|gates=[%s]"),
+        DistanceToTarget, AttackTotal, AttackLayerWeightScale, MoveTotal,
+        *FString::Join(GateParts, TEXT(" ")));
+
+    // ── Nothing eligible at all ──────────────────────────────────────────────
+    // Same reasoning as the combined path: the key is sticky, so leaving it
+    // alone means running the last pick forever. Fall back to a movement entry
+    // — it has no cooldown to be wrong about and no range gate to violate — or
+    // clear the key and let the tree's own Selector fallback take over.
+    if (LayerTotal <= 0.f)
+    {
+        const FGothicWeightedActionEntry* Fallback = Actions.FindByPredicate(
+            [this](const FGothicWeightedActionEntry& E)
+            {
+                return E.ActionID == FallbackActionID && !E.AbilityTag.IsValid();
+            });
+
+        const FName NewAction = Fallback ? Fallback->ActionID : NAME_None;
+
+        LogTimeline(TEXT("FALLBACK"),
+            FString::Printf(TEXT("'%s'->'%s'|%s"),
+                *CurrentAction.ToString(), *NewAction.ToString(), *Breakdown),
+            /*bAlways=*/CurrentAction != NewAction);
+
+        if (CurrentAction != NewAction)
+        {
+            BB->SetValue<UBlackboardKeyType_Name>(ChosenActionKey.GetSelectedKeyID(), NewAction);
             if (Memory)
             {
                 Memory->LastDecisionTime = Now;
             }
-            return;
         }
-
-        Roll -= Scores[i];
+        return;
     }
 
-    if (Actions.IsValidIndex(LastEligible))
+    // ── Layer roll ───────────────────────────────────────────────────────────
+    // At AttackLayerWeightScale 1.0 this is algebraically the combined roll:
+    // P(entry) = P(its layer) * P(entry | layer) = (LayerTotal_L / LayerTotal)
+    // * (Score / LayerTotal_L) = Score / LayerTotal. The split changes which
+    // KEY the answer is written to and what protects it, not the odds — so a
+    // regression here would be a lock bug, never a weighting one.
+    const bool bAttackWins =
+        ScaledAttackTotal > 0.f && FMath::FRandRange(0.f, LayerTotal) <= ScaledAttackTotal;
+
+    float RollValue = 0.f;
+    float Remainder = 0.f;
+    bool  bWasTail  = false;
+
+    if (bAttackWins)
     {
-        LogTimeline(TEXT("PICK-tail"),
-            FString::Printf(TEXT("'%s'->'%s'|roll=%.3f|remainder=%.6f|%s"),
-                *CurrentAction.ToString(), *Actions[LastEligible].ActionID.ToString(),
-                InitialRoll, Roll, *Breakdown),
-            /*bAlways=*/CurrentAction != Actions[LastEligible].ActionID);
+        const int32 Winner = RollWeighted(AttackIdx, AttackScores, AttackTotal,
+            RollValue, Remainder, bWasTail);
+
+        if (Actions.IsValidIndex(Winner))
+        {
+            const FGothicWeightedActionEntry& Entry = Actions[Winner];
+            const FName TagName = Entry.AbilityTag.GetTagName();
+
+            LogTimeline(bWasTail ? TEXT("ATTACK-commit-tail") : TEXT("ATTACK-commit"),
+                FString::Printf(TEXT("'%s'|tag=%s|roll=%.3f|%s"),
+                    *Entry.ActionID.ToString(), *TagName.ToString(), RollValue, *Breakdown),
+                /*bAlways=*/true);
+
+            BB->SetValue<UBlackboardKeyType_Name>(AttackKeyID, TagName);
+
+            if (Memory)
+            {
+                Memory->bAttackCommitted  = true;
+                Memory->bAttackDispatched = false;
+                Memory->AttackCommitTime  = Now;
+                Memory->CommittedActionID = Entry.ActionID;
+                Memory->CommittedTagName  = TagName;
+            }
+        }
+        return;
+    }
+
+    // ── Movement layer ───────────────────────────────────────────────────────
+    // The one legitimate commit window left. A movement entry has no IsActive()
+    // signal to hold a decision open with, so without this it would re-roll at
+    // 5Hz and flicker between Approach and Reposition instead of walking
+    // anywhere. It is a floor on how long a decision lasts, not a lock: an
+    // attack that wins the layer roll above never reaches this code.
+    if (!CurrentAction.IsNone() && Memory && Memory->LastDecisionTime >= 0.f
+        && (Now - Memory->LastDecisionTime) < EffectiveCommitDuration)
+    {
+        const bool bStillInPool = Actions.ContainsByPredicate(
+            [&CurrentAction](const FGothicWeightedActionEntry& E)
+            {
+                return E.ActionID == CurrentAction && !E.AbilityTag.IsValid();
+            });
+
+        if (bStillInPool)
+        {
+            LogTimeline(TEXT("HOLD-movement-commit"),
+                FString::Printf(TEXT("held='%s'|elapsed=%.3f|window=%.3f"),
+                    *CurrentAction.ToString(), Now - Memory->LastDecisionTime,
+                    EffectiveCommitDuration),
+                /*bAlways=*/false);
+            return;
+        }
+    }
+
+    const int32 MoveWinner = RollWeighted(MoveIdx, MoveScores, MoveTotal,
+        RollValue, Remainder, bWasTail);
+
+    if (Actions.IsValidIndex(MoveWinner))
+    {
+        LogTimeline(bWasTail ? TEXT("MOVE-tail") : TEXT("MOVE"),
+            FString::Printf(TEXT("'%s'->'%s'|roll=%.3f|%s"),
+                *CurrentAction.ToString(), *Actions[MoveWinner].ActionID.ToString(),
+                RollValue, *Breakdown),
+            /*bAlways=*/CurrentAction != Actions[MoveWinner].ActionID);
 
         BB->SetValue<UBlackboardKeyType_Name>(
-            ChosenActionKey.GetSelectedKeyID(), Actions[LastEligible].ActionID);
+            ChosenActionKey.GetSelectedKeyID(), Actions[MoveWinner].ActionID);
+
         if (Memory)
         {
             Memory->LastDecisionTime = Now;
@@ -596,7 +1063,12 @@ FString UGothicBTService_WeightedActionSelect::GetStaticDescription() const
             Entry.RecklessnessWeightBonus != 0.f ? TEXT(", +reckless") : TEXT(""),
             Entry.AggressionWeightBonus != 0.f ? TEXT(", +aggression") : TEXT("")));
     }
-    return FString::Printf(TEXT("%s\nPool: %s"),
+    return FString::Printf(TEXT("%s\nPool: %s%s"),
         *Super::GetStaticDescription(),
-        Parts.Num() > 0 ? *FString::Join(Parts, TEXT(", ")) : TEXT("(empty)"));
+        Parts.Num() > 0 ? *FString::Join(Parts, TEXT(", ")) : TEXT("(empty)"),
+        bSplitAttackPool
+            ? *FString::Printf(TEXT("\nSPLIT: attacks -> %s (locked until cleared), movement -> %s"),
+                ChosenAttackTagKey.IsNone() ? TEXT("(UNSET!)") : *ChosenAttackTagKey.SelectedKeyName.ToString(),
+                ChosenActionKey.IsNone() ? TEXT("(unset)") : *ChosenActionKey.SelectedKeyName.ToString())
+            : TEXT(""));
 }

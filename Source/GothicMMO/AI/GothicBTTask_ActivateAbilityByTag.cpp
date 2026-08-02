@@ -7,6 +7,8 @@
 #include "Abilities/GameplayAbility.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
+#include "BehaviorTree/BlackboardData.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Name.h"
 #include "GameFramework/Pawn.h"
 #include "GothicMMO.h"                      // LogVigilCombat
 #include "AI/GothicEnemyAIController.h"     // GothicBBKeys::ChosenAction
@@ -52,9 +54,76 @@ UGothicBTTask_ActivateAbilityByTag::UGothicBTTask_ActivateAbilityByTag()
 {
     NodeName = TEXT("Gothic Activate Ability By Tag");
 
-    // Per-run state (WatchedHandle, delegate binding) lives on the node, so
-    // each running tree needs its own instance.
+    // Per-run state (WatchedHandle, delegate binding, ResolvedTag) lives on the
+    // node, so each running tree needs its own instance.
     bCreateNodeInstance = true;
+
+    AbilityTagKey.AddNameFilter(this,
+        GET_MEMBER_NAME_CHECKED(UGothicBTTask_ActivateAbilityByTag, AbilityTagKey));
+    ReleaseKey.AddNameFilter(this,
+        GET_MEMBER_NAME_CHECKED(UGothicBTTask_ActivateAbilityByTag, ReleaseKey));
+}
+
+void UGothicBTTask_ActivateAbilityByTag::InitializeFromAsset(UBehaviorTree& Asset)
+{
+    Super::InitializeFromAsset(Asset);
+
+    if (UBlackboardData* BBAsset = GetBlackboardAsset())
+    {
+        AbilityTagKey.ResolveSelectedKey(*BBAsset);
+        ReleaseKey.ResolveSelectedKey(*BBAsset);
+    }
+}
+
+FGameplayTag UGothicBTTask_ActivateAbilityByTag::ResolveAbilityTag(
+    UBehaviorTreeComponent& OwnerComp) const
+{
+    if (AbilityTagKey.IsNone())
+    {
+        return AbilityTag;
+    }
+
+    const UBlackboardComponent* BB = OwnerComp.GetBlackboardComponent();
+    if (!BB)
+    {
+        return AbilityTag;
+    }
+
+    const FName TagName = BB->GetValue<UBlackboardKeyType_Name>(AbilityTagKey.GetSelectedKeyID());
+    if (TagName.IsNone())
+    {
+        // An empty key is not an error: it is the normal reading when this node
+        // is configured for key dispatch but the branch was entered by some
+        // other route. Fall back to the configured tag, which is None on a
+        // pure-dispatch node and produces the existing FAIL no-tag line.
+        return AbilityTag;
+    }
+
+    const FGameplayTag Resolved = FGameplayTag::RequestGameplayTag(TagName, /*ErrorIfNotFound=*/false);
+    if (!Resolved.IsValid())
+    {
+        UE_LOG(LogVigilCombat, Error,
+            TEXT("ActivateAbilityByTag: Blackboard key '%s' holds '%s', which is not a registered gameplay tag. "
+                 "The selector writes FGameplayTag::GetTagName() — a mismatch here means the tag was renamed "
+                 "or the key was hand-set."),
+            *AbilityTagKey.SelectedKeyName.ToString(), *TagName.ToString());
+        return AbilityTag;
+    }
+
+    return Resolved;
+}
+
+void UGothicBTTask_ActivateAbilityByTag::ReleaseCommitment(UBehaviorTreeComponent* OwnerComp) const
+{
+    if (ReleaseKey.IsNone() || !OwnerComp)
+    {
+        return;
+    }
+
+    if (UBlackboardComponent* BB = OwnerComp->GetBlackboardComponent())
+    {
+        BB->SetValue<UBlackboardKeyType_Name>(ReleaseKey.GetSelectedKeyID(), NAME_None);
+    }
 }
 
 EBTNodeResult::Type UGothicBTTask_ActivateAbilityByTag::ExecuteTask(
@@ -65,26 +134,46 @@ EBTNodeResult::Type UGothicBTTask_ActivateAbilityByTag::ExecuteTask(
     UAbilitySystemComponent* ASC =
         Pawn ? UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Pawn) : nullptr;
 
+    // Resolve BEFORE the first log line, so every line below names the tag this
+    // run actually dispatched rather than the configured default.
+    ResolvedTag = ResolveAbilityTag(OwnerComp);
+
     // FIRST statement with any output — before every early return, so this line
     // existing proves the branch was entered and the tag it was entered with.
-    const FString Ctx = MakeTaskContext(OwnerComp, Pawn, AbilityTag);
+    const FString Ctx = MakeTaskContext(OwnerComp, Pawn, ResolvedTag);
     UE_LOG(LogVigilCombat, Verbose,
-        TEXT("ActivateAbilityByTag[%s]: ENTER node '%s' (waitForEnd=%d)"),
-        *Ctx, *NodeName, bWaitForAbilityEnd ? 1 : 0);
+        TEXT("ActivateAbilityByTag[%s]: ENTER node '%s' (waitForEnd=%d, source=%s)"),
+        *Ctx, *NodeName, bWaitForAbilityEnd ? 1 : 0,
+        AbilityTagKey.IsNone() ? TEXT("configured") : TEXT("blackboard"));
+
+    // A release key with fire-and-forget clears the lock the instant the ability
+    // starts, so the selector re-plans on top of a running attack — precisely
+    // the mid-swing re-plan this task was written to stop. Loud rather than
+    // silently corrected: the correct fix is a config change, not a guess here.
+    if (!ReleaseKey.IsNone() && !bWaitForAbilityEnd)
+    {
+        UE_LOG(LogVigilCombat, Error,
+            TEXT("ActivateAbilityByTag[%s]: ReleaseKey is set but bWaitForAbilityEnd is false — "
+                 "the commitment lock will open the moment the ability starts. Set bWaitForAbilityEnd."),
+            *Ctx);
+    }
 
     if (!ASC)
     {
         UE_LOG(LogVigilCombat, Error,
             TEXT("ActivateAbilityByTag[%s]: FAIL no-asc — pawn has no AbilitySystemComponent"),
             *Ctx);
+        ReleaseCommitment(&OwnerComp);
         return EBTNodeResult::Failed;
     }
 
-    if (!AbilityTag.IsValid())
+    if (!ResolvedTag.IsValid())
     {
         UE_LOG(LogVigilCombat, Error,
-            TEXT("ActivateAbilityByTag[%s]: FAIL no-tag — AbilityTag not set on node '%s'"),
+            TEXT("ActivateAbilityByTag[%s]: FAIL no-tag — neither AbilityTagKey nor AbilityTag "
+                 "yielded a tag on node '%s'"),
             *Ctx, *NodeName);
+        ReleaseCommitment(&OwnerComp);
         return EBTNodeResult::Failed;
     }
 
@@ -94,7 +183,7 @@ EBTNodeResult::Type UGothicBTTask_ActivateAbilityByTag::ExecuteTask(
     const FGameplayAbilitySpec* FoundSpec = nullptr;
     for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
     {
-        if (Spec.Ability && Spec.Ability->GetAssetTags().HasTag(AbilityTag))
+        if (Spec.Ability && Spec.Ability->GetAssetTags().HasTag(ResolvedTag))
         {
             FoundSpec = &Spec;
             break;
@@ -109,6 +198,7 @@ EBTNodeResult::Type UGothicBTTask_ActivateAbilityByTag::ExecuteTask(
         UE_LOG(LogVigilCombat, Error,
             TEXT("ActivateAbilityByTag[%s]: FAIL no-spec — no granted ability carries this AssetTag; check AssetTags, not AbilityInputTag"),
             *Ctx);
+        ReleaseCommitment(&OwnerComp);
         return EBTNodeResult::Failed;
     }
 
@@ -117,6 +207,13 @@ EBTNodeResult::Type UGothicBTTask_ActivateAbilityByTag::ExecuteTask(
         // Already mid-execution — don't stack activations; let the Selector
         // pick something else (usually Move To). Legitimate and common, so
         // Verbose: this is a tree-timing observation, not a defect.
+        //
+        // DELIBERATELY does not release. The commitment this Failed belongs to
+        // is genuinely still running; clearing the key here would open the lock
+        // mid-swing and let the movement layer overwrite an attack that is
+        // actively hitting the player. The selector's own dispatched-latch
+        // covers this case, and the real end of the ability arrives on the
+        // OnAbilityEnded binding of whichever run owns it.
         UE_LOG(LogVigilCombat, Verbose,
             TEXT("ActivateAbilityByTag[%s]: FAIL already-active — spec is mid-execution, not re-activating"),
             *Ctx);
@@ -156,6 +253,7 @@ EBTNodeResult::Type UGothicBTTask_ActivateAbilityByTag::ExecuteTask(
             TEXT("ActivateAbilityByTag[%s]: FAIL activation-refused — TryActivateAbility returned false (cost/cooldown/blocked tags; see LogAbilitySystem)"),
             *Ctx);
         Cleanup();
+        ReleaseCommitment(&OwnerComp);
         return EBTNodeResult::Failed;
     }
 
@@ -171,6 +269,7 @@ EBTNodeResult::Type UGothicBTTask_ActivateAbilityByTag::ExecuteTask(
             bCancelled ? TEXT("Failed/cancelled") : TEXT("Succeeded"),
             bEndedDuringActivation ? 1 : 0);
         Cleanup();
+        ReleaseCommitment(&OwnerComp);
         return bCancelled ? EBTNodeResult::Failed : EBTNodeResult::Succeeded;
     }
 
@@ -206,10 +305,15 @@ void UGothicBTTask_ActivateAbilityByTag::HandleAbilityEnded(const FAbilityEndedD
     UE_LOG(LogVigilCombat, Verbose,
         TEXT("ActivateAbilityByTag[%s|%s]: FINISH latent — %s"),
         *GetNameSafe(OwnerComp->GetAIOwner() ? OwnerComp->GetAIOwner()->GetPawn() : nullptr),
-        AbilityTag.IsValid() ? *AbilityTag.ToString() : TEXT("(no tag set)"),
+        ResolvedTag.IsValid() ? *ResolvedTag.ToString() : TEXT("(no tag set)"),
         bCancelled ? TEXT("Failed/cancelled") : TEXT("Succeeded"));
 
     Cleanup();
+
+    // The commitment release, on the one event that actually means the attack
+    // is over. Before FinishLatentTask, so the selector's next tick already
+    // sees an open lock however fast the tree re-plans.
+    ReleaseCommitment(OwnerComp);
 
     // Cancelled (stunned mid-swing, phase interrupt) → Failed so the tree
     // re-plans rather than believing the attack landed.
@@ -226,6 +330,13 @@ EBTNodeResult::Type UGothicBTTask_ActivateAbilityByTag::AbortTask(
     }
 
     Cleanup();
+
+    // Hard interrupt — stagger, phase change, death, leash, or a
+    // higher-priority branch taking over. The commitment ends with the branch;
+    // leaving the key set would latch the selector on an attack that is no
+    // longer running and can only be recovered by the dispatch timeout.
+    ReleaseCommitment(&OwnerComp);
+
     return EBTNodeResult::Aborted;
 }
 
@@ -243,7 +354,12 @@ void UGothicBTTask_ActivateAbilityByTag::Cleanup()
 
 FString UGothicBTTask_ActivateAbilityByTag::GetStaticDescription() const
 {
-    return FString::Printf(TEXT("Activate: %s%s"),
-        AbilityTag.IsValid() ? *AbilityTag.ToString() : TEXT("(no tag set)"),
-        bWaitForAbilityEnd ? TEXT("\nwaits for ability end") : TEXT("\nfire and forget"));
+    return FString::Printf(TEXT("Activate: %s%s%s"),
+        AbilityTagKey.IsNone()
+            ? (AbilityTag.IsValid() ? *AbilityTag.ToString() : TEXT("(no tag set)"))
+            : *FString::Printf(TEXT("<%s>"), *AbilityTagKey.SelectedKeyName.ToString()),
+        bWaitForAbilityEnd ? TEXT("\nwaits for ability end") : TEXT("\nfire and forget"),
+        ReleaseKey.IsNone()
+            ? TEXT("")
+            : *FString::Printf(TEXT("\nreleases %s on finish"), *ReleaseKey.SelectedKeyName.ToString()));
 }
