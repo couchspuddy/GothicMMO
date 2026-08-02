@@ -1,6 +1,7 @@
 ﻿// GothicBTService_CombatSync.cpp
 
 #include "AI/GothicBTService_CombatSync.h"
+#include "GothicMMO.h"                      // LogVigilCombat
 #include "AI/GothicEnemyAIController.h"
 #include "AI/GothicEnemyBase.h"
 #include "AIController.h"
@@ -76,6 +77,7 @@ void UGothicBTService_CombatSync::OnBecomeRelevant(UBehaviorTreeComponent& Owner
     {
         Memory->TimeSinceRelevant = 0.f;
         Memory->bValidated        = false;
+        Memory->bTimelineSeeded   = false;
     }
 }
 
@@ -204,6 +206,15 @@ void UGothicBTService_CombatSync::TickNode(UBehaviorTreeComponent& OwnerComp,
     // ── Ability readiness ────────────────────────────────────────────────────
     if (UAbilitySystemComponent* ASC = ResolveASC(OwnerComp))
     {
+        // Diagnostic timeline (see the VigilTimeline block in
+        // GothicBTService_WeightedActionSelect.cpp for the shared format).
+        // Seeding is decided BEFORE the loop and applied AFTER it, so all
+        // entries seed on the same tick rather than only the first one.
+        FGothicCombatSyncMemory* TimelineMemory =
+            CastInstanceNodeMemory<FGothicCombatSyncMemory>(NodeMemory);
+        const bool bSeedTimeline = TimelineMemory && !TimelineMemory->bTimelineSeeded;
+        const float Now = OwnerComp.GetWorld() ? OwnerComp.GetWorld()->GetTimeSeconds() : 0.f;
+
         for (const FGothicAbilityReadinessSync& Entry : AbilitiesToSync)
         {
             if (!Entry.AbilityTag.IsValid() || Entry.ReadyKey.IsNone())
@@ -212,6 +223,18 @@ void UGothicBTService_CombatSync::TickNode(UBehaviorTreeComponent& OwnerComp,
             }
 
             bool bReady = false;
+
+            // Diagnostic decomposition. bReady folds two completely different
+            // causes into one bool — "the ability is already running" and "GAS
+            // refused it (cooldown/cost/blocked tags)" — and a false key looks
+            // identical either way from the Blackboard side. Captured
+            // separately so the timeline can tell them apart. bSpecFound
+            // distinguishes a third cause again: the tag matching nothing.
+            bool bSpecFound            = false;
+            bool bIsActive             = false;
+            bool bCanActivate          = false;
+            bool bCanActivateEvaluated = false;
+
             for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
             {
                 if (!Spec.Ability || !Spec.Ability->GetAssetTags().HasTag(Entry.AbilityTag))
@@ -221,12 +244,51 @@ void UGothicBTService_CombatSync::TickNode(UBehaviorTreeComponent& OwnerComp,
 
                 // Ready means: not already running, and CanActivateAbility says
                 // yes — which folds in cooldown GEs, costs, and blocked tags.
-                bReady = !Spec.IsActive()
-                    && Spec.Ability->CanActivateAbility(Spec.Handle, ASC->AbilityActorInfo.Get());
+                //
+                // Written as a short-circuiting if rather than the original
+                // single expression ON PURPOSE: `!IsActive && CanActivate` does
+                // not call CanActivateAbility while the ability is active, and
+                // CanActivateAbility is overridable in Blueprint. Evaluating it
+                // unconditionally to get a cleaner log line would change what
+                // runs — so the skipped case is reported as skipped instead.
+                bSpecFound = true;
+                bIsActive  = Spec.IsActive();
+                if (!bIsActive)
+                {
+                    bCanActivate          = Spec.Ability->CanActivateAbility(
+                        Spec.Handle, ASC->AbilityActorInfo.Get());
+                    bCanActivateEvaluated = true;
+                }
+                bReady = !bIsActive && bCanActivate;
                 break;
             }
 
+            // Read before write: this is the previous value of the key, which
+            // is what makes "did this write change anything" answerable without
+            // any extra per-entry state.
+            const bool bPrev =
+                BB->GetValue<UBlackboardKeyType_Bool>(Entry.ReadyKey.GetSelectedKeyID());
+
             BB->SetValue<UBlackboardKeyType_Bool>(Entry.ReadyKey.GetSelectedKeyID(), bReady);
+
+            if (bSeedTimeline || bPrev != bReady)
+            {
+                UE_LOG(LogVigilCombat, Verbose,
+                    TEXT("VigilTimeline|t=%.3f|%s|CombatSync|%s|%s|%d->%d|specFound=%d|isActive=%d|canActivate=%s|tag=%s"),
+                    Now, *GetNameSafe(Pawn),
+                    bSeedTimeline ? TEXT("SEED") : TEXT("CHANGE"),
+                    *Entry.ReadyKey.SelectedKeyName.ToString(),
+                    bPrev ? 1 : 0, bReady ? 1 : 0,
+                    bSpecFound ? 1 : 0, bIsActive ? 1 : 0,
+                    bCanActivateEvaluated ? (bCanActivate ? TEXT("1") : TEXT("0"))
+                                          : TEXT("skipped-active"),
+                    *Entry.AbilityTag.ToString());
+            }
+        }
+
+        if (bSeedTimeline)
+        {
+            TimelineMemory->bTimelineSeeded = true;
         }
     }
 

@@ -1,6 +1,7 @@
 ﻿// GothicBTService_WeightedActionSelect.cpp
 
 #include "AI/GothicBTService_WeightedActionSelect.h"
+#include "GothicMMO.h"                      // LogVigilCombat
 #include "AI/GothicBossArenaManager.h"
 #include "AIController.h"
 #include "Kismet/GameplayStatics.h"
@@ -34,6 +35,18 @@ namespace
          *  yet" and stops us re-scanning the actor list every tick. */
         TWeakObjectPtr<AGothicBossArenaManager> ArenaManager;
         bool bSearchedForArena = false;
+
+        /**
+         * Diagnostic only — hash of the last VigilTimeline line emitted for
+         * this pawn, so a state that persists across ticks (a hold window, a
+         * repeated identical pick) logs once instead of five times a second.
+         * A hash rather than the string itself because BT node memory is a raw
+         * byte block that is never constructed or destructed — an FString here
+         * would leak its allocation on every branch deactivation. Zeroed memory
+         * gives hash 0, which no real line collides with in practice, so the
+         * first line of a branch activation always prints.
+         */
+        uint32 LastTimelineHash = 0;
     };
 }
 
@@ -91,6 +104,7 @@ void UGothicBTService_WeightedActionSelect::OnBecomeRelevant(UBehaviorTreeCompon
         // trusting a stale weak pointer across a level change.
         Memory->ArenaManager.Reset();
         Memory->bSearchedForArena = false;
+        Memory->LastTimelineHash  = 0;
     }
 }
 
@@ -249,6 +263,45 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
     auto* Memory = reinterpret_cast<FGothicWeightedActionMemory*>(NodeMemory);
     const float Now = OwnerComp.GetWorld() ? OwnerComp.GetWorld()->GetTimeSeconds() : 0.f;
 
+    // ── VigilTimeline ────────────────────────────────────────────────────────
+    //
+    // Diagnostic instrumentation, shared line format with
+    // GothicBTService_CombatSync so `VigilTimeline` greps both services at once
+    // and the two streams interleave by their `t=` stamp. The question these
+    // two halves exist to answer together is: at the instants ChosenAction
+    // reads a given action, what does that action's readiness key read — and do
+    // the two ever hold TRUE SIMULTANEOUSLY, which is what an AND of two
+    // decorators requires. A point-in-time Blackboard dump cannot answer that;
+    // both keys reading true in one sample only proves they were both true when
+    // sampled, not that either was true when the tree evaluated.
+    //
+    // Dedupe policy: a line is emitted whenever its phase+detail differs from
+    // the previous one. Both services tick at 5Hz, so an unconditional line per
+    // tick would be ~10 lines/sec/pawn of mostly-identical text; a hold window
+    // or a repeated identical pick collapses to one line, and the reader takes
+    // "the state held until the next line" as the meaning of a gap. The one
+    // exception is bAlways below: a write that actually CHANGES ChosenAction is
+    // always logged, because that transition is precisely the event being timed
+    // and must never be swallowed by a hash collision or a repeat.
+    auto LogTimeline = [&](const TCHAR* Phase, const FString& Detail, bool bAlways)
+    {
+        const FString Line = FString::Printf(TEXT("%s|%s"), Phase, *Detail);
+        const uint32 Hash  = GetTypeHash(Line);
+
+        if (!bAlways && Memory && Memory->LastTimelineHash == Hash)
+        {
+            return;
+        }
+
+        if (Memory)
+        {
+            Memory->LastTimelineHash = Hash;
+        }
+
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|ActionSelect|%s"), Now, *GetNameSafe(Pawn), *Line);
+    };
+
     // Rotunda pillar escalation. 1.0 with four pillars up (and in every level
     // without an arena manager), 2.0 with all four down. Read once per tick and
     // used twice below: as a per-entry weight bias, and to shorten the movement
@@ -283,6 +336,22 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
                     ? AbilityActivationGrace
                     : EffectiveCommitDuration);
 
+            // Diagnostic context for the hold lines below. A held key and a
+            // freshly-rolled key are byte-identical in a Blackboard dump, and
+            // the difference is the whole question here: "ChosenAction=Charge"
+            // for 0.5s of activation grace after a pick that never reached the
+            // task is a completely different fact from Charge winning the roll
+            // on that tick.
+            const float HoldElapsed = (Memory && Memory->LastDecisionTime >= 0.f)
+                ? (Now - Memory->LastDecisionTime) : -1.f;
+            const float HoldWindow  = CurrentEntry->AbilityTag.IsValid()
+                ? AbilityActivationGrace : EffectiveCommitDuration;
+            const FString HoldDetail = FString::Printf(
+                TEXT("held='%s'|elapsed=%.3f|window=%.3f|tag=%s"),
+                *CurrentAction.ToString(), HoldElapsed, HoldWindow,
+                CurrentEntry->AbilityTag.IsValid()
+                    ? *CurrentEntry->AbilityTag.ToString() : TEXT("(movement)"));
+
             if (CurrentEntry->AbilityTag.IsValid())
             {
                 // Hold while it's genuinely running, AND while it's still on
@@ -293,13 +362,23 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
                 // reroll-eligible before it could ever start, while movement
                 // picks locked the key the moment they were written — so the
                 // key drifted to movement no matter how the weights were set.
-                if (IsAbilityActive(ASC, CurrentEntry->AbilityTag) || bWithinCommitWindow)
+                //
+                // Hoisted into a local purely so the log can name WHICH of the
+                // two clauses held the key. The original expression evaluated
+                // IsAbilityActive first and unconditionally, so this is the
+                // same call in the same order — no short-circuit was lost.
+                const bool bStillActive = IsAbilityActive(ASC, CurrentEntry->AbilityTag);
+                if (bStillActive || bWithinCommitWindow)
                 {
+                    LogTimeline(bStillActive ? TEXT("HOLD-ability-active")
+                                             : TEXT("HOLD-activation-grace"),
+                        HoldDetail, /*bAlways=*/false);
                     return;
                 }
             }
             else if (bWithinCommitWindow)
             {
+                LogTimeline(TEXT("HOLD-movement-commit"), HoldDetail, /*bAlways=*/false);
                 return;
             }
         }
@@ -330,6 +409,10 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
     // through to whatever non-combat behavior it has.
     if (!TargetActorKey.IsNone() && !Target)
     {
+        LogTimeline(TEXT("HOLD-no-target"),
+            FString::Printf(TEXT("held='%s'|targetKey=%s"),
+                *CurrentAction.ToString(), *TargetActorKey.SelectedKeyName.ToString()),
+            /*bAlways=*/false);
         return;
     }
 
@@ -352,6 +435,13 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
     TArray<float> Scores;
     Scores.Reserve(Actions.Num());
     float TotalWeight = 0.f;
+
+    // Diagnostic: per-entry gate verdicts, so a pick line also says what the
+    // pick was made FROM. An entry that is permanently `r0` while its readiness
+    // key reads true in the CombatSync stream is the two services disagreeing;
+    // an entry that is `r1 R1` on ticks where it never wins is just the roll.
+    TArray<FString> GateParts;
+    GateParts.Reserve(Actions.Num());
 
     for (const FGothicWeightedActionEntry& Entry : Actions)
     {
@@ -377,7 +467,13 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
 
         Scores.Add(Score);
         TotalWeight += Score;
+
+        GateParts.Add(FString::Printf(TEXT("%s:r%d,R%d,w%.2f"),
+            *Entry.ActionID.ToString(), bReady ? 1 : 0, bInRange ? 1 : 0, Score));
     }
+
+    const FString Breakdown = FString::Printf(TEXT("dist=%.1f|total=%.2f|gates=[%s]"),
+        DistanceToTarget, TotalWeight, *FString::Join(GateParts, TEXT(" ")));
 
     // Nothing eligible — everything on cooldown, everything out of range.
     //
@@ -406,6 +502,11 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
 
         const FName NewAction = Fallback ? Fallback->ActionID : NAME_None;
 
+        LogTimeline(TEXT("FALLBACK"),
+            FString::Printf(TEXT("'%s'->'%s'|%s"),
+                *CurrentAction.ToString(), *NewAction.ToString(), *Breakdown),
+            /*bAlways=*/CurrentAction != NewAction);
+
         if (CurrentAction != NewAction)
         {
             UE_LOG(LogTemp, Verbose,
@@ -425,6 +526,9 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
     }
 
     float Roll = FMath::FRandRange(0.f, TotalWeight);
+
+    // Captured before the loop consumes it — the log wants the roll as drawn.
+    const float InitialRoll = Roll;
 
     // LastEligible is the fallthrough answer, and it is not defensive padding.
     // TotalWeight is accumulated by repeated float addition while Roll is drawn
@@ -448,6 +552,12 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
 
         if (Roll <= Scores[i])
         {
+            LogTimeline(TEXT("PICK"),
+                FString::Printf(TEXT("'%s'->'%s'|roll=%.3f|%s"),
+                    *CurrentAction.ToString(), *Actions[i].ActionID.ToString(),
+                    InitialRoll, *Breakdown),
+                /*bAlways=*/CurrentAction != Actions[i].ActionID);
+
             BB->SetValue<UBlackboardKeyType_Name>(ChosenActionKey.GetSelectedKeyID(), Actions[i].ActionID);
             if (Memory)
             {
@@ -461,6 +571,12 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
 
     if (Actions.IsValidIndex(LastEligible))
     {
+        LogTimeline(TEXT("PICK-tail"),
+            FString::Printf(TEXT("'%s'->'%s'|roll=%.3f|remainder=%.6f|%s"),
+                *CurrentAction.ToString(), *Actions[LastEligible].ActionID.ToString(),
+                InitialRoll, Roll, *Breakdown),
+            /*bAlways=*/CurrentAction != Actions[LastEligible].ActionID);
+
         BB->SetValue<UBlackboardKeyType_Name>(
             ChosenActionKey.GetSelectedKeyID(), Actions[LastEligible].ActionID);
         if (Memory)

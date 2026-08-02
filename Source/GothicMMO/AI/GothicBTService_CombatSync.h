@@ -88,6 +88,17 @@ struct FGothicCombatSyncMemory
 {
     float TimeSinceRelevant = 0.f;
     bool  bValidated        = false;
+
+    /**
+     * Diagnostic only — has the readiness timeline emitted its opening SEED
+     * line for this branch activation yet? Readiness lines are logged ON CHANGE
+     * so a 5Hz service doesn't drown the log, and a change-only stream has no
+     * origin: a key that is false from the first tick and stays false emits
+     * nothing at all, which is indistinguishable from the service not running.
+     * The seed pass logs every configured entry once, so every later CHANGE
+     * line has a baseline to be a change FROM.
+     */
+    bool  bTimelineSeeded   = false;
 };
 
 /** One ability whose readiness should be mirrored into a Blackboard bool. */
