@@ -304,8 +304,54 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
     const bool bHit = World->LineTraceSingleByChannel(Hit, Start, End, ECC_Weapon, Params);
 
+    // ── Fire telemetry ───────────────────────────────────────────────────────
+    // Exactly one line per fire resolution, miss included, on every path out of
+    // this function below the trace. A silent miss is the precise thing this
+    // exists to catch: a verification pass measured vital-aimed shots dealing
+    // zero damage while body shots landed, same spawn, clean A/B, and could not
+    // adjudicate it because a missed trace and a landed non-vital hit were
+    // indistinguishable in the log — neither wrote anything.
+    //
+    // distToVital is the number that settles it. It is the impact point to the
+    // victim's CURRENT projected vital, so a systematic aim-vs-trace parallax
+    // shows up as a steady non-zero offset across shots rather than a mystery,
+    // and traceStart/aimDir give the origin to compare the camera ray against.
+    //
+    // Observation only. Nothing in this block changes what a shot does.
+    const float TimelineNow = World->GetTimeSeconds();
+
+    auto EmitFireTimeline =
+        [&](const AActor* Victim, const FVector& ImpactPoint, bool bVital, float RawDamage)
+    {
+        float DistToVital = -1.f;
+        if (Victim)
+        {
+            if (const UGothicVitalPointComponent* VictimVital =
+                    Victim->FindComponentByClass<UGothicVitalPointComponent>())
+            {
+                DistToVital = FVector::Dist(ImpactPoint, VictimVital->GetCurrentVitalWorldLocation());
+            }
+        }
+
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|Fire|%s|victim=%s|impact=%s|vital=%d|distToVital=%.1f|")
+            TEXT("raw=%.1f|traceStart=%s|aimDir=%s"),
+            TimelineNow,
+            *GetNameSafe(Char),
+            Victim ? TEXT("HIT") : TEXT("MISS"),
+            Victim ? *Victim->GetName() : TEXT("none"),
+            *ImpactPoint.ToCompactString(),
+            bVital ? 1 : 0,
+            DistToVital,
+            RawDamage,
+            *Start.ToCompactString(),
+            *AimDir.ToCompactString());
+    };
+
     if (!bHit || !Hit.GetActor())
     {
+        EmitFireTimeline(nullptr, bHit ? Hit.ImpactPoint : End, /*bVital=*/ false, /*RawDamage=*/ 0.f);
+
         // A miss breaks the Oversurge streak. Done here rather than on the
         // damage path so shooting a wall counts as a miss too -- the streak is
         // "hits without missing", not "hits since the last hit".
@@ -319,6 +365,9 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
     if (!TargetASC || !SourceASC || !EffectiveDamageGE)
     {
+        // A landed shot that will never apply damage — the world geometry case,
+        // and the one that reads as "the shot did nothing" without a line.
+        EmitFireTimeline(Hit.GetActor(), Hit.ImpactPoint, /*bVital=*/ false, /*RawDamage=*/ 0.f);
         return;
     }
 
@@ -410,6 +459,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
     if (!Spec.IsValid())
     {
+        EmitFireTimeline(Hit.GetActor(), Hit.ImpactPoint, bIsVitalHit, /*RawDamage=*/ 0.f);
         return;
     }
 
@@ -446,6 +496,10 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         bReckoningForced ? TEXT("yes") : TEXT("no"),
         bReadAmplified   ? TEXT("yes") : TEXT("no"),
         bOversurged      ? TEXT("yes") : TEXT("no"));
+
+    // The landed-and-damaged case, in the correlatable format. raw= is the
+    // magnitude that just went into the SetByCaller, after every multiplier.
+    EmitFireTimeline(Hit.GetActor(), Hit.ImpactPoint, bIsVitalHit, FinalDamage);
 
     // Super meter on a LANDED hit. Applied here rather than on activation so a
     // miss builds nothing -- the weapon assets have authored
