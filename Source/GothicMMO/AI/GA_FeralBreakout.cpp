@@ -6,7 +6,7 @@
 #include "AI/GothicEnemyBase.h"
 #include "AI/GothicEnemySpawnPoint.h"
 #include "AI/GothicEncounterVolume.h"
-#include "AI/AGothicFeralRetainedController.h"
+#include "AI/GothicEnemyAIController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "GameFramework/Character.h"
@@ -118,15 +118,19 @@ void UGA_FeralBreakout::PerformBreakout()
                 {
                     AIC->StopMovement();
 
-                    if (AGothicFeralRetainedController* FeralAIC =
-                            Cast<AGothicFeralRetainedController>(AIC))
+                    //
+                    //    The guard lives on AGothicEnemyAIController now, not on
+                    //    the Feral's own controller — every enemy that launches
+                    //    itself needs it. Cast to the base so any enemy
+                    //    controller satisfies it.
+                    if (AGothicEnemyAIController* EnemyAIC = Cast<AGothicEnemyAIController>(AIC))
                     {
-                        FeralAIC->BeginLeapFlight();
+                        EnemyAIC->BeginLeapFlight();
                     }
                     else
                     {
                         UE_LOG(LogTemp, Warning,
-                            TEXT("FeralBreakout[%s]: controller is %s, not AGothicFeralRetainedController "
+                            TEXT("FeralBreakout[%s]: controller is %s, not AGothicEnemyAIController "
                                  "— the leap is unguarded and her AI will steer her out of the arc."),
                             *GetNameSafe(Avatar), *GetNameSafe(AIC));
                     }

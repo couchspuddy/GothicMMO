@@ -7,17 +7,8 @@
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "AI/GA_FeralBreakout.h"
 #include "Abilities/GameplayAbility.h"
-#include "BrainComponent.h"
-#include "GameFramework/Character.h"
-#include "GameFramework/CharacterMovementComponent.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
-
-namespace
-{
-    /** Named so nothing else's RestartLogic can resume the leap by accident. */
-    const TCHAR* GLeapPauseReason = TEXT("FeralBreakoutLeap");
-}
 
 void AGothicFeralRetainedController::OnPossess(APawn* InPawn)
 {
@@ -43,105 +34,10 @@ void AGothicFeralRetainedController::OnPossess(APawn* InPawn)
     }
 }
 
-void AGothicFeralRetainedController::BeginLeapFlight()
-{
-    ACharacter* MeChar = Cast<ACharacter>(GetPawn());
-    UCharacterMovementComponent* Move = MeChar ? MeChar->GetCharacterMovement() : nullptr;
-    if (!MeChar || !Move)
-    {
-        UE_LOG(LogTemp, Warning,
-            TEXT("FeralBreakout[%s]: leap flight not guarded — no character/movement component. "
-                 "The behaviour tree can steer her out of the arc."),
-            *GetNameSafe(GetPawn()));
-        return;
-    }
-
-    if (bLeapInFlight)
-    {
-        // Second launch before the first landed. Don't re-save AirControl or
-        // SavedAirControl would be overwritten with the zero we just wrote.
-        GetWorldTimerManager().SetTimer(
-            LeapFlightSafetyHandle, this, &AGothicFeralRetainedController::HandleLeapFlightTimeout,
-            LeapFlightSafetySeconds, false);
-        return;
-    }
-
-    bLeapInFlight = true;
-
-    // 1. No new move requests for the duration of the arc.
-    if (UBrainComponent* Brain = GetBrainComponent())
-    {
-        Brain->PauseLogic(GLeapPauseReason);
-    }
-
-    // 2. And no steering even if one slips through — a Move To issued in
-    //    MOVE_Falling is spent as air-control acceleration, which is exactly
-    //    what was cancelling her horizontal velocity.
-    SavedAirControl = Move->AirControl;
-    Move->AirControl = 0.f;
-
-    MeChar->LandedDelegate.AddDynamic(this, &AGothicFeralRetainedController::HandleLeapLanded);
-
-    GetWorldTimerManager().SetTimer(
-        LeapFlightSafetyHandle, this, &AGothicFeralRetainedController::HandleLeapFlightTimeout,
-        LeapFlightSafetySeconds, false);
-
-    UE_LOG(LogTemp, Verbose,
-        TEXT("FeralBreakout[%s]: leap flight begun — brain paused, AirControl %.3f -> 0 "
-             "(safety %.1fs)"),
-        *GetNameSafe(MeChar), SavedAirControl, LeapFlightSafetySeconds);
-}
-
-void AGothicFeralRetainedController::HandleLeapLanded(const FHitResult& Hit)
-{
-    EndLeapFlight(TEXT("landed"));
-}
-
-void AGothicFeralRetainedController::HandleLeapFlightTimeout()
-{
-    EndLeapFlight(TEXT("safety timer — landing never arrived"));
-}
-
-void AGothicFeralRetainedController::EndLeapFlight(const TCHAR* Reason)
-{
-    if (!bLeapInFlight)
-    {
-        return;
-    }
-    bLeapInFlight = false;
-
-    if (UWorld* World = GetWorld())
-    {
-        World->GetTimerManager().ClearTimer(LeapFlightSafetyHandle);
-    }
-
-    ACharacter* MeChar = Cast<ACharacter>(GetPawn());
-    if (MeChar)
-    {
-        MeChar->LandedDelegate.RemoveDynamic(this, &AGothicFeralRetainedController::HandleLeapLanded);
-
-        if (UCharacterMovementComponent* Move = MeChar->GetCharacterMovement())
-        {
-            Move->AirControl = SavedAirControl;
-        }
-    }
-
-    if (UBrainComponent* Brain = GetBrainComponent())
-    {
-        Brain->ResumeLogic(GLeapPauseReason);
-    }
-
-    UE_LOG(LogTemp, Verbose,
-        TEXT("FeralBreakout[%s]: leap flight ended (%s) — brain resumed, AirControl restored to %.3f"),
-        *GetNameSafe(MeChar), Reason, SavedAirControl);
-}
-
 void AGothicFeralRetainedController::OnUnPossess()
 {
-    // Before the pawn goes: hand back its AirControl and drop the binding, or a
-    // re-possess would inherit a zeroed value and a stale delegate.
-    EndLeapFlight(TEXT("unpossessed"));
-
+    // The leap flight is unwound by AGothicEnemyAIController::OnUnPossess, which
+    // does it before its own Super so the pawn is still ours at the time.
     if (CachedASC && HealthChangedHandle.IsValid())
     {
         CachedASC->GetGameplayAttributeValueChangeDelegate(

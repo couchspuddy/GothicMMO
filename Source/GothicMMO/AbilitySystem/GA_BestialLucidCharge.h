@@ -31,11 +31,23 @@
 //      of this one. (The automatic hitbox suppression in UGothicGameplayAbility
 //      cannot catch it: the charge has no montage, so there is no notify state
 //      to detect.)
+//   4. Rewire the graph to arm the window at the LAUNCH — see below.
+//
+// THE WINDOW IS ANCHORED TO THE LAUNCH, NOT TO ACTIVATION
+//
+// It used to be armed in ActivateAbility, which is the wrong instant by the
+// whole length of the windup. The graph waits 0.8s standing still before it
+// calls LaunchCharacter, so 62% of a 1.3s window was spent sweeping the boss's
+// own start position, and the window then expired roughly half a second before
+// the leap actually finished — the back half of the charge could not damage
+// anything, and the front half swept an empty patch of floor.
+//
+// So BeginChargeDamageWindow is BlueprintCallable and the graph calls it
+// immediately after LaunchCharacter. The window closes on whichever comes
+// first: the controller's OnLeapLanded, or ChargeDamageWindow elapsing.
 //
 // The Blueprint graph keeps doing the movement — LaunchCharacter, the waits,
-// EndAbility. This class only adds the damage window, and starts it before
-// Super::ActivateAbility runs the graph so a graph that ends the ability
-// synchronously still tears the window down cleanly.
+// EndAbility. This class only owns the damage window and the unwind.
 
 #pragma once
 
@@ -63,6 +75,18 @@ public:
         const FGameplayAbilityActivationInfo ActivationInfo,
         bool bReplicateEndAbility,
         bool bWasCancelled) override;
+
+    /**
+     * Arms the repeating damage sweep. Call from the graph IMMEDIATELY after
+     * LaunchCharacter — that is the instant the charge becomes dangerous, and
+     * arming it anywhere earlier spends the window on the windup.
+     *
+     * Idempotent: a second call while the window is already open is ignored, so
+     * a graph that is wired twice, or a re-entrant branch, cannot restart the
+     * clock or clear the already-hit set mid-charge.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Charge")
+    void BeginChargeDamageWindow();
 
 protected:
     /**
@@ -93,16 +117,36 @@ protected:
     TSubclassOf<UGameplayEffect> ChargeDamageEffect;
 
     /**
-     * How long the charge stays dangerous after activation (seconds).
+     * BACKSTOP on how long the charge stays dangerous, measured from the LAUNCH
+     * (seconds). Not from activation — see the file header.
      *
-     * Wants to cover the travel, not the recovery. The Blueprint's own waits
-     * total ~1.3s at a launch velocity of 1800, and the BT task's equivalent is
-     * MaxChargeDistance/ChargeSpeed = 1500/1200 = 1.25s. The window closes on
-     * its own even if the ability outlives the movement, so an overrun costs a
-     * few harmless sweeps rather than a boss who damages on contact forever.
+     * This is no longer the primary closer. The window normally ends on the
+     * controller's OnLeapLanded, which is the real end of the travel; this only
+     * catches a leap whose landing never arrives. So it wants to be an upper
+     * bound on the traversal, and over-running it is cheap where undershooting
+     * is not.
+     *
+     * WHY IT IS NOT 1.3. That number was justified as MaxChargeDistance /
+     * ChargeSpeed = 1500 / 1200 = 1.25s, which is arithmetically fine and wrong
+     * twice over: it counted the 0.8s stationary windup as travel, and 1200 is
+     * the BT task's speed, not the graph's. The graph launches at 1800 XY /
+     * 400 Z. Redone against the real numbers:
+     *
+     *   horizontal  1500 / 1800                     = 0.83s
+     *   ballistic   2 * 400 / 980 (default gravity) = 0.82s
+     *
+     * Both say under a second, and both disagree with the measurement: she was
+     * observed still in the air and ARRIVING 1.2-1.5s after the old ability end
+     * at ~1.43s, i.e. roughly 1.8-2.0s of travel after the launch. Neither
+     * derivation accounts for her GravityScale, her 1.5x capsule, or a landing
+     * on a lower floor than the launch.
+     *
+     * 2.0 is the top of that measured arrival band. It is a STARTING POINT for a
+     * measured pass, not a tuned value — measure the launch-to-landed interval
+     * over several charges and set this a little above the worst one.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge")
-    float ChargeDamageWindow = 1.3f;
+    float ChargeDamageWindow = 2.0f;
 
     /**
      * Seconds between sweeps.
@@ -119,11 +163,21 @@ private:
     /** One sweep: overlap pawns around the boss, damage each at most once. */
     void SweepChargeDamage();
 
-    /** Arms the repeating sweep. Authority only. */
-    void BeginChargeDamageWindow();
-
-    /** Disarms it. Safe to call when nothing is armed. */
+    /** Disarms the sweep and unbinds the landing hook. Safe when nothing is armed. */
     void EndChargeDamageWindow();
+
+    /**
+     * The controller's leap ended — stop sweeping. A charge that is over must
+     * not keep running people over while the ability finishes its recovery.
+     */
+    UFUNCTION()
+    void HandleLeapLanded(bool bLanded);
+
+    /** The enemy controller of the avatar, or null. */
+    class AGothicEnemyAIController* GetEnemyController() const;
+
+    /** True between BeginChargeDamageWindow and EndChargeDamageWindow. */
+    bool bChargeWindowOpen = false;
 
     FTimerHandle ChargeSweepTimerHandle;
 
