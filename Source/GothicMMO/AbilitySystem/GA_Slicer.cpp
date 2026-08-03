@@ -133,7 +133,9 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
                     // Slicer doesn't resolve vitals today.
                     if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(HitActor))
                     {
-                        HitEnemy->MulticastOnHit(HitActor->GetActorLocation(), false, SlicerDamage);
+                        HitEnemy->MulticastOnHit(
+                            HitActor->GetActorLocation(), false, SlicerDamage,
+                            GetAvatarActorFromActorInfo());
                     }
 
                 }

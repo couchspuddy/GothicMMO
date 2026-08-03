@@ -186,9 +186,18 @@ public:
     float GetSelahAwardAmount() const { return SelahAwardAmount; }
     TSubclassOf<UGameplayEffect> GetSelahGainEffect() const { return SelahGainEffect; }
     
-    /** Multicast RPC — server broadcasts hit feedback to all clients. */
+    /**
+     * Multicast RPC — server broadcasts hit feedback to all clients.
+     *
+     * DamageInstigator is the actor that dealt the hit (the ability's avatar).
+     * It exists so the receiving machine can tell a shooter-scoped effect (the
+     * floating damage number, which belongs only to whoever fired) from a
+     * viewer-scoped one (the health bar, which every local viewer earns). Pass
+     * null for damage with no player behind it — nobody is credited and no
+     * number is drawn.
+     */
     UFUNCTION(NetMulticast, Unreliable)
-    void MulticastOnHit(FVector HitLocation, bool bVitalHit, float DamageAmount);
+    void MulticastOnHit(FVector HitLocation, bool bVitalHit, float DamageAmount, AActor* DamageInstigator);
     
     /** Per-enemy regroup pause duration after a pack member dies. Set in Blueprint. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI")

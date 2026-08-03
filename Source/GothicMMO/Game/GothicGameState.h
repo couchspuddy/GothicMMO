@@ -12,6 +12,7 @@
 
 class AGothicEnemyBase;
 class AGothicEncounterVolume;
+class APlayerController;
 class UGothicSelahCollectBarWidget;
 
 UCLASS()
@@ -164,10 +165,16 @@ protected:
 	UFUNCTION()
 	void OnRep_SelahCollect();
 
+	/** Drives one local player's bar to the current phase, creating it on demand. */
+	void ApplyCollectPhaseToLocalPlayer(APlayerController* PC);
+
 	/** The collect-bar widget class. Assign WBP_SelahCollectBar in BP_GothicGameState. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
 	TSubclassOf<UGothicSelahCollectBarWidget> CollectBarWidgetClass;
 
+	/** One bar per LOCAL player, not one bar per machine. Split-screen and the
+	 *  listen-server host both need their own; each is identified by its own
+	 *  GetOwningPlayer() so the GameState holds no controller pointers. */
 	UPROPERTY(Transient)
-	TObjectPtr<UGothicSelahCollectBarWidget> CollectBarWidget;
+	TArray<TObjectPtr<UGothicSelahCollectBarWidget>> CollectBarWidgets;
 };

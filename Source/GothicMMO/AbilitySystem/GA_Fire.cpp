@@ -483,7 +483,8 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     {
         // An Oversurge reads as a vital hit to the feedback layer so it gets the
         // heavier number and flash rather than passing as an ordinary tick.
-        HitEnemy->MulticastOnHit(Hit.ImpactPoint, bIsVitalHit || bOversurged, FinalDamage);
+        HitEnemy->MulticastOnHit(
+            Hit.ImpactPoint, bIsVitalHit || bOversurged, FinalDamage, Char);
     }
 
 }

@@ -83,48 +83,89 @@ void AGothicGameState::SetSelahCollectPhase(uint8 NewPhase, float Duration)
 void AGothicGameState::OnRep_SelahCollect()
 {
 	UWorld* World = GetWorld();
-	APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
-	if (!PC)
+	if (!World)
 	{
-		return; // dedicated server / no local viewer — nothing to show
+		return;
+	}
+
+	// EVERY local player controller, not player 0. The bar is viewer-scoped —
+	// whoever is looking at this machine gets one — and GetFirstPlayerController()
+	// on a listen server is always the host, so the host's bar was the only bar in
+	// the game and a remote client never saw the collection fill at all. On a
+	// dedicated server this loop simply finds no local controller and does nothing,
+	// exactly as the old early-return did.
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PC = It->Get();
+		if (PC && PC->IsLocalController())
+		{
+			ApplyCollectPhaseToLocalPlayer(PC);
+		}
+	}
+
+	// Drop any bar whose owning player has gone (split-screen player leaving,
+	// travel) so the array cannot grow across a session.
+	CollectBarWidgets.RemoveAll([](const TObjectPtr<UGothicSelahCollectBarWidget>& Bar)
+	{
+		return Bar == nullptr || Bar->GetOwningPlayer() == nullptr;
+	});
+}
+
+void AGothicGameState::ApplyCollectPhaseToLocalPlayer(APlayerController* PC)
+{
+	// Bars are found by asking each widget who owns it rather than by keying a map
+	// on controller pointers: GameState outlives pawns and connections and must not
+	// hold pointers to either. The list is one entry deep in every normal session.
+	UGothicSelahCollectBarWidget* Bar = nullptr;
+	for (const TObjectPtr<UGothicSelahCollectBarWidget>& Existing : CollectBarWidgets)
+	{
+		if (Existing && Existing->GetOwningPlayer() == PC)
+		{
+			Bar = Existing;
+			break;
+		}
 	}
 
 	switch (SelahCollectPhase)
 	{
 	case 1: // collecting
-		if (!CollectBarWidget && CollectBarWidgetClass)
+		if (!Bar && CollectBarWidgetClass)
 		{
-			CollectBarWidget = CreateWidget<UGothicSelahCollectBarWidget>(PC, CollectBarWidgetClass);
-		}
-		if (CollectBarWidget)
-		{
-			if (!CollectBarWidget->IsInViewport())
+			Bar = CreateWidget<UGothicSelahCollectBarWidget>(PC, CollectBarWidgetClass);
+			if (Bar)
 			{
-				CollectBarWidget->AddToViewport();
+				CollectBarWidgets.Add(Bar);
 			}
-			CollectBarWidget->StartCollect(SelahCollectDuration);
+		}
+		if (Bar)
+		{
+			if (!Bar->IsInViewport())
+			{
+				Bar->AddToViewport();
+			}
+			Bar->StartCollect(SelahCollectDuration);
 		}
 		break;
 
 	case 2: // interrupted
-		if (CollectBarWidget)
+		if (Bar)
 		{
-			CollectBarWidget->InterruptCollect();
+			Bar->InterruptCollect();
 		}
 		break;
 
 	case 3: // completed
-		if (CollectBarWidget)
+		if (Bar)
 		{
-			CollectBarWidget->CompleteCollect();
+			Bar->CompleteCollect();
 		}
 		break;
 
 	default: // 0 — clear
-		if (CollectBarWidget)
+		if (Bar)
 		{
-			CollectBarWidget->RemoveFromParent();
-			CollectBarWidget = nullptr;
+			Bar->RemoveFromParent();
+			CollectBarWidgets.Remove(Bar);
 		}
 		break;
 	}

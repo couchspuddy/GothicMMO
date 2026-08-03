@@ -10,6 +10,7 @@
 #include "AI/GothicPackSubsystem.h"
 #include "UI/GothicHUD.h"
 #include "GameFramework/PlayerController.h"
+#include "Engine/World.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "Components/CapsuleComponent.h"
@@ -623,7 +624,7 @@ void AGothicEnemyBase::SpawnLootDrop()
 }
 
 void AGothicEnemyBase::MulticastOnHit_Implementation(
-    FVector HitLocation, bool bVitalHit, float DamageAmount)
+    FVector HitLocation, bool bVitalHit, float DamageAmount, AActor* DamageInstigator)
 {
     // This runs on every client (and the server). Drive visual/audio feedback here.
 
@@ -640,18 +641,45 @@ void AGothicEnemyBase::MulticastOnHit_Implementation(
         }
     }
 
-    // Floating damage number + the canvas health bar. Both run per-client, so the
-    // local player's own HUD is the right target. ShowDamageNumber and
-    // RegisterEnemyHealthBar both existed with zero callers project-wide — the
-    // reason no number and no working health bar ever appeared. The canvas health
-    // bar is screen-projected, so it is always player-facing by construction,
-    // unlike the old world-space HealthBarWidget component.
-    if (const APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr)
+    // Floating damage number + the canvas health bar. Both run per-client, but they
+    // are NOT scoped the same way, and sharing one GetFirstPlayerController() lookup
+    // conflated them: on a listen server player 0 is the host, so a remote player's
+    // hits painted their damage numbers onto the host's screen.
+    //
+    // The health bar is VIEWER-scoped — anyone watching this enemy get hit has
+    // earned the bar — so every local controller registers it. The damage number is
+    // SHOOTER-scoped: only the local player who actually dealt the hit gets it.
+    //
+    // The canvas health bar is screen-projected, so it is always player-facing by
+    // construction, unlike the old world-space HealthBarWidget component.
+    UWorld* World = GetWorld();
+    if (!World)
     {
-        if (AGothicHUD* HUD = Cast<AGothicHUD>(PC->GetHUD()))
+        return;
+    }
+
+    for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+    {
+        APlayerController* PC = It->Get();
+        if (!PC || !PC->IsLocalController())
+        {
+            continue;
+        }
+
+        AGothicHUD* HUD = Cast<AGothicHUD>(PC->GetHUD());
+        if (!HUD)
+        {
+            continue;
+        }
+
+        HUD->RegisterEnemyHealthBar(this);
+
+        // Compare against the pawn and the controller both — melee and ability
+        // damage credit the avatar pawn, but a controller-owned source would
+        // otherwise silently lose its number.
+        if (DamageInstigator && (DamageInstigator == PC->GetPawn() || DamageInstigator == PC))
         {
             HUD->ShowDamageNumber(HitLocation, DamageAmount, bVitalHit);
-            HUD->RegisterEnemyHealthBar(this);
         }
     }
 }
