@@ -65,6 +65,27 @@ namespace
          * first line of a branch activation always prints.
          */
         uint32 LastTimelineHash = 0;
+
+        /**
+         * True once this branch activation has seen a real combat target, so
+         * HOLD-no-target can be a TRANSITION line instead of a per-tick one.
+         *
+         * The hash dedupe above cannot cover that case and it is worth saying
+         * why, because the obvious reading is that it already does. Out of
+         * combat this subtree is entered, run, and unwound constantly, and
+         * OnBecomeRelevant zeroes this whole block on every entry — including
+         * LastTimelineHash. So each re-activation gets a fresh "first line of
+         * the branch always prints" and the hold prints again. Measured: 1,322
+         * HOLD-no-target lines from one idle boss in a single session.
+         *
+         * A latch fixes it precisely because it is zeroed too. Zeroed means
+         * "never had a target", and losing a target you never had is not an
+         * event — so an idle re-entry says nothing at all, while a target
+         * genuinely lost mid-fight (leash break, death, disengage) still logs
+         * exactly once. Same transitions-only policy as the arena manager's
+         * POLL line.
+         */
+        bool bHadTarget = false;
     };
 }
 
@@ -163,6 +184,7 @@ void UGothicBTService_WeightedActionSelect::OnBecomeRelevant(UBehaviorTreeCompon
         Memory->ArenaManager.Reset();
         Memory->bSearchedForArena = false;
         Memory->LastTimelineHash  = 0;
+        Memory->bHadTarget        = false;
 
         // The attack commitment is deliberately NOT cleared here any more.
         //
@@ -533,6 +555,14 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
         ? FVector::Dist2D(Pawn->GetActorLocation(), Target->GetActorLocation())
         : -1.f;
 
+    // Arms the HOLD-no-target transition line for BOTH paths below. Set here,
+    // once, from the single place Target is resolved — the two hold sites only
+    // ever read and clear it, so neither path can drift from the other.
+    if (Memory && Target)
+    {
+        Memory->bHadTarget = true;
+    }
+
     if (bSplitAttackPool)
     {
         SelectSplit(OwnerComp, NodeMemory, BB, Pawn, ASC, Target, DistanceToTarget,
@@ -617,10 +647,18 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
     // through to whatever non-combat behavior it has.
     if (!TargetActorKey.IsNone() && !Target)
     {
-        LogTimeline(TEXT("HOLD-no-target"),
-            FString::Printf(TEXT("held='%s'|targetKey=%s"),
-                *CurrentAction.ToString(), *TargetActorKey.SelectedKeyName.ToString()),
-            /*bAlways=*/false);
+        // TRANSITION ONLY — see bHadTarget's comment on the memory struct. The
+        // behaviour is untouched either side of this branch; only the cadence of
+        // the line changed. bAlways, because the latch has already decided this
+        // is the one tick that should speak and the hash dedupe must not eat it.
+        if (Memory && Memory->bHadTarget)
+        {
+            Memory->bHadTarget = false;
+            LogTimeline(TEXT("HOLD-no-target"),
+                FString::Printf(TEXT("held='%s'|targetKey=%s"),
+                    *CurrentAction.ToString(), *TargetActorKey.SelectedKeyName.ToString()),
+                /*bAlways=*/true);
+        }
         return;
     }
 
@@ -1143,10 +1181,17 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
             ReleaseCommitment(/*bClearKey=*/true, EGothicChainExitReason::NoTarget);
         }
 
-        LogTimeline(TEXT("HOLD-no-target"),
-            FString::Printf(TEXT("held='%s'|targetKey=%s"),
-                *CurrentAction.ToString(), *TargetActorKey.SelectedKeyName.ToString()),
-            /*bAlways=*/false);
+        // TRANSITION ONLY — see bHadTarget on the memory struct. The
+        // ATTACK-interrupt line above is unaffected: it is already an event
+        // rather than a state, and it only fires while something was committed.
+        if (Memory && Memory->bHadTarget)
+        {
+            Memory->bHadTarget = false;
+            LogTimeline(TEXT("HOLD-no-target"),
+                FString::Printf(TEXT("held='%s'|targetKey=%s"),
+                    *CurrentAction.ToString(), *TargetActorKey.SelectedKeyName.ToString()),
+                /*bAlways=*/true);
+        }
         return;
     }
 

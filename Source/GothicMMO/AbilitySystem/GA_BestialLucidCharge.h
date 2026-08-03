@@ -32,6 +32,10 @@
 //      cannot catch it: the charge has no montage, so there is no notify state
 //      to detect.)
 //   4. Rewire the graph to arm the window at the LAUNCH — see below.
+//   5. Replace the graph's inline launch math — Normalize(TargetLoc - MyLoc)
+//      * 1800 on XY, a Make Vector with Z 400 — with a single call to
+//      ComputeChargeLaunchVelocity(Target), wired into LaunchCharacter's Launch
+//      Velocity pin. Both Override pins stay checked. See that function.
 //
 // THE WINDOW IS ANCHORED TO THE LAUNCH, NOT TO ACTIVATION
 //
@@ -88,7 +92,116 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Charge")
     void BeginChargeDamageWindow();
 
+    /**
+     * The full launch vector for the leap, to be fed straight into the graph's
+     * LaunchCharacter (XY Override and Z Override both true, as they are now).
+     *
+     * REPLACES A FIXED SPEED. The graph currently launches with
+     * Normalize(TargetLoc - MyLoc) * 1800 on XY and a flat 400 on Z, which makes
+     * the leap's LENGTH a function of nothing but its airtime — she travels the
+     * same ~1,490uu whether she committed from 582uu or 1,027uu away. Measured
+     * over three verification runs: horizontal displacement 442-1,514uu against
+     * commit distances 582-1,027uu, the Pounce chain dying at step 0 on 5/12 to
+     * 6/7 of entries because the landing fell outside its 160uu gate, and charge
+     * sweeps closing at minDist2D 202-266 with zero hits — where the runs that
+     * happened to land accurately (121-127uu) produced seven.
+     *
+     * So XY speed is horizontal distance over expected airtime, and the landing
+     * is aimed ChargeLandingStandoff SHORT of the target rather than on top of
+     * it. Z is unchanged and deliberately so — see ChargeLaunchZSpeed.
+     *
+     * BlueprintCallable rather than BlueprintPure: a pure node re-evaluates once
+     * per output pin, and this one emits a telemetry line that a verification
+     * pass has to be able to count.
+     *
+     * Returns ZeroVector when there is no target or no avatar, which
+     * LaunchCharacter treats as a launch of nothing — the same "do not move"
+     * outcome the graph already gets from a failed target read, and safer than
+     * guessing a direction.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Charge")
+    FVector ComputeChargeLaunchVelocity(const AActor* Target);
+
 protected:
+    /**
+     * Vertical launch speed, uu/s. NOT a tuning dial in the usual sense — it is
+     * the value the rest of this system is calibrated against.
+     *
+     * Airtime for a launch that lands at or below its own height is 2*Vz/g, and
+     * at UE's default gravity that is 2*400/980 = 0.816s. The leap guard has
+     * MEASURED nine of this boss's flights at 0.824-0.943s, median 0.828 — so
+     * the ballistic prediction and the measurement agree to within 1.5%, which
+     * is the evidence that her GravityScale is 1.0 and that deriving speed from
+     * airtime is sound here at all.
+     *
+     * Change this and three other things move with it: the real airtime, the
+     * XY speed computed from it, and the 1.3s ChargeDamageWindow backstop that
+     * was sized against the measured flight. It is not an independent knob.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge|Launch")
+    float ChargeLaunchZSpeed = 400.f;
+
+    /**
+     * Correction applied to the ballistic airtime, dimensionless.
+     *
+     * 0.828 measured median / 0.816 predicted = 1.0147. The residual is real
+     * and has a cause: she lands BELOW her launch height (the leap starts with
+     * the capsule already risen off the windup) and gravity gets a little longer
+     * to work than the symmetric solution allows. Calibrating rather than
+     * re-deriving keeps the number honest — it is a measurement, not a fudge,
+     * and if the flight is ever re-measured this is the one value to move.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge|Launch",
+              meta = (ClampMin = "0.5", ClampMax = "2.0"))
+    float ChargeAirtimeCalibration = 1.015f;
+
+    /**
+     * How far SHORT of the target's location to aim the landing (uu).
+     *
+     * Aiming centre-on-centre overshoots through the player: at contact the two
+     * origins are still ~132uu apart (her 90uu scaled capsule radius plus the
+     * player's ~42), so a solve that puts her origin ON his drives her body
+     * through him and out the far side, which is exactly the 202-266uu
+     * minDist2D the whiffing sweeps closed at.
+     *
+     * 120 because that is where it has already been observed working. The
+     * landings that produced the seven-hit run measured 121-127uu of separation;
+     * this aims at the middle of the band that has actually connected, rather
+     * than at a geometric ideal nobody has seen land. It also sits comfortably
+     * inside the Pounce chain's 160uu step-0 gate with ~40uu of slack for the
+     * spread the leap still has, and just inside the 120uu-radius body check the
+     * charge sweep performs (ChargeHitInflation over the capsule).
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge|Launch")
+    float ChargeLandingStandoff = 120.f;
+
+    /**
+     * Floor on the derived XY speed (uu/s). A charge that crawls is not a
+     * charge — it is a lunge the player cannot read as one, and it strands the
+     * boss mid-arena with the damage window open.
+     *
+     * At the shortest commit distance yet observed (582uu) the solve wants
+     * (582-120)/0.840 = 550 uu/s, so this floor is BELOW the working range on
+     * purpose: it is a guard against a degenerate near-zero solve, not a tuning
+     * value that shapes normal charges.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge|Launch",
+              meta = (ClampMin = "0.0"))
+    float MinChargeLaunchSpeed = 350.f;
+
+    /**
+     * Ceiling on the derived XY speed (uu/s) — the old fixed value, kept as the
+     * limit it should always have been.
+     *
+     * 1800 * 0.840s reaches ~1,512uu, and the longest commit distance measured
+     * is 1,027uu, so this does not bind on any charge seen so far. It exists so
+     * that a commit from across the whole arena cannot turn into a launch nobody
+     * can react to.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge|Launch",
+              meta = (ClampMin = "0.0"))
+    float MaxChargeLaunchSpeed = 1800.f;
+
     /**
      * Raw damage sent as the Data.Damage SetByCaller when the charge connects.
      *
