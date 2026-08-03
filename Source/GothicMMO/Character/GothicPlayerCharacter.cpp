@@ -39,6 +39,22 @@
 #include "Items/GothicItemDefinition.h"
 #include "AbilitySystem/GA_TheLovedandTheLost.h"
 #include "AbilitySystem/GA_NotAtAll.h"
+#include "GothicMMO.h"                      // LogVigilCombat
+
+namespace
+{
+    /**
+     * The `t=` stamp every VigilTimeline line carries. Free function for the
+     * same reason the arena manager has one — logging should not require a
+     * header change — and it answers 0 rather than asserting for a pawn
+     * logging outside its world, which is a diagnostic, not a place to fail.
+     */
+    float GASInitTimelineNow(const AActor* Actor)
+    {
+        const UWorld* World = Actor ? Actor->GetWorld() : nullptr;
+        return World ? World->GetTimeSeconds() : 0.f;
+    }
+}
 
 AGothicPlayerCharacter::AGothicPlayerCharacter()
 {
@@ -203,8 +219,26 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     if (!PS)
     {
         UE_LOG(LogTemp, Warning, TEXT("GothicPlayerCharacter: PlayerState is null — skipping GAS init"));
+
+        // On a CLIENT this repairs itself: the PlayerState replicates in and
+        // OnRep_PlayerState calls straight back here. On the AUTHORITY there is
+        // no such second call — OnRep never fires on the server — so PossessedBy
+        // is the only driver this function will ever get, and returning here
+        // ends the pawn's initialization permanently: no ability sets, no
+        // starting kit, and therefore none of GE_EquipmentStats' MaxHealth on
+        // top of the GE_InitStats 200. The host never notices because its pawn
+        // is possessed through an earlier path with its PlayerState long since
+        // resolved; a player who joins later is the one that loses the race.
+        if (HasAuthority())
+        {
+            ScheduleGASInitRetry();
+        }
         return;
     }
+
+    // A retry that got us here has done its job. Stop the timer before the work
+    // below rather than after, so an early return cannot leave it running.
+    GetWorldTimerManager().ClearTimer(GASInitRetryTimer);
 
     AbilitySystemComponent = PS->GetGothicASC();
     AttributeSet           = PS->GetGothicAttributeSet();
@@ -262,16 +296,34 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     // leak: UGothicAbilitySet::GiveToAbilitySystem asks the ASC for an existing
     // spec before granting anything, so nothing duplicates, and re-running it is
     // what brings back the passives that OnDeath's CancelAllAbilities shut down.
-    if (HasAuthority() && !bAbilitiesGranted)
+    //
+    // Note the added ASC check: the flag used to be latched on the strength of
+    // HasAuthority() alone, so a pass that granted NOTHING still closed the door
+    // behind it and no later call could reopen it. Nothing here is
+    // locally-controlled-guarded, and nothing here may become so — a remote
+    // player's pawn is not locally controlled on the server, and gameplay grants
+    // are owed to every pawn the authority owns. HUD work stays local-only; see
+    // BindHUDAttributeDelegates.
+    if (HasAuthority() && !bAbilitiesGranted && AbilitySystemComponent)
     {
+        int32 GrantedSets = 0;
         for (const TObjectPtr<UGothicAbilitySet>& AbilitySet : StartupAbilitySets)
         {
             if (AbilitySet)
             {
                 AbilitySet->GiveToAbilitySystem(AbilitySystemComponent, this);
+                ++GrantedSets;
             }
         }
-        bAbilitiesGranted = true;
+
+        // Latch only on work actually done. A pass over an empty or all-null
+        // StartupAbilitySets is not a completed grant, and marking it as one is
+        // how a pawn ends up alive, controllable, and unable to activate a
+        // single ability for the rest of its life.
+        if (GrantedSets > 0)
+        {
+            bAbilitiesGranted = true;
+        }
     }
 
     // Setup ability input bindings now that ASC is confirmed valid
@@ -297,38 +349,108 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
 
     // Bind to inventory equipment changes so weapon slots update when gear is equipped
     // Guarded: PossessedBy + OnRep_PlayerState both call InitGASFromPlayerState
-    if (!bInventoryBound)
+    UGothicInventoryComponent* Inventory = PS->GetInventory();
+
+    if (Inventory && !bInventoryBound)
     {
-        if (UGothicInventoryComponent* Inventory = PS->GetInventory())
+        Inventory->OnItemEquipped.AddDynamic(this, &AGothicPlayerCharacter::OnEquipmentChanged);
+        bInventoryBound = true;
+    }
+
+    // Everything below used to live INSIDE that bind guard, which made the
+    // starting kit and the slot sync reachable only on the single call that
+    // first bound the delegate. One lost race there — a call that binds while
+    // something downstream is not ready yet — and the pawn never gets another
+    // attempt, because bInventoryBound is already up. That is the whole
+    // starting loadout, and with it GE_EquipmentStats, which is where a
+    // player's MaxHealth above the GE_InitStats 200 comes from: a pawn that
+    // misses this reads a flat 200 forever while a geared one reads ~245.
+    //
+    // Both halves are idempotent on their own — GrantStartingItems is one-shot
+    // on its own bStartingItemsGranted, and the sync just re-reads what is
+    // equipped — so they are safe to run on every pass, which is what gives a
+    // retry something to repair.
+    if (Inventory)
+    {
+        // Grant BEFORE the sync, and after the bind: equipping fires
+        // OnItemEquipped, and the sync below then reads the result.
+        // Authority-only in effect — GrantStartingItems refuses on a client —
+        // but stated here too, because "the server hands out the kit" should be
+        // legible at the call site.
+        if (HasAuthority())
         {
-            Inventory->OnItemEquipped.AddDynamic(this, &AGothicPlayerCharacter::OnEquipmentChanged);
-            bInventoryBound = true;
-
-            // Sync weapon slots with anything already equipped (e.g. after respawn)
-            static const EGothicEquipSlot WeaponEquipSlots[] = {
-                EGothicEquipSlot::Sidearm,
-                EGothicEquipSlot::Piece,
-                EGothicEquipSlot::Rig
-            };
-            for (int32 i = 0; i < WeaponSlots.Num() && i < 3; ++i)
-            {
-                if (const FGothicItemInstance* Equipped = Inventory->GetEquippedItem(WeaponEquipSlots[i]))
-                {
-                    if (Equipped->Definition && Equipped->Definition->IsWeapon())
-                    {
-                        WeaponSlots[i].WeaponData = Equipped->Definition->WeaponData;
-                        WeaponSlots[i].InitFromData();
-                    }
-                }
-            }
-            RefreshWeaponVisuals(ActiveWeaponIndex);
-
-            // Now that GAS and the inventory link are ready, hand the player
-            // their starting kit (once, on authority) so a tester walks in
-            // geared and can immediately swap drops in against it.
             Inventory->GrantStartingItems();
         }
+
+        // Sync weapon slots with anything already equipped (e.g. after respawn).
+        // Runs on clients as well as the server — a remote player's own slots
+        // are read from replicated equipment, not granted.
+        static const EGothicEquipSlot WeaponEquipSlots[] = {
+            EGothicEquipSlot::Sidearm,
+            EGothicEquipSlot::Piece,
+            EGothicEquipSlot::Rig
+        };
+        for (int32 i = 0; i < WeaponSlots.Num() && i < 3; ++i)
+        {
+            if (const FGothicItemInstance* Equipped = Inventory->GetEquippedItem(WeaponEquipSlots[i]))
+            {
+                if (Equipped->Definition && Equipped->Definition->IsWeapon())
+                {
+                    WeaponSlots[i].WeaponData = Equipped->Definition->WeaponData;
+                    WeaponSlots[i].InitFromData();
+                }
+            }
+        }
+        RefreshWeaponVisuals(ActiveWeaponIndex);
     }
+
+    LogGASInitComplete();
+}
+
+void AGothicPlayerCharacter::ScheduleGASInitRetry()
+{
+    // Bounded. A pawn still without a PlayerState after this many passes has a
+    // problem a timer cannot fix, and an unbounded retry would spin for the
+    // whole match logging nothing anyone reads.
+    if (GASInitRetryCount >= MaxGASInitRetries)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("VigilTimeline|t=%.3f|%s|GASInit|ABANDONED|retries=%d|localCtrl=%d"),
+            GASInitTimelineNow(this), *GetName(),
+            GASInitRetryCount, IsLocallyControlled() ? 1 : 0);
+        return;
+    }
+
+    ++GASInitRetryCount;
+    GetWorldTimerManager().SetTimer(
+        GASInitRetryTimer, this,
+        &AGothicPlayerCharacter::InitGASFromPlayerState,
+        GASInitRetryInterval, false);
+}
+
+void AGothicPlayerCharacter::LogGASInitComplete() const
+{
+    // One line per pawn per init pass. The two-player verification pass needs to
+    // assert "BOTH pawns were granted" from a server-bound harness, and counting
+    // abilities off the ASC is the only reading of that which cannot be confused
+    // with a replication delay — this runs on whichever machine did the work,
+    // and says which machine that was.
+    const int32 AbilityCount =
+        AbilitySystemComponent ? AbilitySystemComponent->GetActivatableAbilities().Num() : -1;
+
+    int32 ArmedSlots = 0;
+    for (const FGothicWeaponSlot& Slot : WeaponSlots)
+    {
+        if (Slot.WeaponData)
+        {
+            ++ArmedSlots;
+        }
+    }
+
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|GASInit|pawn=%s|abilities=%d|slots=%d|localCtrl=%d"),
+        GASInitTimelineNow(this), *GetName(), *GetName(),
+        AbilityCount, ArmedSlots, IsLocallyControlled() ? 1 : 0);
 }
 
 void AGothicPlayerCharacter::BindHUDAttributeDelegates()

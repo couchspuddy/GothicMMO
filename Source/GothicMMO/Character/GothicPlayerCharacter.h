@@ -748,6 +748,33 @@ private:
     bool bInventoryBound = false;
 
     // -------------------------------------------------------------------------
+    // GAS init retry — authority only
+    //
+    // InitGASFromPlayerState has exactly two drivers: PossessedBy and
+    // OnRep_PlayerState. The second one never fires on the server, so on the
+    // AUTHORITY the function gets one attempt and one only. If the PlayerState
+    // has not resolved at that instant the pawn is left permanently ungranted,
+    // and the host cannot reproduce it — its pawn is possessed long after its
+    // own PlayerState exists. This timer gives the authority the retry that
+    // replication gives a client for free.
+    // -------------------------------------------------------------------------
+
+    /** Re-arms InitGASFromPlayerState on the authority when the PlayerState is not ready yet. */
+    void ScheduleGASInitRetry();
+
+    /** Emits the GASInit VigilTimeline line. Const — it reports, it does not initialize. */
+    void LogGASInitComplete() const;
+
+    FTimerHandle GASInitRetryTimer;
+    int32 GASInitRetryCount = 0;
+
+    /** Roughly a couple of frames — long enough to let possession settle, short enough to be invisible. */
+    static constexpr float GASInitRetryInterval = 0.05f;
+
+    /** ~1s of attempts. Past that it is not a race, it is a broken PlayerState class. */
+    static constexpr int32 MaxGASInitRetries = 20;
+
+    // -------------------------------------------------------------------------
     // HUD attribute delegates — lifetime
     //
     // The player's ASC lives on the PlayerState, so it OUTLIVES this pawn: a
