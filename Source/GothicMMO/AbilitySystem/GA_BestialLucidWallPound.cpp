@@ -141,12 +141,37 @@ void UGA_BestialLucidWallPound::ExecuteWallPoundImpact()
     AGothicRotundaPillar* NearestPillar = nullptr;
     float NearestDistSq = TNumericLimits<float>::Max();
 
+    // ── The whiff line's counters ────────────────────────────────────────────
+    //
+    // The old line reported `candidates=Overlapping.Num()`, which read as "this
+    // many pillars were in range and the selection rejected them all" and sent
+    // the last session hunting a selection bug that does not exist. A run logged
+    // candidates=2 on a whiff; those two were WorldStatic overlaps — arena
+    // geometry, walls, floor — that never carried the tag and were discarded by
+    // the first line of this loop. Nothing qualified was rejected.
+    //
+    // So the raw overlap count is named for what it is, and the three counts
+    // that actually narrow it are kept alongside. A whiff now says which filter
+    // ate the candidates: overlapped>0 with tagged=0 is geometry (expected, and
+    // by far the common case); tagged>0 with pillars=0 is a tagged actor that is
+    // not an AGothicRotundaPillar, which IS worth knowing about; pillars>0 means
+    // every pillar in reach was already collapsing and she smashed rubble.
+    //
+    // standing is necessarily 0 on the whiff line — a standing pillar always
+    // wins the selection — and it is printed anyway, as the invariant a future
+    // reader can check rather than assume. standing>0 on a whiff would be the
+    // selection bug the last session went looking for.
+    int32 TaggedCount   = 0;   // overlaps carrying TerrainTag
+    int32 PillarCount   = 0;   // of those, ones that cast to a pillar
+    int32 StandingCount = 0;   // of those, ones not already destroyed
+
     for (AActor* Candidate : Overlapping)
     {
         if (!Candidate || !Candidate->ActorHasTag(TerrainTag))
         {
             continue;
         }
+        ++TaggedCount;
 
         // Typed, not FindFunction("TriggerWallCollapse")/ProcessEvent. The name
         // lookup worked but bought nothing: it could not be checked by the
@@ -159,6 +184,7 @@ void UGA_BestialLucidWallPound::ExecuteWallPoundImpact()
         {
             continue;
         }
+        ++PillarCount;
 
         // Skip pillars that are already going down. The state flips at the START
         // of the 1.75s collapse telegraph, but the pillar keeps its collision
@@ -171,6 +197,7 @@ void UGA_BestialLucidWallPound::ExecuteWallPoundImpact()
         {
             continue;
         }
+        ++StandingCount;
 
         const float DistSq = FVector::DistSquared(Avatar->GetActorLocation(), Pillar->GetActorLocation());
         if (DistSq < NearestDistSq)
@@ -236,7 +263,9 @@ void UGA_BestialLucidWallPound::ExecuteWallPoundImpact()
         // floor is the expected outcome of a player who kited her away from
         // them, and late in the fight there may be no pillars left at all.
         UE_LOG(LogVigilCombat, Verbose,
-            TEXT("VigilTimeline|t=%.3f|%s|WallPound|IMPACT-whiff|searchRadius=%.0f|tag=%s|candidates=%d"),
-            Now, *Avatar->GetName(), SearchRadius, *TerrainTag.ToString(), Overlapping.Num());
+            TEXT("VigilTimeline|t=%.3f|%s|WallPound|IMPACT-whiff|searchRadius=%.0f|tag=%s|")
+            TEXT("overlapped=%d|tagged=%d|pillars=%d|standing=%d"),
+            Now, *Avatar->GetName(), SearchRadius, *TerrainTag.ToString(),
+            Overlapping.Num(), TaggedCount, PillarCount, StandingCount);
     }
 }
