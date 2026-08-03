@@ -13,6 +13,30 @@ Placement: Plugins/VigDevTools/Content/Python/vig_gas_tools.py
 
 import unreal
 import toolset_registry
+import vigil_pie_common as common
+
+
+def _ability_system_library():
+    """UAbilitySystemBlueprintLibrary, under whatever name Python sees it by.
+
+    It declares meta=(ScriptName="AbilitySystemLibrary")
+    (AbilitySystemBlueprintLibrary.h:68), so unreal.AbilitySystemBlueprintLibrary
+    does not exist and never did. Both call sites in _get_asc used that
+    imaginary name inside a bare `except Exception: pass`, so every lookup
+    raised AttributeError, was swallowed, and fell through to the "No
+    AbilitySystemComponent found" return -- for both the actor and the
+    PlayerState path. This whole toolset reported "no ASC" for every actor
+    in the project and never said why.
+
+    resolve_class raises a LookupError naming the candidates tried and the
+    near-misses found, so the next rename is diagnosable from the error text
+    without an editor session -- and, more importantly, an API regression can
+    never again masquerade as "this actor has no ability system".
+    """
+    return common.resolve_class(
+        ["AbilitySystemLibrary", "AbilitySystemBlueprintLibrary"],
+        "resolving an actor's AbilitySystemComponent",
+        ("AbilitySystem",))
 
 
 @unreal.uclass()
@@ -266,25 +290,26 @@ class VigGASTools(unreal.ToolsetDefinition):
         """Get the AbilitySystemComponent from an actor.
         Checks the actor directly first, then tries PlayerState
         (for player characters where ASC lives on PS)."""
-        try:
-            asc = unreal.AbilitySystemBlueprintLibrary \
-                .get_ability_system_component(actor)
-            if asc:
-                return asc
-        except Exception:
-            pass
+        lib = _ability_system_library()
 
-        # For player characters, ASC is on PlayerState
-        try:
-            if hasattr(actor, "get_player_state"):
-                ps = actor.get_player_state()
-                if ps:
-                    asc = unreal.AbilitySystemBlueprintLibrary \
-                        .get_ability_system_component(ps)
-                    if asc:
-                        return asc
-        except Exception:
-            pass
+        asc = lib.get_ability_system_component(actor)
+        if asc:
+            return asc
+
+        # For player characters, ASC is on PlayerState.
+        #
+        # Deliberately NOT wrapped in try/except. A bare `except Exception:
+        # pass` here is what hid a dead class name through every use of this
+        # toolset -- the failure was an AttributeError on the library lookup,
+        # which is a code defect, not an absent component. Let it raise. The
+        # only thing that legitimately means "this actor has no ASC" is the
+        # library returning None, which is handled below.
+        if hasattr(actor, "get_player_state"):
+            ps = actor.get_player_state()
+            if ps:
+                asc = lib.get_ability_system_component(ps)
+                if asc:
+                    return asc
 
         return {
             "actor": actor.get_actor_label(),
