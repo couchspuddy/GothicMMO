@@ -97,7 +97,9 @@ void AGothicBossArenaManager::BeginPlay()
         return;
     }
 
-    // The whole point of the poll: a BeginPlay-armed collapse timer would drop
+    LastPollWorldSeconds = ArenaTimelineNow(this);
+
+    // The whole point of the poll: a BeginPlay-armed collapse clock would drop
     // the Rotunda's ceiling on a player who has not met the boss yet.
     GetWorldTimerManager().SetTimer(
         CombatPollTimerHandle, this,
@@ -199,23 +201,31 @@ void AGothicBossArenaManager::OnPillarDestroyed(AGothicRotundaPillar* Pillar)
 
     OnArenaAggressionChanged.Broadcast(Aggression, Remaining);
 
-    // Re-arm from here rather than only from the timer's own expiry, so a pillar
-    // lost to ANY cause — Wall Pound, Cry damage, the ambient timer itself —
-    // restarts the clock at the new, shorter interval.
+    // Re-derive from here rather than only from the clock's own expiry, so a
+    // pillar lost to ANY cause — Wall Pound, Cry damage, the ambient clock itself
+    // — restarts the countdown at the new, shorter interval.
     //
     // This is what keeps the two pressures composing instead of stacking. Without
     // it, a Wall Pound landing ten seconds before an ambient expiry would take
     // two pillars in quick succession and the player would read the arena as
-    // arbitrary. With it, taking a pillar yourself buys the same grace the timer
+    // arbitrary. With it, taking a pillar yourself buys the same grace the clock
     // would have given, and the fight always has exactly one collapse pending.
+    //
+    // The progress reset is the load-bearing half of that promise and is stated
+    // explicitly rather than left to fall out of a SetTimer call: each collapse
+    // starts a FRESH countdown, not a carried remainder. The accumulator would
+    // otherwise survive the re-derivation and a pillar lost at 80 banked seconds
+    // would be followed instantly by another at the new 75s interval — the exact
+    // double-collapse this re-derivation exists to prevent.
     //
     // Both guards matter. The abdicated managers are still bound to the same
     // pillars and still run this function, so the election check is what stops
-    // them arming a timer here that BeginPlay refused them; bFightActive is what
-    // stops a pillar destroyed outside the fight starting a clock.
+    // them running a clock here that BeginPlay refused them; bFightActive is what
+    // stops a pillar destroyed outside the fight starting one.
     if (bIsElectedManager && bFightActive)
     {
-        ArmAmbientCollapseTimer();
+        ResetAmbientProgress(TEXT("pillar-fell"));
+        ArmAmbientClock();
     }
 }
 
@@ -251,8 +261,52 @@ void AGothicBossArenaManager::PollCombatState()
     // on it, and a dead boss must not keep dropping the ceiling.
     const bool bNowActive = Boss && Boss->IsAlive() && Boss->GetCombatTarget() != nullptr;
 
+    // Real elapsed time, not the nominal CombatPollInterval. Timer manager ticks
+    // land where the frame lets them, and a clock that reports accumulated
+    // seconds has to be accumulating seconds rather than counting its own ticks
+    // and calling the product time.
+    const float NowSeconds = ArenaTimelineNow(this);
+    const float DeltaSeconds = FMath::Max(0.f, NowSeconds - LastPollWorldSeconds);
+    LastPollWorldSeconds = NowSeconds;
+
+    // ── The encounter reset ──────────────────────────────────────────────────
+    //
+    // OnLeashReset lives on AGothicEnemyAIController and broadcasts nothing, so
+    // the manager infers it from its effect: the leash restores the boss to full
+    // health. A living boss going from damaged back to full is a reset and
+    // nothing else does that, which makes this read cheaper and less invasive
+    // than a new delegate on the controller — and keeps the arena out of the
+    // leash code, which is not this actor's business.
+    //
+    // Checked before the latch edge and unconditionally, because a leash reset
+    // happens precisely while the latch is DOWN: she gives up, walks home, heals.
+    // Gating it on the fight being active would make it unreachable.
+    if (Boss && Boss->IsAlive())
+    {
+        const float MaxHealth = Boss->GetMaxHealth();
+        const bool bAtFullHealth = MaxHealth > 0.f && Boss->GetHealth() >= MaxHealth - KINDA_SMALL_NUMBER;
+
+        if (bAtFullHealth && bBossWasDamaged)
+        {
+            bBossWasDamaged = false;
+            ResetAmbientProgress(TEXT("leash-reset"));
+        }
+        else if (!bAtFullHealth)
+        {
+            bBossWasDamaged = true;
+        }
+    }
+
     if (bNowActive == bFightActive)
     {
+        // Steady state. The accumulator only advances while the latch is up —
+        // this is the line that makes the clock measure COMBAT time rather than
+        // wall time, and it sits after the early-return's condition rather than
+        // inside the transition block below because most polls are steady state.
+        if (bFightActive)
+        {
+            TickAmbientClock(DeltaSeconds);
+        }
         return;
     }
 
@@ -274,7 +328,11 @@ void AGothicBossArenaManager::PollCombatState()
         UE_LOG(LogVigilCombat, Verbose,
             TEXT("VigilTimeline|t=%.3f|%s|BossArena|FIGHT-started|standing=%d"),
             ArenaTimelineNow(this), *GetName(), GetPillarsRemaining());
-        ArmAmbientCollapseTimer();
+
+        // Derive first (the pillar count may have changed while she was away),
+        // then announce the carried progress.
+        ArmAmbientClock();
+        ResumeAmbientClock();
     }
     else
     {
@@ -282,15 +340,18 @@ void AGothicBossArenaManager::PollCombatState()
             TEXT("VigilTimeline|t=%.3f|%s|BossArena|FIGHT-ended|reason=%s"),
             ArenaTimelineNow(this), *GetName(),
             (Boss && Boss->IsAlive()) ? TEXT("disengaged") : TEXT("boss-dead-or-missing"));
-        DisarmAmbientCollapseTimer();
+        PauseAmbientClock();
     }
 }
 
-void AGothicBossArenaManager::ArmAmbientCollapseTimer()
+void AGothicBossArenaManager::ArmAmbientClock()
 {
-    DisarmAmbientCollapseTimer();
-
     const int32 Remaining = GetPillarsRemaining();
+
+    // Every early return below leaves the clock OFF rather than half-configured.
+    // A stale CurrentCollapseInterval from a richer arena would keep the
+    // accumulator racing a target that no longer exists.
+    CurrentCollapseInterval = 0.f;
 
     // Nothing left to take. The endgame is four sealed zones and maximum
     // aggression, not a wipe timer — so the clock simply stops here and the
@@ -314,31 +375,97 @@ void AGothicBossArenaManager::ArmAmbientCollapseTimer()
         return;
     }
 
-    GetWorldTimerManager().SetTimer(
-        AmbientCollapseTimerHandle, this,
-        &AGothicBossArenaManager::TriggerAmbientCollapse,
-        Interval, false);
+    CurrentCollapseInterval = Interval;
 
+    // elapsed= is the whole point of this line now. TIMER-armed used to be
+    // indistinguishable between "the fight just started" and "she re-engaged 40
+    // seconds into a countdown", which is exactly the ambiguity that let the old
+    // restart-on-every-drop bug hide in two full verification runs. Whatever is
+    // banked is on the line that arms the clock.
     UE_LOG(LogVigilCombat, Verbose,
-        TEXT("VigilTimeline|t=%.3f|%s|BossArena|TIMER-armed|interval=%.0f|standing=%d"),
-        ArenaTimelineNow(this), *GetName(), Interval, Remaining);
+        TEXT("VigilTimeline|t=%.3f|%s|BossArena|TIMER-armed|interval=%.0f|elapsed=%.1f|standing=%d"),
+        ArenaTimelineNow(this), *GetName(), Interval, AccumulatedCombatSeconds, Remaining);
 }
 
-void AGothicBossArenaManager::DisarmAmbientCollapseTimer()
+void AGothicBossArenaManager::PauseAmbientClock()
 {
-    // Only speak when there was actually a clock to stop. ArmAmbientCollapseTimer
-    // opens by disarming, so an unconditional line would print a disarm in front
-    // of every arm and read as a clock thrashing on and off.
-    const bool bWasArmed = GetWorldTimerManager().IsTimerActive(AmbientCollapseTimerHandle);
-
-    GetWorldTimerManager().ClearTimer(AmbientCollapseTimerHandle);
-
-    if (bWasArmed)
+    // No state to change — the accumulator advances only while bFightActive, so
+    // dropping the latch pauses it by construction. This exists to SAY so.
+    //
+    // It replaces the old TIMER-disarmed line, and the rename is the point: a
+    // reader who sees "disarmed" reasonably concludes the countdown is gone, and
+    // in the old build they were right. "paused" with the banked seconds beside
+    // it is the semantics, printed.
+    if (CurrentCollapseInterval <= 0.f)
     {
-        UE_LOG(LogVigilCombat, Verbose,
-            TEXT("VigilTimeline|t=%.3f|%s|BossArena|TIMER-disarmed|standing=%d"),
-            ArenaTimelineNow(this), *GetName(), GetPillarsRemaining());
+        return;
     }
+
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|BossArena|TIMER-paused|elapsed=%.1f|interval=%.0f|standing=%d"),
+        ArenaTimelineNow(this), *GetName(), AccumulatedCombatSeconds,
+        CurrentCollapseInterval, GetPillarsRemaining());
+}
+
+void AGothicBossArenaManager::ResumeAmbientClock()
+{
+    if (CurrentCollapseInterval <= 0.f)
+    {
+        return;
+    }
+
+    // remaining= is derived rather than stored so it can never disagree with the
+    // accumulator it is derived from.
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|BossArena|TIMER-resumed|elapsed=%.1f|remaining=%.1f|standing=%d"),
+        ArenaTimelineNow(this), *GetName(), AccumulatedCombatSeconds,
+        FMath::Max(0.f, CurrentCollapseInterval - AccumulatedCombatSeconds),
+        GetPillarsRemaining());
+}
+
+void AGothicBossArenaManager::ResetAmbientProgress(const TCHAR* Reason)
+{
+    // The two callers are the only two events that mean "the countdown you were
+    // watching is over": the boss healing to full (the encounter reset) and a
+    // pillar falling (a new, shorter countdown at a new count). Death and
+    // disengage are deliberately NOT among them — that is the entire behavioural
+    // change, and adding a third caller here undoes it.
+    const float Discarded = AccumulatedCombatSeconds;
+    AccumulatedCombatSeconds = 0.f;
+
+    if (Discarded <= 0.f)
+    {
+        // Nothing was banked. Silent: a reset that discarded nothing is not an
+        // event, and a boss sitting at full health would otherwise print one per
+        // poll forever.
+        return;
+    }
+
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|BossArena|TIMER-reset|reason=%s|discarded=%.1f|standing=%d"),
+        ArenaTimelineNow(this), *GetName(), Reason, Discarded, GetPillarsRemaining());
+}
+
+void AGothicBossArenaManager::TickAmbientClock(float DeltaSeconds)
+{
+    if (CurrentCollapseInterval <= 0.f)
+    {
+        return;
+    }
+
+    AccumulatedCombatSeconds += DeltaSeconds;
+
+    if (AccumulatedCombatSeconds < CurrentCollapseInterval)
+    {
+        return;
+    }
+
+    // Crossing is not itself the reset. TriggerAmbientCollapse takes a pillar,
+    // which reaches OnPillarDestroyed, which resets the progress and re-derives
+    // the interval — one path for every cause of a pillar loss. The only case
+    // that path does not cover is a collapse that found no survivors, which
+    // TriggerAmbientCollapse handles by shutting the clock off.
+    TriggerAmbientCollapse();
 }
 
 void AGothicBossArenaManager::TriggerAmbientCollapse()
@@ -359,14 +486,24 @@ void AGothicBossArenaManager::TriggerAmbientCollapse()
 
     if (Survivors.Num() == 0)
     {
+        // The endgame. Nothing left to take, so the clock stops for good rather
+        // than crossing its threshold on every subsequent poll and re-entering
+        // here once a second for the rest of the fight.
+        CurrentCollapseInterval = 0.f;
+        AccumulatedCombatSeconds = 0.f;
         return;
     }
 
     AGothicRotundaPillar* Doomed = Survivors[FMath::RandRange(0, Survivors.Num() - 1)];
 
+    // The firing token, and the only place it appears. It has correctly never
+    // been seen in a verification log — under the old restart-on-drop clock it
+    // was unreachable, not merely rare — so its first appearance is the proof
+    // that this fix landed.
     UE_LOG(LogVigilCombat, Verbose,
-        TEXT("VigilTimeline|t=%.3f|%s|BossArena|AMBIENT-collapse|pillar=%s|survivors=%d"),
-        ArenaTimelineNow(this), *GetName(), *GetNameSafe(Doomed), Survivors.Num());
+        TEXT("VigilTimeline|t=%.3f|%s|BossArena|AMBIENT-collapse|pillar=%s|survivors=%d|accumulated=%.1f|interval=%.0f"),
+        ArenaTimelineNow(this), *GetName(), *GetNameSafe(Doomed), Survivors.Num(),
+        AccumulatedCombatSeconds, CurrentCollapseInterval);
 
     // The same entry point Wall Pound uses, so the player gets the same read:
     // the full WarningDuration telegraph, then the slab. An ambient collapse
@@ -377,6 +514,8 @@ void AGothicBossArenaManager::TriggerAmbientCollapse()
 
     // TriggerWallCollapse marks the pillar destroyed immediately (the slab lands
     // WarningDuration later), so OnPillarDestroyed has already fired by now and
-    // has already re-armed this timer at the new count. Nothing to do here —
-    // re-arming again would double-book the clock.
+    // has already zeroed the accumulator and re-derived the interval at the new
+    // count. Nothing to do here — resetting again would be harmless but would
+    // put two TIMER-reset lines against one collapse and make the log lie about
+    // how many countdowns ended.
 }

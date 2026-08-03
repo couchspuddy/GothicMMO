@@ -19,9 +19,23 @@
 // into open floor, which makes the arena a static box.
 //
 // So there is a second, ambient clock: CollapseIntervalByPillarCount drops a
-// random surviving pillar on a timer that ACCELERATES as pillars fall. The
+// random surviving pillar on a clock that ACCELERATES as pillars fall. The
 // arena is on its way down whatever the player does; kiting changes which
 // pillars go and how fast, not whether.
+//
+// That clock counts ACCUMULATED COMBAT TIME, and it has to. It was a plain
+// FTimerHandle armed on the combat latch and cleared when the latch dropped,
+// which meant every drop restarted it from zero at the full interval. Measured:
+// the boss kills a test player in 31-43s, the longest continuous latch anyone
+// ever achieved was 43.0s, and the interval at a full arena is 90s — so the
+// ambient collapse was structurally unreachable and never fired once across two
+// verification runs. A ceiling that cannot fall is not tension.
+//
+// So the clock now banks its progress: it pauses when the latch drops, resumes
+// where it left off, and only zeroes on OnLeashReset — the boss healing to full
+// is the encounter reset, so a fresh siege gets a fresh clock while deaths and
+// brief disengages inside one siege carry their pressure forward. Dying costs
+// you the arena you were standing in.
 //
 // The endgame is deliberately not a wipe. With all four down there is no
 // fight-ending collapse and no timer left to run — what remains is maximum
@@ -183,20 +197,63 @@ private:
     bool bFightActive = false;
 
     FTimerHandle CombatPollTimerHandle;
-    FTimerHandle AmbientCollapseTimerHandle;
+
+    /**
+     * Combat time banked toward the next ambient collapse.
+     *
+     * An accumulator advanced by the combat poll rather than an FTimerHandle
+     * asked to pause. UE's timer manager can pause and resume, but doing it
+     * correctly across the re-derivation that happens when a pillar falls means
+     * reading the remaining time off the handle, stashing it, clearing, and
+     * re-arming with a partial interval — three places to get an off-by-one
+     * wrong, and the resulting state is invisible to a log. The poll already
+     * ticks at CombatPollInterval (1s by default) against intervals measured in
+     * tens of seconds, so counting seconds here is exact enough to be honest and
+     * simple enough to be read straight out of the telemetry.
+     */
+    float AccumulatedCombatSeconds = 0.f;
+
+    /**
+     * The interval the accumulator is currently racing, derived from the standing
+     * pillar count. Zero means the clock is off (no pillars, or no curve).
+     */
+    float CurrentCollapseInterval = 0.f;
+
+    /** World time of the previous poll, so accumulation uses real elapsed time. */
+    float LastPollWorldSeconds = 0.f;
+
+    /**
+     * Whether the boss has been seen below full health since the last reset.
+     *
+     * This is how the manager detects OnLeashReset without reaching into the AI
+     * controller: a leash reset restores the boss to full health, so a
+     * damaged -> full transition on a living boss IS the encounter reset. Read
+     * from the same poll that already samples her, which keeps the arena out of
+     * the leash code entirely.
+     */
+    bool bBossWasDamaged = false;
 
     /** Resolves BossActor, falling back to GetActorOfClass(BossClass). */
     AGothicEnemyBase* ResolveBoss();
 
-    /** 1Hz sample of the boss's combat latch; arms/disarms on the transitions. */
+    /** 1Hz sample of the boss's combat latch; drives the ambient accumulator. */
     void PollCombatState();
 
-    /** Arms (or re-arms) the ambient collapse timer for the CURRENT pillar count. */
-    void ArmAmbientCollapseTimer();
+    /** Derives the collapse interval for the CURRENT pillar count and logs it. */
+    void ArmAmbientClock();
 
-    /** Stops the ambient clock. Safe when nothing is armed. */
-    void DisarmAmbientCollapseTimer();
+    /** Latch dropped: keep the banked seconds, stop advancing them. */
+    void PauseAmbientClock();
 
-    /** Timer expiry: drop one random surviving pillar, then re-arm. */
+    /** Latch re-acquired: carry the banked seconds forward. */
+    void ResumeAmbientClock();
+
+    /** Zeroes banked progress. Leash reset and pillar loss only — see the .cpp. */
+    void ResetAmbientProgress(const TCHAR* Reason);
+
+    /** Advances the accumulator and fires the collapse when it crosses. */
+    void TickAmbientClock(float DeltaSeconds);
+
+    /** Drop one random surviving pillar. */
     void TriggerAmbientCollapse();
 };
