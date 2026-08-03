@@ -1,6 +1,7 @@
 // GothicRotundaPillar.cpp
 
 #include "AI/GothicRotundaPillar.h"
+#include "GothicMMO.h"                      // LogVigilCombat
 #include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
 #include "Materials/MaterialInterface.h"
@@ -13,6 +14,21 @@
 #include "NavigationSystem.h"
 #include "Engine/World.h"
 #include "Engine/OverlapResult.h"
+
+namespace
+{
+    /**
+     * The `t=` stamp every VigilTimeline line carries. Same free function as
+     * GothicBossArenaManager.cpp, deliberately duplicated rather than shared:
+     * two four-line helpers in two files beat a header nobody else wants to
+     * include, and the arena and the pillar are not otherwise coupled.
+     */
+    float PillarTimelineNow(const AActor* Actor)
+    {
+        const UWorld* World = Actor ? Actor->GetWorld() : nullptr;
+        return World ? World->GetTimeSeconds() : 0.f;
+    }
+}
 
 AGothicRotundaPillar::AGothicRotundaPillar()
 {
@@ -175,6 +191,19 @@ void AGothicRotundaPillar::BeginCollapseWarning()
 {
     bCollapseDamageApplied = false;
 
+    // ── The collapse sequence, on the timeline ───────────────────────────────
+    //
+    // PILLAR-fell (the arena manager's line) was the only mark the whole
+    // sequence left, and it fires on the state change — so a verification log
+    // could prove a pillar died and prove nothing at all about the telegraph the
+    // player is supposed to react to or the slab that is supposed to hurt them.
+    // Three lines, one per beat: warning here, slab at impact, sealed when the
+    // nav blocker goes live. The WarningDuration gap between the first two is
+    // the telegraph, readable directly off the t= stamps.
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|Pillar|COLLAPSE-warning|pillar=%s|telegraph=%.2f"),
+        PillarTimelineNow(this), *GetName(), *GetName(), WarningDuration);
+
     // The mesh STAYS. It used to be hidden right here, one line before the
     // warning event fired — so BP_RotundaPillar's OnPillarCollapseWarning
     // dutifully swapped in the ember-red cracked material and painted it onto
@@ -264,7 +293,16 @@ void AGothicRotundaPillar::FinishCeilingCollapse()
     }
 
     // ── and the damage lands with it, same frame ─────────────────────────
-    ApplyCollapseDamageAtImpact();
+    const int32 Victims = ApplyCollapseDamageAtImpact();
+
+    // victims= is the number of PLAYERS the impact actually damaged, counted by
+    // the overlap rather than assumed from the volume's position. Zero is a
+    // legitimate and common outcome — the telegraph exists to produce it — so
+    // this line is what separates "the slab landed and they dodged" from "the
+    // slab never landed", which the old log could not distinguish at all.
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|Pillar|COLLAPSE-slab|pillar=%s|victims=%d"),
+        PillarTimelineNow(this), *GetName(), *GetName(), Victims);
 
     OnPillarCollapse();
 
@@ -343,17 +381,29 @@ void AGothicRotundaPillar::EnableBlockingVolume()
     BlockingVolumeActor->SetActorHiddenInGame(false);
     BlockingVolumeActor->SetActorEnableCollision(true);
 
+    // The third beat: the zone is now geometry. Only on the path that actually
+    // enables it — the give-up branch above returns, and it already says at
+    // Warning that this pillar's zone stays walkable, so a missing
+    // COLLAPSE-sealed is meaningful rather than ambiguous.
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|Pillar|COLLAPSE-sealed|pillar=%s|volume=%s|attempts=%d"),
+        PillarTimelineNow(this), *GetName(), *GetName(),
+        *GetNameSafe(BlockingVolumeActor), BlockingVolumeAttempts);
+
     if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
     {
         NavSys->Build();
     }
 }
 
-void AGothicRotundaPillar::ApplyCollapseDamageAtImpact()
+// Returns the number of players actually damaged, so FinishCeilingCollapse can
+// put it on the COLLAPSE-slab line. The count is the overlap's own answer, not
+// a guess reconstructed from the volume's position afterwards.
+int32 AGothicRotundaPillar::ApplyCollapseDamageAtImpact()
 {
     if (!HasAuthority() || bCollapseDamageApplied)
     {
-        return;
+        return 0;
     }
     bCollapseDamageApplied = true;
 
@@ -362,13 +412,13 @@ void AGothicRotundaPillar::ApplyCollapseDamageAtImpact()
         UE_LOG(LogTemp, Warning,
             TEXT("RotundaPillar[%s]: ceiling landed but CollapseDamageEffect is unassigned — collapse is cosmetic"),
             *GetName());
-        return;
+        return 0;
     }
 
     UWorld* World = GetWorld();
     if (!World || !CollapseDamageVolume)
     {
-        return;
+        return 0;
     }
 
     // Explicit overlap query rather than enabling the volume's collision and
@@ -391,6 +441,8 @@ void AGothicRotundaPillar::ApplyCollapseDamageAtImpact()
         FCollisionShape::MakeBox(BoxExtent), QueryParams);
 
     const float KillZ = World->GetWorldSettings() ? World->GetWorldSettings()->KillZ : -HALF_WORLD_MAX;
+
+    int32 VictimsDamaged = 0;
 
     TSet<AActor*> AlreadyDamaged;
     for (const FOverlapResult& Overlap : Overlaps)
@@ -457,6 +509,8 @@ void AGothicRotundaPillar::ApplyCollapseDamageAtImpact()
                 Magnitude);
             TargetASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
 
+            ++VictimsDamaged;
+
             UE_LOG(LogTemp, Log,
                 TEXT("RotundaPillar[%s]: ceiling hit %s for %.1f%% of %.1f MaxHealth "
                      "(sent %.1f raw, Defense %.1f) | victim Z %.0f vs KillZ %.0f"),
@@ -465,4 +519,6 @@ void AGothicRotundaPillar::ApplyCollapseDamageAtImpact()
                 Victim->GetActorLocation().Z, KillZ);
         }
     }
+
+    return VictimsDamaged;
 }
