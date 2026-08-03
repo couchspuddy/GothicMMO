@@ -71,8 +71,60 @@ enum class EGothicChainExitReason : uint8
     BadStep,
 
     /** Something outside this service wrote the attack key. */
-    Superseded
+    Superseded,
+
+    // ── Why the advance did not happen ───────────────────────────────────────
+    // Completed used to answer for all three of these, which made the log
+    // useless exactly where it mattered: 15 CHAIN-exits in one session, every
+    // one of them step=0/3 reason=Completed, and no way to tell a design
+    // success from a tuning fault. None of them is abnormal — see
+    // IsAbnormalChainExit — they are three different normal outcomes that
+    // happen to look identical from the outside.
+
+    /**
+     * The chain ended where it was authored to end: a branch passed its gate
+     * and named no follow-up step, or a sequential chain ran off its last step.
+     * This is Completed's original meaning, kept separate so that Completed
+     * continues to mean what the other call sites use it for.
+     */
+    AuthoredEnd,
+
+    /**
+     * No branch passed its range gate. The follow-up existed and was ready; the
+     * target was simply not where the branch required. For the Pounce chain
+     * this is the dodge check firing, which is a DESIGN SUCCESS and was
+     * previously indistinguishable from a plain finish.
+     */
+    NoBranchInRange,
+
+    /**
+     * A branch passed its range gate but every candidate it offered was
+     * rejected by bRequireAbilityReady — the follow-up ability is on cooldown.
+     * A tuning problem (an ability shared with the general action pool has its
+     * cooldown consumed outside the chain), not a fault.
+     */
+    StepOnCooldown
 };
+
+/**
+ * Whether an exit is a wiring or authoring fault, as opposed to a fight
+ * outcome. Only faults are worth an Error; a chain ending on a range gate is
+ * the system working. Kept next to the enum so a new reason has to answer this
+ * question at the point it is declared.
+ */
+inline bool IsAbnormalChainExit(EGothicChainExitReason Reason)
+{
+    switch (Reason)
+    {
+    case EGothicChainExitReason::Completed:
+    case EGothicChainExitReason::AuthoredEnd:
+    case EGothicChainExitReason::NoBranchInRange:
+    case EGothicChainExitReason::StepOnCooldown:
+        return false;
+    default:
+        return true;
+    }
+}
 
 /**
  * One pawn's attack commitment, and the chain it belongs to if it belongs to
