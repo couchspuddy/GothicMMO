@@ -358,6 +358,33 @@ bool AGothicEnemyAIController::IsTargetInAttackRange() const
     return DistanceToTarget <= MeleeAttackRange;
 }
 
+AActor* AGothicEnemyAIController::GetLeashQuarry() const
+{
+    // Same two doors DropTargetIfNoLongerFightable reads, and in the same order:
+    // the Blackboard key is what the tree fights, the pawn latch is what every
+    // aggro source funnels through. Either one holding a fightable actor means
+    // there is still a quarry. Null, destroyed and dead all resolve to nullptr,
+    // which the caller reads as "no quarry" and lets the break through.
+    if (AActor* BBTarget = GetTargetActor())
+    {
+        if (IsFightableTarget(BBTarget))
+        {
+            return BBTarget;
+        }
+    }
+
+    if (const AGothicEnemyBase* Enemy = Cast<AGothicEnemyBase>(GetPawn()))
+    {
+        AActor* PawnTarget = Enemy->GetCombatTarget();
+        if (IsFightableTarget(PawnTarget))
+        {
+            return PawnTarget;
+        }
+    }
+
+    return nullptr;
+}
+
 void AGothicEnemyAIController::CheckLeash()
 {
     APawn* OwnerPawn = GetPawn();
@@ -385,7 +412,33 @@ void AGothicEnemyAIController::CheckLeash()
         // shortens itself by the height difference.
         const float DistFromOrigin = FVector::Dist2D(OwnerPawn->GetActorLocation(), PatrolOrigin);
 
-        bool bBroken = DistFromOrigin > LeashRange;
+        // The self-distance break is conditional on the QUARRY being out too.
+        //
+        // She never abandons a quarry standing on her ground, no matter where her
+        // own movement swings her; she abandons a quarry that has dragged her off
+        // it. The Bestial Lucid forced this. Her anchor sits on the EAST edge of
+        // the arena and the encounter volume acquires the player at the arena
+        // threshold, so her fights now BEGIN at 4,500+uu of anchor separation —
+        // the mouth is 4,500-5,500 from her spawn. Ordinary in-arena combat
+        // geometry then dips her own position across the 5,000 line without the
+        // player going anywhere: pursuit toward the mouth, prowl orbit points
+        // (which orbit the PLAYER, so they reach anchor-distance + orbit-radius),
+        // give-ground retreats. Every one of those fired the break mid-fight —
+        // FIGHT-ended|reason=disengaged, sprint home, heal to full, arena clock
+        // discarded, with a live player still standing in the room.
+        //
+        //   boss 5,200 out / player 3,000 out  -> no break, the fight is on her ground
+        //   boss 5,100 out / player 5,300 out  -> break; she was dragged out, walk home
+        //   boss 5,200 out / no live quarry    -> break, unchanged
+        //   boss inside 5,000                  -> never breaks, unchanged
+        //
+        // 2D, matching DistFromOrigin above and every other range in this class.
+        bool bBroken = false;
+        if (DistFromOrigin > LeashRange)
+        {
+            const AActor* Quarry = GetLeashQuarry();
+            bBroken = !Quarry || FVector::Dist2D(Quarry->GetActorLocation(), PatrolOrigin) > LeashRange;
+        }
 
         // The arena half: the target leaving the anchor's radius breaks the leash
         // even if the enemy hasn't been dragged out yet. Without this the enemy
