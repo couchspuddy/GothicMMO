@@ -255,6 +255,234 @@ def _m_chosen_action(actor):
     return None if value in ("None", "") else value
 
 
+# --------------------------------------------------------------------------
+# Gameplay tags and active effects
+#
+# WHY THESE EXIST
+# ---------------
+# Every link in the boss's stun chain -- the 600uu overlap, the
+# ApplyEffectToASC call, the GE's InheritableOwnedTagsContainer, the player's
+# tag-change callback that halts movement -- has been verified by reading
+# source. Whether State.Stunned ever actually LANDS was unanswerable across
+# three PIE runs, because nothing in this harness could see a tag at runtime:
+# probe metrics carried no tag column, describe_combatant returns vitals and
+# cooldowns only, and AbilitySystemInspectorToolset wants an asset refPath,
+# which no PIE-world actor has. A single game-thread snapshot also cannot be
+# timed against a Roar release; a 10Hz column can.
+#
+# THE API HUNT, AND THE THREE ROUTES THAT ARE CLOSED
+# --------------------------------------------------
+# Non-UFUNCTION methods are absent from Python entirely, so "the ASC has
+# GetOwnedGameplayTags" is not the same as "Python can call it". It cannot:
+#
+#   1. UAbilitySystemComponent::GetOwnedGameplayTags
+#      (AbilitySystemComponent.h:596 and :602, UE 5.8) -- BOTH overloads are
+#      plain inline methods with no UFUNCTION at all. Invisible to Python.
+#   2. IGameplayTagAssetInterface::GetOwnedGameplayTags
+#      (GameplayTagAssetInterface.h) -- also no UFUNCTION; it is a pure virtual
+#      with an out-param, which UHT could not expose anyway.
+#   3. IGameplayTagAssetInterface::BP_GetOwnedGameplayTags -- this one IS a
+#      UFUNCTION(BlueprintCallable) returning an FGameplayTagContainer by
+#      value, and it looks like the answer. It is not: it is declared
+#      meta=(BlueprintInternalUseOnly), and PyGenUtil::IsScriptExposedFunction
+#      (PyGenUtil.cpp:1621) rejects any function carrying that key. It is
+#      exported to Blueprint and to nothing else.
+#
+# What IS reachable is the static the engine's own comment points at -- "In
+# Blueprints, new nodes will use BlueprintGameplayTagLibrary's version":
+#
+#      UBlueprintGameplayTagLibrary::GetOwnedGameplayTags(
+#          TScriptInterface<IGameplayTagAssetInterface>)
+#      (BlueprintGameplayTagLibrary.h:284-285) -- BlueprintPure, static,
+#      returns the container by value.
+#
+# Two traps on the way to calling it, both already catalogued in
+# vigil_pie_common:
+#   * The class is UCLASS(meta=(ScriptName="GameplayTagLibrary")), so
+#     unreal.BlueprintGameplayTagLibrary does not exist. Resolved through
+#     common.resolve_class so a rename reports itself instead of reading as a
+#     missing engine feature.
+#   * The parameter is a TScriptInterface. Passing the ASC object straight in
+#     works -- PyConversion handles FInterfaceProperty (PyConversion.cpp:896)
+#     -- because UAbilitySystemComponent implements IGameplayTagAssetInterface.
+#
+# WHAT THE TAGS ACTUALLY ARE
+# --------------------------
+# ASC::GetOwnedGameplayTags returns GameplayTagCountContainer's EXPLICIT tags
+# (AbilitySystemComponent.h:604 -> GameplayEffectTypes.h:1339). Explicit means
+# exactly what was added: a GE granting State.Stunned puts "State.Stunned" in
+# this list and NOT its parent "State". So match on the full tag string, and do
+# not expect a parent to show up as its own row -- HasMatchingGameplayTag
+# expands parents, this list does not.
+#
+# COST
+# ----
+# One container copy plus one wrapped FGameplayTag per tag per sample. Actors
+# here carry a handful of tags, so this is tens of small allocations per second
+# at 10Hz -- cheap enough for the 0.05s floor. It is still the most expensive
+# reader in this file; do not add it to a 0.016s single-frame recording of a
+# dozen actors without checking the frame cost first.
+# --------------------------------------------------------------------------
+
+def _tag_library():
+    return common.resolve_class(
+        ["GameplayTagLibrary", "BlueprintGameplayTagLibrary"],
+        "reading an actor's owned gameplay tags",
+        ("GameplayTag",))
+
+
+def _ability_system_library():
+    return common.resolve_class(
+        ["AbilitySystemLibrary", "AbilitySystemBlueprintLibrary"],
+        "resolving an actor's AbilitySystemComponent",
+        ("AbilitySystem",))
+
+
+def _asc(actor):
+    """This actor's ASC, or None. Never raises.
+
+    AGothicCharacterBase implements IAbilitySystemInterface
+    (GothicCharacterBase.h:52, :64), so the library call resolves for both the
+    player and every Accursed. The PlayerState hop stays as a fallback because
+    AGothicPlayerState implements the same interface (GothicPlayerState.h:22,
+    :30) and a pawn mid-respawn can be possessed before its own ASC is wired.
+
+    Returns None rather than raising on a dead actor: this reader is sampled
+    across the player's death and respawn, and the pawn is genuinely gone for
+    several frames while the buffer keeps recording.
+    """
+    if not common.is_valid(actor):
+        return None
+
+    library = _ability_system_library()
+
+    asc = common.try_read(lambda: library.get_ability_system_component(actor))
+    if common.is_valid(asc):
+        return asc
+
+    state_getter = getattr(actor, "get_player_state", None)
+    if state_getter is not None:
+        state = common.try_read(state_getter)
+        if common.is_valid(state):
+            asc = common.try_read(
+                lambda: library.get_ability_system_component(state))
+            if common.is_valid(asc):
+                return asc
+
+    return None
+
+
+@_reader("tags")
+def _m_tags(actor):
+    """Every gameplay tag this actor's ASC currently owns, sorted.
+
+    THIS READER RETURNS [] INSTEAD OF RAISING, UNLIKE ITS NEIGHBOURS
+    ---------------------------------------------------------------
+    steadfast and vital_index raise LookupError when their component is
+    missing, and that is right for them: a pawn with no vital point component
+    can never produce a vital_index, so an error cell is the true answer.
+
+    A tag column is different. It is read to answer "did State.Stunned appear
+    at t=4.2 and expire at t=6.2", and the actor under observation dies and
+    respawns under a NEW pawn name during exactly the runs this exists for.
+    An empty list is a truthful reading of "this actor owns no tags right now",
+    and it keeps the column plottable across the gap instead of turning a
+    stretch of it into error objects that no timeline can read through.
+
+    The cost of that choice: [] does not distinguish "no ASC" from "an ASC with
+    nothing on it". Accept it knowingly -- every actor this probe targets is an
+    AGothicCharacterBase and therefore always has an ASC, so in practice [] on
+    a live actor means the tag genuinely is not applied. If a run ever needs
+    that distinction, sample active_effects alongside: an ASC-less actor
+    returns [] there too, but describe_combatant will say so outright.
+    """
+    asc = _asc(actor)
+    if asc is None:
+        return []
+
+    library = _tag_library()
+    container = library.get_owned_gameplay_tags(asc)
+    if container is None:
+        return []
+
+    # BreakGameplayTagContainer (BlueprintGameplayTagLibrary.h:199-200) is the
+    # only exposed way to enumerate a container; FGameplayTagContainer's own
+    # GameplayTags array is a bare UPROPERTY with no Blueprint visibility, so
+    # get_editor_property does not reach it. GetTagName (:56-57) turns each
+    # FGameplayTag into its FName -- str() on the struct itself would give a
+    # wrapper repr, not the tag.
+    #
+    # Note both calls are left UNGUARDED, deliberately: if a future engine
+    # build renames or drops them, that must surface as an error cell in the
+    # column, not as a silent [] that reads exactly like "the stun never
+    # landed" -- the one wrong conclusion this metric exists to prevent.
+    tags = library.break_gameplay_tag_container(container) or []
+    return sorted(str(library.get_tag_name(tag)) for tag in tags)
+
+
+@_reader("active_effects")
+def _m_active_effects(actor):
+    """Which GameplayEffects are currently active on this actor's ASC.
+
+    Rides the same _asc() lookup as tags, which is why it is here at all --
+    it costs one extra ASC call and nothing else structurally.
+
+    WHY IT IS WORTH SAMPLING NEXT TO tags
+    -------------------------------------
+    tags answers "is State.Stunned present". This answers "is the GE that
+    grants it still applying". They come apart in both directions: an effect
+    whose duration has ended still shows for the frame before removal, and a
+    tag added by anything other than a GE (an ability's ActivationOwnedTags,
+    say) shows in tags with no effect behind it. Seeing which of the two moved
+    first is what tells a stun that never landed apart from a stun that landed
+    and was cleared early.
+
+    THE EMPTY-CONTAINER QUERY
+    -------------------------
+    UAbilitySystemComponent::GetActiveEffectsWithAllTags
+    (AbilitySystemComponent.h:819-820) is BlueprintCallable and is the only
+    exposed enumerator -- GetActiveEffects takes an FGameplayEffectQuery, which
+    has to be built, and there is no exposed "give me all of them". Passing an
+    EMPTY container is the way to ask for all: it builds a match-all-owning-
+    tags query over zero tags, and an all-match over an empty set is vacuously
+    true for every effect.
+
+    IDENTITY COMES FROM THE DEBUG STRING, BECAUSE NOTHING ELSE IS EXPOSED
+    --------------------------------------------------------------------
+    A FActiveGameplayEffectHandle has no Blueprint-exposed route back to its
+    UGameplayEffect class. Everything on UAbilitySystemBlueprintLibrary that
+    takes a handle returns a number (stack count, start time, expected end
+    time) except GetActiveGameplayEffectDebugString
+    (AbilitySystemBlueprintLibrary.h:564-565), which is the engine's own
+    display string for the effect. Treat these as labels for correlating
+    against a known GE, not as a stable API -- the format is a debug format and
+    may change between engine versions.
+
+    Returns [] for the same reasons _m_tags does; see that docstring.
+    """
+    asc = _asc(actor)
+    if asc is None:
+        return []
+
+    library = _ability_system_library()
+    handles = common.try_read(
+        lambda: asc.get_active_effects_with_all_tags(
+            unreal.GameplayTagContainer()))
+    # common.try_read hands back an ERROR DICT on failure, not None, and a dict
+    # is iterable -- iterating it would walk the string key "error" and produce
+    # a row of nonsense. Test for the dict explicitly.
+    if handles is None or isinstance(handles, dict):
+        return []
+
+    labels = []
+    for handle in handles:
+        label = common.try_read(
+            lambda h=handle: str(
+                library.get_active_gameplay_effect_debug_string(h)))
+        labels.append(label if isinstance(label, str) else "<unreadable handle>")
+    return sorted(labels)
+
+
 @_reader("location")
 def _m_location(actor):
     return common.vec(actor.get_actor_location())
