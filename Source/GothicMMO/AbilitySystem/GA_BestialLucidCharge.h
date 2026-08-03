@@ -105,9 +105,33 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge")
     float ChargeDamage = 45.f;
 
-    /** Radius around the boss that counts as being run over (cm). */
+    /**
+     * Extra reach beyond the boss's own body that counts as being run over (cm).
+     *
+     * NOT AN ABSOLUTE RADIUS. This used to be ChargeHitRadius = 120, the radius
+     * of a sphere centred on the avatar's actor origin — and for a pawn this
+     * size that sphere can never contain anybody. The Bestial Lucid's origin is
+     * her capsule CENTRE, which measures ~291uu above a floor-standing player's
+     * origin. 291 > 120 on the Z axis alone, so the sphere missed at every
+     * horizontal distance including zero: six charges in a row, minimum 3D
+     * separation 324-394uu, zero charge damage events. One leap that touched
+     * down 143uu away horizontally still measured 324uu in 3D.
+     *
+     * The sweep now overlaps the avatar's actual CAPSULE — its scaled radius and
+     * half-height, at the capsule's own world location — and this value inflates
+     * that capsule on both axes. So the body check is sized by the creature: a
+     * Thrall gets a Thrall-sized one, the boss gets a boss-sized one, and no
+     * magic radius has to be retuned per enemy.
+     *
+     * 30 because the capsule IS the body; this is the bit of grace either side
+     * of it, not the hit volume. The boss's effective capsule is 90uu radius
+     * (60 * 1.5 scale) x 379.5uu half-height (253 * 1.5), so 30 makes her charge
+     * a 120uu-radius body check that still cannot touch someone she flies past —
+     * which is exactly what the old 120 was meant to be, and what raising it to
+     * ~400 to clear the Z gap would have destroyed.
+     */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge")
-    float ChargeHitRadius = 120.f;
+    float ChargeHitInflation = 30.f;
 
     /**
      * GE used for the charge hit. Same Data.Damage SetByCaller contract as the
@@ -151,9 +175,10 @@ protected:
     /**
      * Seconds between sweeps.
      *
-     * At 1800 uu/s the boss covers 90uu per 0.05s — comfortably less than
-     * ChargeHitRadius, so nobody is tunnelled through between samples. This is
-     * the ability-side stand-in for the BT task's per-tick check.
+     * At 1800 uu/s the boss covers 90uu per 0.05s — comfortably less than the
+     * width of her inflated capsule, so nobody is tunnelled through between
+     * samples. This is the ability-side stand-in for the BT task's per-tick
+     * check.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge",
               meta = (ClampMin = "0.01"))
