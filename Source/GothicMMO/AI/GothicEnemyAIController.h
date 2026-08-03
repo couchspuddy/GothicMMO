@@ -488,6 +488,13 @@ private:
     static bool IsFightableTarget(const AActor* Actor);
 
     /**
+     * The fightable actor this enemy is currently engaged with, or nullptr if it
+     * has none — Blackboard key first, pawn combat-target latch second. Used by
+     * the leash to ask whether there is still a quarry worth staying out for.
+     */
+    AActor* GetLeashQuarry() const;
+
+    /**
      * Clears the engagement when neither the Blackboard key nor the pawn latch
      * still holds a fightable target. Run from CheckLeash — see its body for why
      * this exists at all (nothing but BreakLeash ever cleared a combat target).
