@@ -146,7 +146,11 @@ void AGothicPlayerCharacter::BeginPlay()
     FTimerHandle HUDInitTimer;
     GetWorldTimerManager().SetTimer(HUDInitTimer, [this]()
     {
-        APlayerController* PC = GetWorld()->GetFirstPlayerController();
+        // Owner-scoped, like PushAmmoToHUD. This timer runs on every machine for
+        // every pawn, so player 0 meant that on a listen server a REMOTE player's
+        // pawn pushed its health and its crosshair onto the host's HUD.
+        APlayerController* PC =
+            IsLocallyControlled() ? Cast<APlayerController>(GetController()) : nullptr;
         AGothicHUD* GothicHUD = PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
 
 
@@ -351,7 +355,7 @@ void AGothicPlayerCharacter::BindHUDAttributeDelegates()
         {
             if (!IsLocallyControlled()) return;
 
-            APlayerController* PC = GetWorld()->GetFirstPlayerController();
+            APlayerController* PC = Cast<APlayerController>(GetController());
             if (!PC) return;
 
             AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
@@ -378,7 +382,7 @@ void AGothicPlayerCharacter::BindHUDAttributeDelegates()
         {
             if (!IsLocallyControlled()) return;
 
-            APlayerController* PC = GetWorld()->GetFirstPlayerController();
+            APlayerController* PC = Cast<APlayerController>(GetController());
             if (!PC) return;
 
             AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
@@ -395,7 +399,7 @@ void AGothicPlayerCharacter::BindHUDAttributeDelegates()
         {
             if (!IsLocallyControlled()) return;
 
-            APlayerController* PC = GetWorld()->GetFirstPlayerController();
+            APlayerController* PC = Cast<APlayerController>(GetController());
             if (!PC) return;
 
             AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
@@ -729,7 +733,7 @@ void AGothicPlayerCharacter::Tick(float DeltaTime)
 
     if (!IsLocallyControlled() || !AbilitySystemComponent || !bHUDReady) return;
 
-    APlayerController* PC = GetWorld()->GetFirstPlayerController();
+    APlayerController* PC = Cast<APlayerController>(GetController());
     AGothicHUD* GothicHUD = PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
     if (!GothicHUD) return;
 

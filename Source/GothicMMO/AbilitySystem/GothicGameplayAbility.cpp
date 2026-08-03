@@ -303,6 +303,7 @@ void UGothicGameplayAbility::ApplyDamageToTarget(
     {
         const FVector FeedbackPoint =
             ImpactPoint.IsNearlyZero() ? Target->GetActorLocation() : ImpactPoint;
-        HitEnemy->MulticastOnHit(FeedbackPoint, bWasVital, DamageValue);
+        HitEnemy->MulticastOnHit(
+            FeedbackPoint, bWasVital, DamageValue, GetAvatarActorFromActorInfo());
     }
 }
