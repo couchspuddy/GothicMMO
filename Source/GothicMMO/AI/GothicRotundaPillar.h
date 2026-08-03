@@ -281,5 +281,6 @@ private:
     /** Deferred, and refuses to switch on while a pawn is standing inside it. */
     void EnableBlockingVolume();
 
-    void ApplyCollapseDamageAtImpact();
+    /** Returns how many players the impact damaged — the COLLAPSE-slab victims=. */
+    int32 ApplyCollapseDamageAtImpact();
 };

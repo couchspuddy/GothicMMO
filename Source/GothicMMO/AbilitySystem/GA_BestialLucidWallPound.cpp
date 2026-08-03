@@ -3,6 +3,7 @@
 #include "AbilitySystem/GA_BestialLucidWallPound.h"
 #include "GothicMMO.h"                      // LogVigilCombat
 #include "AI/GothicRotundaPillar.h"
+#include "Components/PrimitiveComponent.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
@@ -185,10 +186,47 @@ void UGA_BestialLucidWallPound::ExecuteWallPoundImpact()
         // volume, nav blocker. This ability only decided which pillar and when.
         NearestPillar->TriggerWallCollapse();
 
+        // ── The distance this line reports is the SURFACE distance ───────────
+        //
+        // The last run logged dist=802 against searchRadius=400 and read as a
+        // strike at twice its own range. It was not. The membership test above is
+        // SphereOverlapActors — a physics overlap against the pillar's collision
+        // primitive — and the Rotunda pillars are scaled (3,3,20), so their
+        // bodies are enormous and their nearest surface sits well inside 400uu of
+        // an avatar whose ORIGIN is 802uu away. The strike was geometrically
+        // legitimate; the telemetry was measuring something the filter never
+        // consulted.
+        //
+        // NEVER USE A PILLAR'S ACTOR ORIGIN AS A PROXY FOR WHERE THE PILLAR IS.
+        // PillarMesh is the root and its pivot is at the mesh CENTRE, so at
+        // Z-scale 20 the origin floats ~1,000uu above the base the player and the
+        // boss are standing on. This is the same trap that has already broken
+        // navmesh projection and the pillar lookup itself (see the constructor
+        // comment in GothicRotundaPillar.cpp).
+        //
+        // So: surfaceDist= is the closest point on the collision body, which is
+        // what the overlap actually tested. origin3D= and origin2D= stay beside
+        // it because the selection of WHICH pillar (NearestDistSq above) is still
+        // origin-based — an inconsistency worth being able to see, though it can
+        // only mis-rank two pillars that both already passed the overlap, never
+        // admit one that did not.
+        float SurfaceDist = -1.f;
+        if (const UPrimitiveComponent* PillarBody =
+                Cast<UPrimitiveComponent>(NearestPillar->GetRootComponent()))
+        {
+            FVector ClosestPoint = FVector::ZeroVector;
+            SurfaceDist = PillarBody->GetClosestPointOnCollision(
+                Avatar->GetActorLocation(), ClosestPoint);
+        }
+
         UE_LOG(LogVigilCombat, Verbose,
-            TEXT("VigilTimeline|t=%.3f|%s|WallPound|IMPACT-strike|pillar=%s|dist=%.0f|searchRadius=%.0f"),
+            TEXT("VigilTimeline|t=%.3f|%s|WallPound|IMPACT-strike|pillar=%s|surfaceDist=%.0f|")
+            TEXT("origin3D=%.0f|origin2D=%.0f|searchRadius=%.0f"),
             Now, *Avatar->GetName(), *NearestPillar->GetName(),
-            FMath::Sqrt(NearestDistSq), SearchRadius);
+            SurfaceDist,
+            FMath::Sqrt(NearestDistSq),
+            FVector::Dist2D(Avatar->GetActorLocation(), NearestPillar->GetActorLocation()),
+            SearchRadius);
     }
     else
     {

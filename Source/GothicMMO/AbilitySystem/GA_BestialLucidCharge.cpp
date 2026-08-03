@@ -370,8 +370,25 @@ void UGA_BestialLucidCharge::SweepChargeDamage(bool bFinalSweep)
 
         HitPawnsThisCharge.Add(Victim);
 
+        // finalSweep=, not final=.
+        //
+        // The field was always bFinalSweep — "is this the last sweep of the
+        // damage window" — but sitting next to raw= it read as "final damage",
+        // and every HIT line in the last verification run said final=0 while a
+        // 57 HP drop was landing on the player. The number was true and the name
+        // was a lie, which is worse than either.
+        //
+        // The applied magnitude is genuinely not available here. ChargeDamageEffect
+        // is instant, so ApplyGameplayEffectSpecToTarget returns an invalid handle
+        // with nothing to read off it, and the arithmetic that turns raw into
+        // applied (Defense subtraction, the instigator's AttackPower) happens
+        // inside UGothicAttributeSet::PostGameplayEffectExecute on the TARGET's
+        // ASC — after this call has returned. Reporting it would mean plumbing a
+        // result back out of the attribute set for one log line. raw= plus the
+        // attribute set's own damage logging is the honest pair; this line does
+        // not get to claim a final number it never sees.
         UE_LOG(LogVigilCombat, Verbose,
-            TEXT("VigilTimeline|t=%.3f|%s|ChargeSweep|HIT|victim=%s|raw=%.0f|tWindow=%.3f|final=%d"),
+            TEXT("VigilTimeline|t=%.3f|%s|ChargeSweep|HIT|victim=%s|raw=%.0f|tWindow=%.3f|finalSweep=%d"),
             World->GetTimeSeconds(), *Avatar->GetName(), *Victim->GetName(), ChargeDamage,
             World->GetTimeSeconds() - ChargeWindowStartSeconds, bFinalSweep ? 1 : 0);
     }
