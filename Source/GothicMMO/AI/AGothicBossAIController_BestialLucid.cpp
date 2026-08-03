@@ -9,6 +9,39 @@
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "BehaviorTree/BlackboardComponent.h"
 
+AGothicBossAIController_BestialLucid::AGothicBossAIController_BestialLucid()
+{
+    // ARENA LEASH. She is bound to the Rotunda; she does not follow you out.
+    //
+    // 3200 is derived from the room, not from play, and has not been tuned
+    // against a live fight:
+    //   - the pillar rectangle spans (14360..17910, -2130..2230), centre
+    //     (16350, 40), half-diagonal ~2970uu. 3200 covers the whole arena
+    //     including the corners, with ~230uu of slack.
+    //   - the PlayerStart she was measured chasing to sits at (12905, 0),
+    //     ~3450uu from that centre. 3200 excludes it by ~250uu, so a player who
+    //     runs for the door or dies and respawns is outside the leash.
+    // Those two numbers are 480uu apart in total, so this is a narrow band. If
+    // the arena bounds or the PlayerStart move, this number has to be rederived
+    // rather than nudged.
+    //
+    // Replaces the LeashRange 10000 that BP_BossAIController_BestialLucid
+    // carried, which put both the arena and the PlayerStart comfortably inside
+    // the leash and made every disengage check pass. The machinery was never
+    // broken; the radius was.
+    //
+    // Set here rather than left to the base 3000 default so the boss's number is
+    // data on the boss class. Base enemies keep 3000.
+    LeashRange = 3200.f;
+
+    // The arena half of the break condition: she gives up when the PLAYER
+    // leaves the radius, not only when she has already been dragged 3200uu out
+    // of her own room. Base default is already true — restated here because it
+    // is load-bearing for an arena boss and must not be quietly flipped off on
+    // this class.
+    bLeashOnTargetDistance = true;
+}
+
 void AGothicBossAIController_BestialLucid::OnPossess(APawn* InPawn)
 {
     Super::OnPossess(InPawn);
