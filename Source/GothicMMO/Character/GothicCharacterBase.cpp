@@ -7,6 +7,7 @@
 #include "GameplayEffectTypes.h"
 #include "Components/CapsuleComponent.h"
 #include "AI/GothicCombatStateComponent.h"
+#include "Game/GothicPlayerState.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
 AGothicCharacterBase::AGothicCharacterBase()
@@ -49,6 +50,38 @@ float AGothicCharacterBase::GetEther() const
 bool AGothicCharacterBase::IsAlive() const
 {
     return GetHealth() > 0.f;
+}
+
+bool AGothicCharacterBase::IsDowned() const
+{
+    const AGothicPlayerState* GothicPS = GetPlayerState<AGothicPlayerState>();
+    return GothicPS && GothicPS->IsDowned();
+}
+
+bool AGothicCharacterBase::IsFightableActor(const AActor* Actor)
+{
+    if (!IsValid(Actor))
+    {
+        return false;
+    }
+
+    if (const AGothicCharacterBase* Char = Cast<const AGothicCharacterBase>(Actor))
+    {
+        // Alive AND still in the fight. The downed half is the whole point: once a
+        // player goes down the enemy standing over them stops counting them as a
+        // target, releases the body on its normal drop cadence, and re-acquires
+        // whoever is left through the perception and retaliation paths that already
+        // exist. No new AI behaviour — the predicate simply tells the truth.
+        //
+        // ACCEPTED EDGE, DO NOT SPECIAL-CASE: when every player is downed there are
+        // zero fightable targets, so the enemies disengage and walk home. That is
+        // correct, not a bug. The party-wipe detector fires respawn inside that
+        // window; adding a "stay engaged if everyone is down" clause here would put
+        // enemies back on bodies they cannot kill.
+        return Char->IsAlive() && !Char->IsDowned();
+    }
+
+    return true;
 }
 
 void AGothicCharacterBase::BeginPlay()

@@ -7,6 +7,11 @@ namespace GothicTags
 	// ── States ───────────────────────────────────────────────────────────────
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Dead, "State.Dead",
 		"Character is dead. Blocks ability activation; applied in OnDeath.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Downed, "State.Downed",
+		"Player is downed — alive but out of the fight, awaiting revive. SERVER-SIDE "
+		"CONVENIENCE ONLY: applied as a loose tag from AGothicPlayerState::SetDowned so "
+		"GAS consumers (ActivationBlockedTags, future GEs) can read it on the authority. "
+		"Loose tags do NOT replicate — clients must read AGothicPlayerState::IsDowned().");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Stunned, "State.Stunned",
 		"Character is stunned (Not At All stun-on-kill, future CC). Blocks ability activation.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Attacking, "State.Attacking",

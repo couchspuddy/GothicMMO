@@ -86,8 +86,39 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Attributes")
     float GetEther() const;
 
+    /**
+     * Health > 0. NOT the same question as "is this worth fighting" — a downed
+     * player is alive (health held at 1) and still fails IsFightableActor. If you
+     * are about to add a downed check next to an IsAlive call, you want
+     * IsFightableActor instead.
+     */
     UFUNCTION(BlueprintPure, Category = "Gothic|Attributes")
     bool IsAlive() const;
+
+    /**
+     * True while this character is out of the fight but not dead. Only players can
+     * be downed — the state lives on AGothicPlayerState, so this is always false for
+     * enemies and for any pawn without one.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Combat")
+    bool IsDowned() const;
+
+    /**
+     * THE fightability predicate — the single place that answers "should an AI be
+     * trying to kill this?". Valid, and if it is a AGothicCharacterBase, alive and
+     * not downed.
+     *
+     * Lives on the base rather than on the enemy AI controller because both the
+     * controller's target-drop path and AGothicEnemyBase::NotifyDamagedBy have to
+     * agree; they each used to spell out "!Char || Char->IsAlive()" separately, and
+     * a downed check added to one and not the other means a downed player is
+     * released by the leash tick and then instantly re-acquired by retaliation.
+     *
+     * Non-characters are taken at face value: this catches corpses and destroyed
+     * actors, it does not second-guess what a designer aimed a tree at.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Combat")
+    static bool IsFightableActor(const AActor* Actor);
 
     // -------------------------------------------------------------------------
     // IGothicCombatInterface

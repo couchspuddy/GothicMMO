@@ -429,14 +429,20 @@ void AGothicEnemyBase::NotifyDamagedBy(AActor* DamageInstigator)
     }
 
     // Don't thrash an engagement that is already running — see
-    // bRetaliationOverridesCurrentTarget. A target that has died since it was
-    // set is treated as no target at all.
+    // bRetaliationOverridesCurrentTarget. A target that has stopped being fightable
+    // since it was set — died, was destroyed, or went DOWNED — is treated as no
+    // target at all, so retaliation is free to move onto whoever is still standing.
+    //
+    // Through the shared predicate, not a local copy of it. This line used to read
+    // "!CurrentChar || CurrentChar->IsAlive()", a second spelling of the AI
+    // controller's IsFightableTarget; teaching one about downed and not the other
+    // would have had the leash tick release a downed player and this function hand
+    // them straight back on the next tick of damage.
     if (!bRetaliationOverridesCurrentTarget)
     {
         if (AActor* Current = GetCombatTarget())
         {
-            const AGothicCharacterBase* CurrentChar = Cast<AGothicCharacterBase>(Current);
-            const bool bCurrentStillFightable = !CurrentChar || CurrentChar->IsAlive();
+            const bool bCurrentStillFightable = AGothicCharacterBase::IsFightableActor(Current);
             if (Current != DamageInstigator && bCurrentStillFightable)
             {
                 return;

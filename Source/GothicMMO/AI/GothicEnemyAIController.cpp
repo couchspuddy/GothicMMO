@@ -8,6 +8,7 @@
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "AI/GothicEnemyBase.h"
 #include "Character/GothicCharacterBase.h"
+#include "GothicMMO.h"                      // LogVigilCombat
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
@@ -470,20 +471,11 @@ void AGothicEnemyAIController::CheckLeash()
 
 bool AGothicEnemyAIController::IsFightableTarget(const AActor* Actor)
 {
-    if (!IsValid(Actor))
-    {
-        return false;
-    }
-
-    // Only characters carry health. Anything else that got written into the key
-    // is taken at face value — this function's job is to catch corpses and
-    // destroyed actors, not to second-guess what a designer aimed the tree at.
-    if (const AGothicCharacterBase* Char = Cast<const AGothicCharacterBase>(Actor))
-    {
-        return Char->IsAlive();
-    }
-
-    return true;
+    // One predicate, on the base class every character inherits — see
+    // AGothicCharacterBase::IsFightableActor for what it tests and why. This used
+    // to spell the test out here, which meant AGothicEnemyBase::NotifyDamagedBy
+    // spelled out its own copy and the two could drift.
+    return AGothicCharacterBase::IsFightableActor(Actor);
 }
 
 void AGothicEnemyAIController::DropTargetIfNoLongerFightable()
@@ -521,9 +513,20 @@ void AGothicEnemyAIController::DropTargetIfNoLongerFightable()
         return;
     }
 
-    UE_LOG(LogTemp, Verbose,
-        TEXT("GothicEnemyAIController[%s]: combat target is gone (blackboard=%s, pawn=%s) — disengaging"),
-        *GetNameSafe(GetPawn()), *GetNameSafe(BBTarget), *GetNameSafe(PawnTarget));
+    // Why it stopped being fightable, so a downed release reads differently from a
+    // death or a destroyed actor in the timeline. LogVigilCombat rather than
+    // LogTemp because LogTemp is clamped and this line has to survive a real run.
+    const AGothicCharacterBase* BBChar   = Cast<AGothicCharacterBase>(BBTarget);
+    const AGothicCharacterBase* PawnChar = Cast<AGothicCharacterBase>(PawnTarget);
+    const bool bWentDowned =
+        (BBChar && BBChar->IsDowned()) || (PawnChar && PawnChar->IsDowned());
+
+    const UWorld* World = GetWorld();
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|Target|DROP|reason=%s|blackboard=%s|pawn=%s"),
+        World ? World->GetTimeSeconds() : 0.f, *GetNameSafe(GetPawn()),
+        bWentDowned ? TEXT("downed") : TEXT("gone"),
+        *GetNameSafe(BBTarget), *GetNameSafe(PawnTarget));
 
     ClearCombatTarget();
 }
