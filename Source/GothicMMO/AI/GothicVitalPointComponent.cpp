@@ -223,20 +223,23 @@ FVector UGothicVitalPointComponent::ComputeWorldLocation(int32 Index) const
     return BoneTransform.GetLocation() + BoneTransform.TransformVector(VPL.LocalOffset);
 }
 
-float UGothicVitalPointComponent::GetEffectiveHitRadius() const
+float UGothicVitalPointComponent::GetMeshWorldScale() const
 {
     if (!CachedMesh)
     {
-        return HitDetectionRadius;
+        return 1.f;
     }
 
     // Largest axis, not the average — see the header for why erring large is the
     // safe direction. GetComponentScale is the world scale, so it already folds
     // in the capsule's scale as well as the mesh child's (on the Bestial Lucid
     // that product is 1.5 x 2.67 = 4.005, and 30cm on a 4x body is a pinhead).
-    const float MeshScale = CachedMesh->GetComponentScale().GetAbsMax();
+    return FMath::Max(CachedMesh->GetComponentScale().GetAbsMax(), KINDA_SMALL_NUMBER);
+}
 
-    return HitDetectionRadius * FMath::Max(MeshScale, KINDA_SMALL_NUMBER);
+float UGothicVitalPointComponent::GetEffectiveHitRadius() const
+{
+    return HitDetectionRadius * GetMeshWorldScale();
 }
 
 void UGothicVitalPointComponent::RefreshVitalProjection() const
@@ -268,28 +271,56 @@ void UGothicVitalPointComponent::RefreshVitalProjection() const
     const FVector    BoneOrigin    = BoneTransform.GetLocation();
     const FVector    RawPoint      = BoneOrigin + BoneTransform.TransformVector(VPL.LocalOffset);
 
-    const float MeshScale = FMath::Max(CachedMesh->GetComponentScale().GetAbsMax(), KINDA_SMALL_NUMBER);
+    const float MeshScale = GetMeshWorldScale();
 
     // The outward direction is "away from the actor's vertical axis, through the
     // raw point". On a buried point (offset zero, the Lucid) that pushes the
     // vital out to the nearest flank rather than an arbitrary face; on an
     // off-body point (the authored +-50cm offsets, the Thrall) it is simply the
     // direction the author pushed it, so the surface we find is the one they
-    // were aiming past. Degenerate only when the point sits exactly on the
-    // spine, where forward is the honest guess: the player shoots from the front.
+    // were aiming past.
+    //
+    // Note this construction is purely HORIZONTAL — AxisPoint borrows the raw
+    // point's own Z — so the projected point always came back at exactly the raw
+    // point's height. That is fine for a flank and useless for a spine bone,
+    // whose raw point sits within a couple of centimetres of the actor axis: the
+    // direction degenerates, the forward fallback fires, and that single ray
+    // missed the physics body on 100% of attempts. Five of fourteen authored
+    // indices bailed deterministically that way (Thrall 3/4/7, Feral 1, Lucid 1),
+    // while index 5 on the SAME bone succeeded 61/64 purely because its authored
+    // offset pushed it off-axis. So the direction is now a candidate LIST, not a
+    // single guess.
     const FVector AxisPoint = FVector(GetOwner()->GetActorLocation().X,
                                       GetOwner()->GetActorLocation().Y,
                                       RawPoint.Z);
-    FVector OutwardDir = (RawPoint - AxisPoint).GetSafeNormal();
-    if (OutwardDir.IsNearlyZero())
-    {
-        OutwardDir = GetOwner()->GetActorForwardVector();
-    }
+    const FVector OutwardDir = (RawPoint - AxisPoint).GetSafeNormal();
 
-    // Start outside the hull and trace INWARD to the bone origin. One ray covers
-    // both defects: the first blocking hit is the surface crossing on the way in,
-    // which pulls an off-body point back onto the body and lifts a buried point
-    // out to the skin.
+    const FVector Forward = GetOwner()->GetActorForwardVector();
+    const FVector Right   = GetOwner()->GetActorRightVector();
+
+    // The primary is the horizontal outward direction when it is real; otherwise
+    // forward, because the player shoots from the front. Everything after index 0
+    // is fallback and only ever runs when the primary found nothing.
+    const FVector PrimaryDir = OutwardDir.IsNearlyZero() ? Forward : OutwardDir;
+
+    // Ordered best-guess-first: the primary, then a radial sweep around the actor
+    // axis at the raw point's height (front, flanks, back — the order a player is
+    // most likely to be standing in), then two vertically-angled rays for a bone
+    // whose only nearby collision body is above or below it, which no horizontal
+    // ray can ever reach. Eight worst-case LineTraceComponent calls, once per
+    // shift (~5s) per enemy; the cost does not register.
+    TArray<FVector, TInlineAllocator<8>> Directions;
+    Directions.Add(PrimaryDir);
+    Directions.Add(Forward);
+    Directions.Add(Right);
+    Directions.Add(-Right);
+    Directions.Add(-Forward);
+    Directions.Add((PrimaryDir + FVector::UpVector).GetSafeNormal());
+    Directions.Add((PrimaryDir - FVector::UpVector).GetSafeNormal());
+
+    // Start outside the hull and trace INWARD to the bone origin. The first
+    // blocking hit is the surface crossing on the way in, which pulls an off-body
+    // point back onto the body and lifts a buried point out to the skin.
     //
     // GetClosestPointOnCollision was the obvious first candidate and is the wrong
     // tool: it returns 0 with no usable point when the query point is INSIDE the
@@ -304,29 +335,62 @@ void UGothicVitalPointComponent::RefreshVitalProjection() const
     const float StartDistance = FMath::Max(MaxSurfaceProjectionDistance * MeshScale,
                                            FVector::Dist(BoneOrigin, RawPoint) + 100.f * MeshScale);
 
-    const FVector TraceStart = BoneOrigin + OutwardDir * StartDistance;
-    const FVector TraceEnd   = BoneOrigin;
+    const FVector TraceEnd = BoneOrigin;
 
     FCollisionQueryParams Params(FName(TEXT("VitalSurfaceProjection")), /*bTraceComplex=*/ false);
 
-    FHitResult Hit;
-    const bool bHit = CachedMesh->LineTraceComponent(Hit, TraceStart, TraceEnd, Params);
+    FHitResult BestHit;
+    bool  bHit          = false;
+    float BestDistToRaw = MAX_flt;
+    int32 RaysTried     = 0;
+
+    for (int32 DirIndex = 0; DirIndex < Directions.Num(); ++DirIndex)
+    {
+        ++RaysTried;
+
+        FHitResult Hit;
+        if (CachedMesh->LineTraceComponent(
+                Hit, BoneOrigin + Directions[DirIndex] * StartDistance, TraceEnd, Params))
+        {
+            // Nearest to the RAW point wins, not nearest to the bone: the raw
+            // point is where the author said the vital is, so the surface closest
+            // to it is the one that honours the authoring.
+            const float DistToRaw = FVector::Dist(Hit.ImpactPoint, RawPoint);
+            if (!bHit || DistToRaw < BestDistToRaw)
+            {
+                BestHit       = Hit;
+                BestDistToRaw = DistToRaw;
+                bHit          = true;
+            }
+        }
+
+        // The primary direction is the pre-fan behaviour and it already works on
+        // nine of the fourteen indices. When it hits, stop: the common case stays
+        // exactly one ray and cannot regress. The fan is a fallback, not a survey.
+        if (bHit && DirIndex == 0)
+        {
+            break;
+        }
+    }
 
     if (!bHit)
     {
-        // No collision around this bone at all — a physics asset with no body for
-        // this limb, most often. Verbose, not Warning: it is a data gap to look
-        // up when someone reports an unhittable vital, not a per-frame alarm.
+        // No collision anywhere around this bone — a physics asset with no body
+        // for this limb, most often. With the fan in place this should be rare
+        // and genuinely means "no surface", where before it also meant "one
+        // unlucky ray". Verbose, not Warning: it is a data gap to look up when
+        // someone reports an unhittable vital, not a per-frame alarm.
         // (LogTemp is clamped to Warning project-wide and would swallow it.)
         UE_LOG(LogVigilCombat, Verbose,
-            TEXT("VitalProjection: %s vital[%d] bone=%s found no collision surface — keeping the raw point"),
-            *GetOwner()->GetName(), ActiveVitalIndex, *VPL.BoneName.ToString());
+            TEXT("VitalProjection: %s vital[%d] bone=%s found no collision surface after %d rays "
+                 "— keeping the raw point"),
+            *GetOwner()->GetName(), ActiveVitalIndex, *VPL.BoneName.ToString(), RaysTried);
         return;
     }
 
     // Sink a little way in from the surface along the ray, capped so a thin limb
     // can never invert the point past its own bone.
-    const FVector SurfacePoint = Hit.ImpactPoint;
+    const FVector SurfacePoint = BestHit.ImpactPoint;
     const FVector InwardDir    = (BoneOrigin - SurfacePoint).GetSafeNormal();
     const float   Inset        = FMath::Min(SurfaceInsetDepth * MeshScale,
                                             FVector::Dist(SurfacePoint, BoneOrigin) * 0.5f);
@@ -339,15 +403,24 @@ void UGothicVitalPointComponent::RefreshVitalProjection() const
     // One line per shift. The raw-vs-projected delta is the whole measurement:
     // it is how far the vital was off the body before this fix, per enemy, per
     // index — which turns the next "I can't hit the vital" report into a grep.
+    //
+    // Standard VigilTimeline shape (t, actor, system, event, then fields): the
+    // original spelling dropped the `t=` stamp and could not be correlated
+    // against a scenario timeline at all. `rays=` is the fan's cost meter — a 1
+    // is the primary direction working, anything higher is a bone that needed the
+    // fallback and is worth an authored offset.
     UE_LOG(LogVigilCombat, Verbose,
-        TEXT("VigilTimeline VitalProjection enemy=%s|index=%d|bone=%s|raw=%s|projected=%s|depth=%.1f|radius=%.1f"),
+        TEXT("VigilTimeline|t=%.3f|%s|VitalProjection|REFRESH|index=%d|bone=%s|raw=%s|projected=%s|")
+        TEXT("depth=%.1f|radius=%.1f|rays=%d"),
+        GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f,
         *GetOwner()->GetName(),
         ActiveVitalIndex,
         *VPL.BoneName.ToString(),
         *RawPoint.ToCompactString(),
         *ProjectedPoint.ToCompactString(),
         FVector::Dist(RawPoint, ProjectedPoint),
-        GetEffectiveHitRadius());
+        GetEffectiveHitRadius(),
+        RaysTried);
 }
 
 FVector UGothicVitalPointComponent::GetCurrentVitalWorldLocation() const
@@ -558,8 +631,10 @@ void UGothicVitalPointComponent::SpawnShimmer()
     {
         ShimmerComponent->SetVariableLinearColor(ShimmerColorParameter, ShimmerColor);
     }
-    ShimmerComponent->SetWorldScale3D(FVector(ShimmerScale));
 
+    // Scale is set inside UpdateShimmerAttachment, after the attach — the attach
+    // rules keep relative scale, so setting a world scale here and re-parenting
+    // there is how the size silently stopped tracking the mesh.
     UpdateShimmerAttachment();
 }
 
@@ -602,6 +677,16 @@ void UGothicVitalPointComponent::UpdateShimmerAttachment()
         ShimmerComponent->SetRelativeLocation(VPL.LocalOffset);
         ShimmerComponent->SetRelativeRotation(FRotator::ZeroRotator);
     }
+
+    // ShimmerScale alone is a FLAT world scale, and a flat world scale is a lie
+    // on any enemy that is not 1.0: on the 4.005x Bestial Lucid it drew a
+    // Thrall-sized mote over a 120cm hit volume, so the indicator told the player
+    // to aim at a pinhead when the real target was a beachball. Multiply by the
+    // same factor GetEffectiveHitRadius uses and the apparent size tracks the
+    // actual target size on every enemy, by construction. Set AFTER the attach,
+    // because the attach rules preserve relative scale and would otherwise
+    // reintroduce the mesh scale a second time.
+    ShimmerComponent->SetWorldScale3D(FVector(ShimmerScale * GetMeshWorldScale()));
 }
 
 void UGothicVitalPointComponent::HandleOwnerDeath()

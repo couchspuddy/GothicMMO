@@ -435,6 +435,16 @@ protected:
 
     /** Raw bone origin + transformed offset. No surface projection. */
     FVector ComputeWorldLocation(int32 Index) const;
+
+    /**
+     * The one scale factor everything on this component sizes against: the
+     * largest component of the owning mesh's WORLD scale, 1.0 when there is no
+     * mesh. The hit radius, the projection distances and the shimmer all read it,
+     * so on the 4.005x Bestial Lucid they cannot disagree about how big the
+     * target is — which they did, the shimmer drawing Thrall-sized over a 120cm
+     * hit radius.
+     */
+    float GetMeshWorldScale() const;
     void OnShiftTimerFired();
     void SpawnShimmer();
     void UpdateShimmerAttachment();
