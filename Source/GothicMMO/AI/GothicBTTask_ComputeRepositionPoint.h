@@ -83,6 +83,38 @@ protected:
     UPROPERTY(EditAnywhere, Category = "Reposition")
     float RepositionRadius = 450.f;
 
+    /**
+     * MINIMUM 2D displacement the computed point must sit from where the pawn
+     * currently stands. A floor on the move, not on the orbit.
+     *
+     * The orbit-at-current-separation rule above is right about WHERE to stand
+     * but says nothing about how far the walk actually is, and the two are not
+     * the same number: the point sits on an arc around the target, so the
+     * displacement is the CHORD, and the chord collapses as the pawn closes.
+     * The Bestial Lucid parks at a measured 125uu from the player, which with
+     * a 45-110 degree offset is a chord of only 96-205uu — against a capsule
+     * radius of 90uu (60 x 1.5 scale). A stock Move To's reach test adds the
+     * agent radius to its AcceptableRadius, so a walk that short can register
+     * as AlreadyAtGoal and return instantly with no path request and no log
+     * line, which is exactly the measured symptom: Reposition chosen on 92-100%
+     * of samples and the boss moving exactly 0.0uu across 299 of them.
+     *
+     * 200uu is that 90uu capsule plus a stock AcceptableRadius of 50 and half
+     * again on top, so the floor holds without this file having to read the
+     * paired node's tuning. Not higher: the maximum chord available at a fixed
+     * separation is 2*R, which at her 125uu is exactly 250uu, so a 250 floor
+     * would demand a near-180-degree swing every time — a lap around the
+     * player, not a strafe — and would force the radius concession constantly.
+     * 200 is reachable at ~106 degrees with the separation untouched.
+     *
+     * Reached by widening the bearing first and stepping the radius outward
+     * only when the capped arc cannot get there, because separation is the one
+     * budget a reposition must not spend (see the ordering note in
+     * ExecuteTask).
+     */
+    UPROPERTY(EditAnywhere, Category = "Reposition", meta = (ClampMin = "0.0"))
+    float MinRepositionDistance = 200.f;
+
     // -------------------------------------------------------------------------
     // Menacing hold — the "she doesn't just orbit forever" beat.
     //
@@ -101,7 +133,8 @@ protected:
      *  Divided at runtime by the arena aggression multiplier where a
      *  GothicBossArenaManager exists, so holds get rarer as pillars fall; the
      *  authored value is what rolls at the baseline 1.0 and in every level that
-     *  has no manager. */
+     *  has no manager, and it is a hard CEILING — aggression can only ever
+     *  reduce this, never inflate it (see the clamp in ExecuteTask). */
     UPROPERTY(EditAnywhere, Category = "Menace", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float HoldChance = 0.35f;
 
