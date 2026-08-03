@@ -104,8 +104,10 @@ void UGothicVitalPointComponent::TickComponent(float DeltaTime, ELevelTick TickT
 #if WITH_EDITOR
     if (bDebugDrawVital && VitalPointLocations.Num() > 0 && GetWorld())
     {
+        // Effective, not authored — this draw's whole purpose is to show the
+        // volume hit detection actually uses, and on a scaled enemy those differ.
         DrawDebugSphere(GetWorld(), GetCurrentVitalWorldLocation(),
-            HitDetectionRadius, 12, FColor::Yellow, false, -1.f, 0, 0.5f);
+            GetEffectiveHitRadius(), 12, FColor::Yellow, false, -1.f, 0, 0.5f);
     }
 #endif
 }
@@ -164,7 +166,10 @@ void UGothicVitalPointComponent::ShiftVitalPoint()
     AccumulatedDamage = 0.f;
     RollNextVitalIndex();
 
-    const FVector NewLocation = ComputeWorldLocation(ActiveVitalIndex);
+    // Projected, not raw — this is the shift that refreshes the projection cache
+    // and emits the VigilTimeline line, and listeners must receive the same
+    // position hit detection will use.
+    const FVector NewLocation = GetCurrentVitalWorldLocation();
 
 
     // Broadcast so The Read ability and any other listeners know
@@ -218,8 +223,151 @@ FVector UGothicVitalPointComponent::ComputeWorldLocation(int32 Index) const
     return BoneTransform.GetLocation() + BoneTransform.TransformVector(VPL.LocalOffset);
 }
 
+float UGothicVitalPointComponent::GetEffectiveHitRadius() const
+{
+    if (!CachedMesh)
+    {
+        return HitDetectionRadius;
+    }
+
+    // Largest axis, not the average — see the header for why erring large is the
+    // safe direction. GetComponentScale is the world scale, so it already folds
+    // in the capsule's scale as well as the mesh child's (on the Bestial Lucid
+    // that product is 1.5 x 2.67 = 4.005, and 30cm on a 4x body is a pinhead).
+    const float MeshScale = CachedMesh->GetComponentScale().GetAbsMax();
+
+    return HitDetectionRadius * FMath::Max(MeshScale, KINDA_SMALL_NUMBER);
+}
+
+void UGothicVitalPointComponent::RefreshVitalProjection() const
+{
+    ProjectionCacheIndex     = ActiveVitalIndex;
+    bProjectionCacheValid    = false;
+    ProjectedBoneSpaceOffset = FVector::ZeroVector;
+
+    if (!bProjectVitalToSurface || !CachedMesh || !GetOwner())
+    {
+        return;
+    }
+    if (!VitalPointLocations.IsValidIndex(ActiveVitalIndex))
+    {
+        return;
+    }
+
+    const FVitalPointLocation& VPL = VitalPointLocations[ActiveVitalIndex];
+
+    const int32 BoneIndex = CachedMesh->GetBoneIndex(VPL.BoneName);
+    if (VPL.BoneName == NAME_None || BoneIndex == INDEX_NONE)
+    {
+        // Actor-relative fallback points have no bone to project along or cache
+        // against; they keep the raw path.
+        return;
+    }
+
+    const FTransform BoneTransform = CachedMesh->GetBoneTransform(BoneIndex);
+    const FVector    BoneOrigin    = BoneTransform.GetLocation();
+    const FVector    RawPoint      = BoneOrigin + BoneTransform.TransformVector(VPL.LocalOffset);
+
+    const float MeshScale = FMath::Max(CachedMesh->GetComponentScale().GetAbsMax(), KINDA_SMALL_NUMBER);
+
+    // The outward direction is "away from the actor's vertical axis, through the
+    // raw point". On a buried point (offset zero, the Lucid) that pushes the
+    // vital out to the nearest flank rather than an arbitrary face; on an
+    // off-body point (the authored +-50cm offsets, the Thrall) it is simply the
+    // direction the author pushed it, so the surface we find is the one they
+    // were aiming past. Degenerate only when the point sits exactly on the
+    // spine, where forward is the honest guess: the player shoots from the front.
+    const FVector AxisPoint = FVector(GetOwner()->GetActorLocation().X,
+                                      GetOwner()->GetActorLocation().Y,
+                                      RawPoint.Z);
+    FVector OutwardDir = (RawPoint - AxisPoint).GetSafeNormal();
+    if (OutwardDir.IsNearlyZero())
+    {
+        OutwardDir = GetOwner()->GetActorForwardVector();
+    }
+
+    // Start outside the hull and trace INWARD to the bone origin. One ray covers
+    // both defects: the first blocking hit is the surface crossing on the way in,
+    // which pulls an off-body point back onto the body and lifts a buried point
+    // out to the skin.
+    //
+    // GetClosestPointOnCollision was the obvious first candidate and is the wrong
+    // tool: it returns 0 with no usable point when the query point is INSIDE the
+    // body, which is exactly the Lucid case this exists for.
+    //
+    // LineTraceComponent hits only this mesh, so no channel is involved — the
+    // ECC_Weapon setup on enemy meshes is irrelevant here, and a mesh whose
+    // collision is disabled for world queries still projects correctly. On a
+    // skeletal mesh this resolves against the physics asset's bodies unless
+    // per-poly collision is on; the physics asset is a capsule approximation of
+    // the silhouette, which is both cheaper and steadier than the render mesh.
+    const float StartDistance = FMath::Max(MaxSurfaceProjectionDistance * MeshScale,
+                                           FVector::Dist(BoneOrigin, RawPoint) + 100.f * MeshScale);
+
+    const FVector TraceStart = BoneOrigin + OutwardDir * StartDistance;
+    const FVector TraceEnd   = BoneOrigin;
+
+    FCollisionQueryParams Params(FName(TEXT("VitalSurfaceProjection")), /*bTraceComplex=*/ false);
+
+    FHitResult Hit;
+    const bool bHit = CachedMesh->LineTraceComponent(Hit, TraceStart, TraceEnd, Params);
+
+    if (!bHit)
+    {
+        // No collision around this bone at all — a physics asset with no body for
+        // this limb, most often. Verbose, not Warning: it is a data gap to look
+        // up when someone reports an unhittable vital, not a per-frame alarm.
+        // (LogTemp is clamped to Warning project-wide and would swallow it.)
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VitalProjection: %s vital[%d] bone=%s found no collision surface — keeping the raw point"),
+            *GetOwner()->GetName(), ActiveVitalIndex, *VPL.BoneName.ToString());
+        return;
+    }
+
+    // Sink a little way in from the surface along the ray, capped so a thin limb
+    // can never invert the point past its own bone.
+    const FVector SurfacePoint = Hit.ImpactPoint;
+    const FVector InwardDir    = (BoneOrigin - SurfacePoint).GetSafeNormal();
+    const float   Inset        = FMath::Min(SurfaceInsetDepth * MeshScale,
+                                            FVector::Dist(SurfacePoint, BoneOrigin) * 0.5f);
+
+    const FVector ProjectedPoint = SurfacePoint + InwardDir * Inset;
+
+    ProjectedBoneSpaceOffset = BoneTransform.InverseTransformPosition(ProjectedPoint);
+    bProjectionCacheValid    = true;
+
+    // One line per shift. The raw-vs-projected delta is the whole measurement:
+    // it is how far the vital was off the body before this fix, per enemy, per
+    // index — which turns the next "I can't hit the vital" report into a grep.
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline VitalProjection enemy=%s|index=%d|bone=%s|raw=%s|projected=%s|depth=%.1f|radius=%.1f"),
+        *GetOwner()->GetName(),
+        ActiveVitalIndex,
+        *VPL.BoneName.ToString(),
+        *RawPoint.ToCompactString(),
+        *ProjectedPoint.ToCompactString(),
+        FVector::Dist(RawPoint, ProjectedPoint),
+        GetEffectiveHitRadius());
+}
+
 FVector UGothicVitalPointComponent::GetCurrentVitalWorldLocation() const
 {
+    // Refresh only when the vital has actually moved. Everything else — every
+    // tick of the overlay, every shot — rides the cache.
+    if (ProjectionCacheIndex != ActiveVitalIndex)
+    {
+        RefreshVitalProjection();
+    }
+
+    if (bProjectionCacheValid && CachedMesh && VitalPointLocations.IsValidIndex(ActiveVitalIndex))
+    {
+        const int32 BoneIndex = CachedMesh->GetBoneIndex(VitalPointLocations[ActiveVitalIndex].BoneName);
+        if (BoneIndex != INDEX_NONE)
+        {
+            return CachedMesh->GetBoneTransform(BoneIndex).TransformPosition(ProjectedBoneSpaceOffset);
+        }
+    }
+
     return ComputeWorldLocation(ActiveVitalIndex);
 }
 
@@ -232,7 +380,14 @@ bool UGothicVitalPointComponent::IsVitalPointHit(const FVector& HitWorldLocation
     // The radius itself belongs to the target's component, so the attacker's
     // contribution has to be passed in rather than read here — this component
     // has no idea who is shooting it.
-    const float EffectiveRadius = FMath::Max(0.f, HitDetectionRadius + BonusRadius);
+    // GetEffectiveHitRadius() is the authored radius scaled by the mesh's world
+    // scale, so 30cm means the same proportional target on a Thrall and on a
+    // 4x Bestial Lucid. The shooter's bonus is added AFTER the scale: it is a
+    // flat cm widening granted by the attacker's own stat, and scaling someone
+    // else's stat by the target's size would make the same upgrade worth four
+    // times more against big enemies.
+    const float ScaledRadius    = GetEffectiveHitRadius();
+    const float EffectiveRadius = FMath::Max(0.f, ScaledRadius + BonusRadius);
 
     const bool bIsHit = Distance <= EffectiveRadius;
 
@@ -245,14 +400,14 @@ bool UGothicVitalPointComponent::IsVitalPointHit(const FVector& HitWorldLocation
     // itself the answer to "was the shooter's radius bonus applied?".
     UE_LOG(LogVigilCombat, Verbose,
         TEXT("VitalGeometry: %s vital[%d] impact=%s vital=%s dist=%.1f threshold=%.1f "
-             "(HitDetectionRadius=%.1f + BonusRadius=%.1f) => %s"),
+             "(ScaledRadius=%.1f + BonusRadius=%.1f) => %s"),
         GetOwner() ? *GetOwner()->GetName() : TEXT("<no owner>"),
         ActiveVitalIndex,
         *HitWorldLocation.ToCompactString(),
         *CurrentLocation.ToCompactString(),
         Distance,
         EffectiveRadius,
-        HitDetectionRadius,
+        ScaledRadius,
         BonusRadius,
         bIsHit ? TEXT("VITAL") : TEXT("body"));
 
@@ -276,7 +431,7 @@ void UGothicVitalPointComponent::OnRep_ActiveVitalIndex()
     // Called on clients when ActiveVitalIndex replicates
     // Compute the new world location and broadcast so Blueprint
     // can update the shimmer visual without any additional RPC
-    const FVector NewLocation = ComputeWorldLocation(ActiveVitalIndex);
+    const FVector NewLocation = GetCurrentVitalWorldLocation();
     OnVitalPointShifted.Broadcast(ActiveVitalIndex, NewLocation);
 
     // The client-side shimmer follows the replicated index.
@@ -297,7 +452,7 @@ void UGothicVitalPointComponent::FreezeVitalPoint(int32 LockIndex)
         ActiveVitalIndex = LockIndex;
         AccumulatedDamage = 0.f;
 
-        const FVector NewLocation = ComputeWorldLocation(ActiveVitalIndex);
+        const FVector NewLocation = GetCurrentVitalWorldLocation();
 
 
         // Same pattern as ShiftVitalPoint: ActiveVitalIndex replicates and OnRep
@@ -417,15 +572,26 @@ void UGothicVitalPointComponent::UpdateShimmerAttachment()
 
     const FVitalPointLocation& VPL = VitalPointLocations[ActiveVitalIndex];
 
+    // Make sure the projection for this index exists before reading it, so the
+    // shimmer placed at spawn is the projected one and not a one-shift-stale raw.
+    if (ProjectionCacheIndex != ActiveVitalIndex)
+    {
+        RefreshVitalProjection();
+    }
+
+    // The shimmer must sit where the hit volume is, not where the data says.
+    const FVector ShimmerBoneSpaceOffset =
+        bProjectionCacheValid ? ProjectedBoneSpaceOffset : VPL.LocalOffset;
+
     if (CachedMesh && VPL.BoneName != NAME_None)
     {
         // Bones are valid attachment sockets. From here the animation moves the
         // shimmer — zero per-frame code. SetRelativeLocation is in bone space,
-        // which matches ComputeWorldLocation's TransformVector(LocalOffset), so
-        // the visual and the hit check agree by construction.
+        // which is the same space the projection cache is stored in, so the
+        // visual and the hit check agree by construction.
         ShimmerComponent->AttachToComponent(CachedMesh,
             FAttachmentTransformRules::SnapToTargetNotIncludingScale, VPL.BoneName);
-        ShimmerComponent->SetRelativeLocation(VPL.LocalOffset);
+        ShimmerComponent->SetRelativeLocation(ShimmerBoneSpaceOffset);
         ShimmerComponent->SetRelativeRotation(FRotator::ZeroRotator);
     }
     else if (GetOwner() && GetOwner()->GetRootComponent())
