@@ -518,7 +518,12 @@ class VigilPIETools(unreal.ToolsetDefinition):
 
         Args:
             actor_labels: Comma-separated pawn names from list_combatants.
-            metrics: Comma-separated metric keys. See capabilities for the list.
+            metrics: Comma-separated metric keys. See capabilities for the
+                full list -- it is generated from the readers, so it is always
+                current. For crowd control, sample `tags`: it is the only
+                column that can show a State.* tag appearing and expiring, and
+                nothing else in this toolset can observe a gameplay tag at
+                runtime.
             interval_seconds: Sample period. 0.1 is usually right; 0.016 for
                 single-frame events like a hit registration window.
 
