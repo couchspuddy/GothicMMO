@@ -7,6 +7,8 @@
 #include "AbilitySystem/GothicGameplayTags.h"
 #include "AI/GothicEnemyAIController.h"
 #include "Character/GothicPlayerCharacter.h"
+#include "Components/CapsuleComponent.h"
+#include "GameFramework/Character.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
@@ -188,11 +190,43 @@ void UGA_BestialLucidCharge::SweepChargeDamage()
     TArray<AActor*> IgnoreActors;
     IgnoreActors.Add(Avatar);
 
+    // The overlap is the boss's OWN BODY, inflated — not a sphere at her origin.
+    //
+    // A sphere centred on GetActorLocation() is a point-sized reading of a pawn
+    // that is anything but a point. Her actor origin is the capsule centre,
+    // ~291uu above a floor-standing player's origin, so a 120uu sphere there
+    // could not reach the floor at any horizontal distance: measured minimum 3D
+    // separation over six charges was 324-394uu, and not one of them dealt
+    // damage. Taking the extent from UCapsuleComponent instead makes the check
+    // scale with whatever is charging, with no per-creature radius to retune.
+    float BodyRadius = 0.f;
+    float BodyHalfHeight = 0.f;
+    FVector SweepCentre = Avatar->GetActorLocation();
+
+    if (const ACharacter* AvatarCharacter = Cast<ACharacter>(Avatar))
+    {
+        if (const UCapsuleComponent* AvatarCapsule = AvatarCharacter->GetCapsuleComponent())
+        {
+            // Scaled, so the boss's 1.5x RelativeScale3D is already in these.
+            AvatarCapsule->GetScaledCapsuleSize(BodyRadius, BodyHalfHeight);
+            SweepCentre = AvatarCapsule->GetComponentLocation();
+        }
+    }
+
+    if (BodyHalfHeight <= 0.f)
+    {
+        // Not a Character, or no capsule: fall back to the root primitive's
+        // collision cylinder, which is still measured from the actor rather than
+        // guessed. Only a truly collision-less avatar reaches the floor below.
+        Avatar->GetSimpleCollisionCylinder(BodyRadius, BodyHalfHeight);
+    }
+
     TArray<AActor*> Overlapping;
-    UKismetSystemLibrary::SphereOverlapActors(
+    UKismetSystemLibrary::CapsuleOverlapActors(
         Avatar,
-        Avatar->GetActorLocation(),
-        ChargeHitRadius,
+        SweepCentre,
+        FMath::Max(1.f, BodyRadius + ChargeHitInflation),
+        FMath::Max(1.f, BodyHalfHeight + ChargeHitInflation),
         TArray<TEnumAsByte<EObjectTypeQuery>>{ UEngineTypes::ConvertToObjectType(ECC_Pawn) },
         AGothicPlayerCharacter::StaticClass(),
         IgnoreActors,

@@ -105,9 +105,33 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge")
     float ChargeDamage = 45.f;
 
-    /** Radius around the boss that counts as being run over (cm). */
+    /**
+     * Extra reach beyond the boss's own body that counts as being run over (cm).
+     *
+     * NOT AN ABSOLUTE RADIUS. This used to be ChargeHitRadius = 120, the radius
+     * of a sphere centred on the avatar's actor origin — and for a pawn this
+     * size that sphere can never contain anybody. The Bestial Lucid's origin is
+     * her capsule CENTRE, which measures ~291uu above a floor-standing player's
+     * origin. 291 > 120 on the Z axis alone, so the sphere missed at every
+     * horizontal distance including zero: six charges in a row, minimum 3D
+     * separation 324-394uu, zero charge damage events. One leap that touched
+     * down 143uu away horizontally still measured 324uu in 3D.
+     *
+     * The sweep now overlaps the avatar's actual CAPSULE — its scaled radius and
+     * half-height, at the capsule's own world location — and this value inflates
+     * that capsule on both axes. So the body check is sized by the creature: a
+     * Thrall gets a Thrall-sized one, the boss gets a boss-sized one, and no
+     * magic radius has to be retuned per enemy.
+     *
+     * 30 because the capsule IS the body; this is the bit of grace either side
+     * of it, not the hit volume. The boss's effective capsule is 90uu radius
+     * (60 * 1.5 scale) x 379.5uu half-height (253 * 1.5), so 30 makes her charge
+     * a 120uu-radius body check that still cannot touch someone she flies past —
+     * which is exactly what the old 120 was meant to be, and what raising it to
+     * ~400 to clear the Z gap would have destroyed.
+     */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge")
-    float ChargeHitRadius = 120.f;
+    float ChargeHitInflation = 30.f;
 
     /**
      * GE used for the charge hit. Same Data.Damage SetByCaller contract as the
@@ -120,40 +144,31 @@ protected:
      * BACKSTOP on how long the charge stays dangerous, measured from the LAUNCH
      * (seconds). Not from activation — see the file header.
      *
-     * This is no longer the primary closer. The window normally ends on the
-     * controller's OnLeapLanded, which is the real end of the travel; this only
-     * catches a leap whose landing never arrives. So it wants to be an upper
-     * bound on the traversal, and over-running it is cheap where undershooting
-     * is not.
+     * THIS IS NOT A TUNING VALUE. The window's normal close is the landing:
+     * HandleLeapLanded fires on the controller's OnLeapLanded and the landing
+     * has always arrived first, so this backstop has never actually fired. It
+     * exists for the leap that never lands — one eaten by geometry, or a
+     * controller that loses the flight — and its only job is to stop the boss
+     * sweeping forever. Nothing about the charge's feel is set here.
      *
-     * WHY IT IS NOT 1.3. That number was justified as MaxChargeDistance /
-     * ChargeSpeed = 1500 / 1200 = 1.25s, which is arithmetically fine and wrong
-     * twice over: it counted the 0.8s stationary windup as travel, and 1200 is
-     * the BT task's speed, not the graph's. The graph launches at 1800 XY /
-     * 400 Z. Redone against the real numbers:
+     * Measured, not derived. Launch-to-landing over nine guarded leaps ran
+     * 0.824-0.943s, median 0.828. 1.3 is the worst of those plus ~35% headroom.
      *
-     *   horizontal  1500 / 1800                     = 0.83s
-     *   ballistic   2 * 400 / 980 (default gravity) = 0.82s
-     *
-     * Both say under a second, and both disagree with the measurement: she was
-     * observed still in the air and ARRIVING 1.2-1.5s after the old ability end
-     * at ~1.43s, i.e. roughly 1.8-2.0s of travel after the launch. Neither
-     * derivation accounts for her GravityScale, her 1.5x capsule, or a landing
-     * on a lower floor than the launch.
-     *
-     * 2.0 is the top of that measured arrival band. It is a STARTING POINT for a
-     * measured pass, not a tuned value — measure the launch-to-landed interval
-     * over several charges and set this a little above the worst one.
+     * The old 2.0 was reasoned from an observed ability-end time rather than
+     * measured from launch to landing, and it put the backstop more than twice
+     * the real traversal away — harmless while the landing keeps closing the
+     * window, and a very long tail of free sweeping on the day it does not.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge")
-    float ChargeDamageWindow = 2.0f;
+    float ChargeDamageWindow = 1.3f;
 
     /**
      * Seconds between sweeps.
      *
-     * At 1800 uu/s the boss covers 90uu per 0.05s — comfortably less than
-     * ChargeHitRadius, so nobody is tunnelled through between samples. This is
-     * the ability-side stand-in for the BT task's per-tick check.
+     * At 1800 uu/s the boss covers 90uu per 0.05s — comfortably less than the
+     * width of her inflated capsule, so nobody is tunnelled through between
+     * samples. This is the ability-side stand-in for the BT task's per-tick
+     * check.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge",
               meta = (ClampMin = "0.01"))
