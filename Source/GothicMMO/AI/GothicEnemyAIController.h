@@ -40,6 +40,17 @@ namespace GothicBBKeys
     static const FName ChosenAction          = TEXT("ChosenAction");           // FName — written by GothicBTService_WeightedActionSelect
 }
 
+/**
+ * Fired exactly once per leap flight, on whichever ending arrives first.
+ *
+ * bLanded is true only for a real ACharacter landing. The safety timer, an
+ * unpossess and an explicit AbortLeapFlight all pass false — a listener that
+ * ends an ability on this delegate must be woken by those endings too, or a
+ * leap that never lands leaves the ability hanging forever, which is the
+ * failure mode the guard exists to prevent.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FGothicLeapLandedSignature, bool, bLanded);
+
 UCLASS()
 class GOTHICMMO_API AGothicEnemyAIController : public AAIController
 {
@@ -164,8 +175,92 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|AI")
     void EnterRegroupPause(float Duration);
 
+    // ── Leap flight guard ────────────────────────────────────────────────────
+    //
+    // Lives on the ENEMY base, not the boss base. Any creature that leaves the
+    // ground under its own launch has this problem, and it is not a boss
+    // problem: it is a problem with the relationship between LaunchCharacter
+    // and a behaviour tree that goes on running. Putting the guard on
+    // AGothicBossAIController would guarantee rediscovering it the first time a
+    // Thrall lunges.
+    //
+    // First written and PIE-proven on AGothicFeralRetainedController for
+    // GA_FeralBreakout; hoisted here verbatim, plus the Blueprint surface the
+    // Bestial Lucid's Charge graph needs.
+
+    /**
+     * Call immediately BEFORE LaunchCharacter. Makes the flight steering-proof
+     * from both ends until the pawn lands.
+     *
+     * The launch itself was never the problem — it already overrides both axes.
+     * What killed it was everything that happens on the ticks AFTER: the
+     * behaviour tree re-issues a Move To toward the player, and in MOVE_Falling
+     * that request is spent as air-control acceleration against the launch's XY
+     * velocity. Measured in PIE on the Feral Retained: with the player standing
+     * OPPOSITE the leap direction she gained her full +322uu of height and
+     * travelled 7-13uu horizontally — she went straight up and landed where she
+     * stood.
+     *
+     * So the brain is paused (no new move requests) AND AirControl is driven to
+     * zero (an in-flight request that slips through cannot bend the arc anyway).
+     * AirControl is set on the Blueprint, not in C++, so zeroing it is the only
+     * value-independent way to be sure.
+     *
+     * Both are undone on landing — ACharacter::LandedDelegate, with a timer
+     * fallback so a missed landing can never leave a pawn permanently
+     * brain-dead. Idempotent: a second call while already in flight only
+     * refreshes the safety timer, so SavedAirControl is never overwritten with
+     * the zero this function just wrote.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|AI|Leap")
+    void BeginLeapFlight();
+
+    /**
+     * Ends the flight early — the ability driving it was cancelled, the pawn was
+     * staggered mid-arc, a phase transition tore the action down.
+     *
+     * Restores the brain and AirControl exactly as a landing would and
+     * broadcasts OnLeapLanded with bLanded=false. Safe when no flight is in
+     * progress. An ability's EndAbility should call this unconditionally: the
+     * normal case is a no-op because the landing already unwound it, and the
+     * cancel case is the difference between a boss who recovers and a boss
+     * wedged with a paused brain and zero air control.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|AI|Leap")
+    void AbortLeapFlight();
+
+    /** True between BeginLeapFlight and the landing (or its fallback). */
+    UFUNCTION(BlueprintPure, Category = "Gothic|AI|Leap")
+    bool IsLeapInFlight() const { return bLeapInFlight; }
+
+    /**
+     * The end of a leap, whichever way it ended. Bind an ability to this rather
+     * than ending it on a flat timer — a timer that outlives the arc lets the
+     * tree re-plan mid-flight, and a timer that undershoots it resolves the
+     * ability's range checks at the launch position instead of the landing one.
+     */
+    UPROPERTY(BlueprintAssignable, Category = "Gothic|AI|Leap")
+    FGothicLeapLandedSignature OnLeapLanded;
+
 
 protected:
+    /**
+     * Hard ceiling on a leap flight, in seconds. If the landing never arrives —
+     * the pawn clips into geometry, gets teleported, dies mid-arc — this
+     * restores its brain and its air control anyway.
+     *
+     * 3 is comfortably longer than the ~1.3s the Feral Retained's measured arc
+     * spends airborne. Per-creature, so a longer leap can raise it without
+     * every other creature waiting that long for a failed landing.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI|Leap",
+        meta = (ClampMin = "0.5", ClampMax = "10.0"))
+    float LeapFlightSafetySeconds = 3.f;
+
+    /** Unpause the brain, restore AirControl, unbind, clear the timer, broadcast. Idempotent. */
+    void EndLeapFlight(bool bLanded, const TCHAR* Reason);
+
+
     /** Assign in BP_GothicEnemyAIController. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI")
     TObjectPtr<UBehaviorTree> BehaviorTreeAsset;
@@ -302,6 +397,21 @@ protected:
 
 
 private:
+    /** Landing hook bound to the pawn's LandedDelegate for the leap's duration. */
+    UFUNCTION()
+    void HandleLeapLanded(const FHitResult& Hit);
+
+    /** Fallback if the landing never fires — see LeapFlightSafetySeconds. */
+    void HandleLeapFlightTimeout();
+
+    /** In-flight guard — EndLeapFlight is racing four callers (landing, timer, abort, unpossess). */
+    bool bLeapInFlight = false;
+
+    /** AirControl as it was before the leap, restored verbatim on landing. */
+    float SavedAirControl = 0.f;
+
+    FTimerHandle LeapFlightSafetyHandle;
+
     /**
      * The target SetBlackboardTarget was asked to write while there was no
      * Blackboard to write it to.

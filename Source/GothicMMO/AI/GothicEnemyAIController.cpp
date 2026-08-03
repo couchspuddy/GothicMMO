@@ -11,6 +11,7 @@
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
+#include "BrainComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Character.h"
 #include "NavigationSystem.h"
@@ -40,6 +41,9 @@ namespace
      * the return already treats as arrived. (Recast's default is 50.)
      */
     const FVector PatrolOriginProjectionExtent(150.f, 150.f, 1000.f);
+
+    /** Named so nothing else's RestartLogic can resume a leap by accident. */
+    const TCHAR* GLeapPauseReason = TEXT("GothicLeapFlight");
 }
 
 AGothicEnemyAIController::AGothicEnemyAIController()
@@ -104,6 +108,12 @@ void AGothicEnemyAIController::OnPossess(APawn* InPawn)
 
 void AGothicEnemyAIController::OnUnPossess()
 {
+    // FIRST, while the pawn is still ours: hand back its AirControl and drop the
+    // landing binding, or a re-possess inherits a zeroed value and a stale
+    // delegate. Everything below this line runs after Super, which is where the
+    // pawn goes away.
+    EndLeapFlight(/*bLanded=*/false, TEXT("unpossessed"));
+
     Super::OnUnPossess();
     GetWorldTimerManager().ClearTimer(LeashCheckTimer);
 
@@ -119,6 +129,116 @@ void AGothicEnemyAIController::OnUnPossess()
             Char->GetCharacterMovement()->MaxWalkSpeed = DefaultWalkSpeed;
         }
     }
+}
+
+// ============================================================================
+// Leap flight guard
+// ============================================================================
+
+void AGothicEnemyAIController::BeginLeapFlight()
+{
+    ACharacter* MeChar = Cast<ACharacter>(GetPawn());
+    UCharacterMovementComponent* Move = MeChar ? MeChar->GetCharacterMovement() : nullptr;
+    if (!MeChar || !Move)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("GothicLeap[%s]: leap flight not guarded — no character/movement component. "
+                 "The behaviour tree can steer this pawn out of the arc."),
+            *GetNameSafe(GetPawn()));
+        return;
+    }
+
+    if (bLeapInFlight)
+    {
+        // Second launch before the first landed. Don't re-save AirControl or
+        // SavedAirControl would be overwritten with the zero we just wrote.
+        GetWorldTimerManager().SetTimer(
+            LeapFlightSafetyHandle, this, &AGothicEnemyAIController::HandleLeapFlightTimeout,
+            LeapFlightSafetySeconds, false);
+        return;
+    }
+
+    bLeapInFlight = true;
+
+    // 1. No new move requests for the duration of the arc.
+    if (UBrainComponent* Brain = GetBrainComponent())
+    {
+        Brain->PauseLogic(GLeapPauseReason);
+    }
+
+    // 2. And no steering even if one slips through — a Move To issued in
+    //    MOVE_Falling is spent as air-control acceleration, which is exactly
+    //    what was cancelling the horizontal velocity.
+    SavedAirControl = Move->AirControl;
+    Move->AirControl = 0.f;
+
+    MeChar->LandedDelegate.AddDynamic(this, &AGothicEnemyAIController::HandleLeapLanded);
+
+    GetWorldTimerManager().SetTimer(
+        LeapFlightSafetyHandle, this, &AGothicEnemyAIController::HandleLeapFlightTimeout,
+        LeapFlightSafetySeconds, false);
+
+    UE_LOG(LogTemp, Verbose,
+        TEXT("GothicLeap[%s]: leap flight begun — brain paused, AirControl %.3f -> 0 (safety %.1fs)"),
+        *GetNameSafe(MeChar), SavedAirControl, LeapFlightSafetySeconds);
+}
+
+void AGothicEnemyAIController::AbortLeapFlight()
+{
+    EndLeapFlight(/*bLanded=*/false, TEXT("aborted by owner"));
+}
+
+void AGothicEnemyAIController::HandleLeapLanded(const FHitResult& Hit)
+{
+    EndLeapFlight(/*bLanded=*/true, TEXT("landed"));
+}
+
+void AGothicEnemyAIController::HandleLeapFlightTimeout()
+{
+    EndLeapFlight(/*bLanded=*/false, TEXT("safety timer — landing never arrived"));
+}
+
+void AGothicEnemyAIController::EndLeapFlight(bool bLanded, const TCHAR* Reason)
+{
+    if (!bLeapInFlight)
+    {
+        return;
+    }
+
+    // Cleared BEFORE the broadcast, deliberately. A listener is entitled to end
+    // its ability from OnLeapLanded, and an EndAbility that calls
+    // AbortLeapFlight re-enters here — the flag is what makes that a no-op
+    // rather than a second unwind and a second broadcast.
+    bLeapInFlight = false;
+
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().ClearTimer(LeapFlightSafetyHandle);
+    }
+
+    ACharacter* MeChar = Cast<ACharacter>(GetPawn());
+    if (MeChar)
+    {
+        MeChar->LandedDelegate.RemoveDynamic(this, &AGothicEnemyAIController::HandleLeapLanded);
+
+        if (UCharacterMovementComponent* Move = MeChar->GetCharacterMovement())
+        {
+            Move->AirControl = SavedAirControl;
+        }
+    }
+
+    if (UBrainComponent* Brain = GetBrainComponent())
+    {
+        Brain->ResumeLogic(GLeapPauseReason);
+    }
+
+    UE_LOG(LogTemp, Verbose,
+        TEXT("GothicLeap[%s]: leap flight ended (%s) — brain resumed, AirControl restored to %.3f"),
+        *GetNameSafe(MeChar), Reason, SavedAirControl);
+
+    // Last, with every guarantee already restored, so a listener that reacts
+    // synchronously sees a pawn that is fully unwound.
+    OnLeapLanded.Broadcast(bLanded);
 }
 
 void AGothicEnemyAIController::SetBlackboardTarget(AActor* NewTarget)
