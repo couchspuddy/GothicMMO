@@ -1,6 +1,7 @@
 ﻿// GothicBTTask_FindNearestPillar.cpp
 
 #include "AI/GothicBTTask_FindNearestPillar.h"
+#include "AI/GothicRotundaPillar.h"
 #include "AIController.h"
 #include "NavigationSystem.h"
 #include "AI/NavigationSystemBase.h"
@@ -67,6 +68,23 @@ EBTNodeResult::Type UGothicBTTask_FindNearestPillar::ExecuteTask(
             continue;
         }
 
+        // Destroyed pillars were being excluded only by accident, and only
+        // partially: FinishCeilingCollapse turns the collision off, so the
+        // overlap stopped returning them AFTER the slab landed. For the whole
+        // 1.75s telegraph between the pillar breaking and the ceiling arriving,
+        // the collision is still live and this task would happily send her to
+        // stand under a section of roof that is already falling. The state is
+        // set at the start of that window, so testing it closes the gap.
+        //
+        // Non-pillar actors carrying the tag are still accepted: the tag is the
+        // contract (a level can tag any smashable geometry), and only actors
+        // that ARE pillars have a destroyed state to consult.
+        const AGothicRotundaPillar* Pillar = Cast<AGothicRotundaPillar>(Candidate);
+        if (Pillar && Pillar->IsDestroyed())
+        {
+            continue;
+        }
+
         const float DistSq = FVector::DistSquared(Pawn->GetActorLocation(), Candidate->GetActorLocation());
         if (DistSq < NearestDistSq)
         {
@@ -77,16 +95,38 @@ EBTNodeResult::Type UGothicBTTask_FindNearestPillar::ExecuteTask(
 
     if (!Nearest)
     {
-        // This is the failure mode worth knowing about before it happens in a
-        // real playthrough: if this fires, the transition Sequence stops here
-        // and CompletePhase2Transition never runs -- the fight would hang in
-        // Phase 1 forever. Tag at least one wall/pillar in the Rotunda before
-        // testing this sequence.
-        UE_LOG(LogTemp, Error,
-            TEXT("FindNearestPillar[%s]: no '%s'-tagged actor found within %.0f -- ")
-            TEXT("the Phase 2 transition cannot complete. Tag walls/pillars in the level."),
-            *GetNameSafe(Pawn), *TerrainTag.ToString(), SearchRadius);
-        return EBTNodeResult::Failed;
+        // ZERO-SURVIVOR FALLBACK.
+        //
+        // This used to return Failed, which aborted the phase-transition
+        // Sequence and left the fight in Phase 1 forever. That was written as a
+        // level-setup warning -- "tag at least one pillar" -- back when a
+        // pillarless Rotunda could only mean somebody forgot. It cannot mean
+        // that any more: with Wall Pound destroying pillars and the arena
+        // manager's ambient clock destroying the rest, all four being gone is a
+        // ROUTINE late-fight state, and hanging the fight on it is a shipping
+        // bug rather than a diagnostic.
+        //
+        // So the ritual degrades instead of failing: she transitions where she
+        // stands. The paired Move To (AcceptableRadius 60) completes immediately
+        // against her own position and CompletePhaseTransition runs normally.
+        // Losing the walk-to-a-pillar staging is a much smaller loss than losing
+        // the phase.
+        //
+        // GetNavAgentLocation, NOT GetActorLocation. Her capsule origin sits
+        // ~379.5uu above the navmesh -- past UE's 250uu query extent -- so a
+        // Move To aimed at her actor location fails silently. That trap has
+        // already cost this project two separate investigations; the nav agent
+        // location is the foot position and is the only one Move To can accept.
+        const FVector HereLocation = Pawn->GetNavAgentLocation();
+
+        UE_LOG(LogTemp, Log,
+            TEXT("FindNearestPillar[%s]: no surviving '%s'-tagged actor within %.0f -- ")
+            TEXT("transitioning in place at %s."),
+            *GetNameSafe(Pawn), *TerrainTag.ToString(), SearchRadius,
+            *HereLocation.ToCompactString());
+
+        BB->SetValue<UBlackboardKeyType_Vector>(OutputLocationKey.GetSelectedKeyID(), HereLocation);
+        return EBTNodeResult::Succeeded;
     }
 
     // Offset back toward the pawn rather than using the pillar's bare origin --
