@@ -744,8 +744,29 @@ protected:
 
 private:
     bool bHUDReady = false;
-    bool bAbilitiesGranted = false;
     bool bInventoryBound = false;
+
+    // -------------------------------------------------------------------------
+    // Which ASC the ability sets actually went into.
+    //
+    // This replaces a plain bAbilitiesGranted bool, and the difference is the
+    // whole remote-player grant bug. InitGASFromPlayerState re-reads
+    // AbilitySystemComponent from the PlayerState on EVERY pass, so the pointer
+    // it grants into is not guaranteed to be the pointer the pawn ends up with —
+    // a joining client's PlayerState resolves late, and the pass that ran first
+    // is not necessarily the pass that saw the final ASC. A bool cannot tell
+    // those apart: it records THAT a grant happened, not WHERE it landed, so the
+    // first pass closed the door and the ASC the pawn kept stayed empty.
+    //
+    // Weak, because the ASC lives on the PlayerState and outlives nothing in
+    // particular — a stale raw pointer here would compare equal to freed memory.
+    // Null (or pointing at a different ASC than the current one) means "this ASC
+    // has not been granted into yet", which is exactly the respawn case: a new
+    // pawn starts with this empty and re-grants into the surviving PlayerState
+    // ASC, where UGothicAbilitySet's own idempotency guard prevents duplicates
+    // and re-activates the passives OnDeath cancelled. That flow is unchanged.
+    // -------------------------------------------------------------------------
+    TWeakObjectPtr<UGothicAbilitySystemComponent> AbilitiesGrantedIntoASC;
 
     // -------------------------------------------------------------------------
     // GAS init retry — authority only
