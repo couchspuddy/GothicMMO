@@ -1,11 +1,27 @@
 // GothicBossArenaManager.cpp
 
 #include "AI/GothicBossArenaManager.h"
+#include "GothicMMO.h"                      // LogVigilCombat
 #include "AI/GothicRotundaPillar.h"
 #include "AI/GothicEnemyBase.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
+
+namespace
+{
+    /**
+     * The `t=` stamp every VigilTimeline line carries. Free function rather than
+     * a member so this file needs no header change to log — and it answers 0
+     * rather than asserting for a manager logging before/after its world, which
+     * is a diagnostic, not a place to fail.
+     */
+    float ArenaTimelineNow(const AActor* Actor)
+    {
+        const UWorld* World = Actor ? Actor->GetWorld() : nullptr;
+        return World ? World->GetTimeSeconds() : 0.f;
+    }
+}
 
 AGothicBossArenaManager::AGothicBossArenaManager()
 {
@@ -47,11 +63,18 @@ void AGothicBossArenaManager::BeginPlay()
     const AActor* Elected = UGameplayStatics::GetActorOfClass(this, AGothicBossArenaManager::StaticClass());
     bIsElectedManager = (Elected == this);
 
+    // Both outcomes, not just the abdication. "Which of the four managers is
+    // running the clock" is unanswerable from a log that only speaks when the
+    // answer is no — and the abdication was on LogTemp Verbose, which the
+    // project's [Core.Log] clamp made invisible twice over.
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|BossArena|ELECTION|outcome=%s|elected=%s|pillars=%d"),
+        ArenaTimelineNow(this), *GetName(),
+        bIsElectedManager ? TEXT("elected") : TEXT("abdicated"),
+        *GetNameSafe(Elected), GetPillarsRemaining());
+
     if (!bIsElectedManager)
     {
-        UE_LOG(LogTemp, Verbose,
-            TEXT("BossArena[%s]: not the elected manager (%s is) — abdicating the ambient collapse timer"),
-            *GetName(), *GetNameSafe(Elected));
         return;
     }
 
@@ -65,7 +88,7 @@ void AGothicBossArenaManager::BeginPlay()
 
     if (!ResolveBoss())
     {
-        UE_LOG(LogTemp, Warning,
+        UE_LOG(LogVigilCombat, Warning,
             TEXT("BossArena[%s]: ambient collapse is configured but no boss could be found — ")
             TEXT("assign BossActor on the placed instance, or set BossClass on the Blueprint. ")
             TEXT("Without a combat signal the timer stays disarmed rather than collapsing the ")
@@ -170,9 +193,9 @@ void AGothicBossArenaManager::OnPillarDestroyed(AGothicRotundaPillar* Pillar)
     //
     // The broadcast stays regardless: it is the hook a Blueprint can bind for
     // presentation (music, VFX, arena lighting) without touching C++.
-    UE_LOG(LogTemp, Log,
-        TEXT("BossArena[%s]: %s fell — %d pillar(s) standing, aggression x%.2f"),
-        *GetName(), *GetNameSafe(Pillar), Remaining, Aggression);
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|BossArena|PILLAR-fell|pillar=%s|standing=%d|aggression=%.2f"),
+        ArenaTimelineNow(this), *GetName(), *GetNameSafe(Pillar), Remaining, Aggression);
 
     OnArenaAggressionChanged.Broadcast(Aggression, Remaining);
 
@@ -235,17 +258,30 @@ void AGothicBossArenaManager::PollCombatState()
 
     bFightActive = bNowActive;
 
+    // TRANSITIONS ONLY — this line sits below the equality early-return above on
+    // purpose. The poll runs on a repeating timer for the whole level's lifetime,
+    // so a line per tick would bury every other BossArena event in the stream;
+    // what a reader needs is the two instants the latch moved, and the boss state
+    // that moved it.
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|BossArena|POLL|fightActive=%d|boss=%s|alive=%d|target=%s"),
+        ArenaTimelineNow(this), *GetName(), bFightActive ? 1 : 0,
+        *GetNameSafe(Boss), (Boss && Boss->IsAlive()) ? 1 : 0,
+        *GetNameSafe(Boss ? Boss->GetCombatTarget() : nullptr));
+
     if (bFightActive)
     {
-        UE_LOG(LogTemp, Log,
-            TEXT("BossArena[%s]: fight started — ambient collapse armed"), *GetName());
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|BossArena|FIGHT-started|standing=%d"),
+            ArenaTimelineNow(this), *GetName(), GetPillarsRemaining());
         ArmAmbientCollapseTimer();
     }
     else
     {
-        UE_LOG(LogTemp, Log,
-            TEXT("BossArena[%s]: fight ended (boss dead or disengaged) — ambient collapse disarmed"),
-            *GetName());
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|BossArena|FIGHT-ended|reason=%s"),
+            ArenaTimelineNow(this), *GetName(),
+            (Boss && Boss->IsAlive()) ? TEXT("disengaged") : TEXT("boss-dead-or-missing"));
         DisarmAmbientCollapseTimer();
     }
 }
@@ -283,14 +319,26 @@ void AGothicBossArenaManager::ArmAmbientCollapseTimer()
         &AGothicBossArenaManager::TriggerAmbientCollapse,
         Interval, false);
 
-    UE_LOG(LogTemp, Log,
-        TEXT("BossArena[%s]: next ambient collapse in %.0fs (%d pillar(s) standing)"),
-        *GetName(), Interval, Remaining);
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|BossArena|TIMER-armed|interval=%.0f|standing=%d"),
+        ArenaTimelineNow(this), *GetName(), Interval, Remaining);
 }
 
 void AGothicBossArenaManager::DisarmAmbientCollapseTimer()
 {
+    // Only speak when there was actually a clock to stop. ArmAmbientCollapseTimer
+    // opens by disarming, so an unconditional line would print a disarm in front
+    // of every arm and read as a clock thrashing on and off.
+    const bool bWasArmed = GetWorldTimerManager().IsTimerActive(AmbientCollapseTimerHandle);
+
     GetWorldTimerManager().ClearTimer(AmbientCollapseTimerHandle);
+
+    if (bWasArmed)
+    {
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|BossArena|TIMER-disarmed|standing=%d"),
+            ArenaTimelineNow(this), *GetName(), GetPillarsRemaining());
+    }
 }
 
 void AGothicBossArenaManager::TriggerAmbientCollapse()
@@ -316,9 +364,9 @@ void AGothicBossArenaManager::TriggerAmbientCollapse()
 
     AGothicRotundaPillar* Doomed = Survivors[FMath::RandRange(0, Survivors.Num() - 1)];
 
-    UE_LOG(LogTemp, Log,
-        TEXT("BossArena[%s]: ambient collapse — %s is coming down"),
-        *GetName(), *GetNameSafe(Doomed));
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|BossArena|AMBIENT-collapse|pillar=%s|survivors=%d"),
+        ArenaTimelineNow(this), *GetName(), *GetNameSafe(Doomed), Survivors.Num());
 
     // The same entry point Wall Pound uses, so the player gets the same read:
     // the full WarningDuration telegraph, then the slab. An ambient collapse

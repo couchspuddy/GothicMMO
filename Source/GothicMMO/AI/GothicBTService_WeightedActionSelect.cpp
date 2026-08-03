@@ -963,16 +963,42 @@ bool UGothicBTService_WeightedActionSelect::TryAdvanceChain(
     // this is the whole difference between a chain and three attacks in a row.
     BB->SetValue<UBlackboardKeyType_Name>(AttackKeyID, StepTag);
 
+    // Label only, no behaviour. CommittedActionID was stamped once at chain entry
+    // with the ENTRY action ('Charge') and never touched again, so every
+    // committed='...' token for the rest of the chain named the doorway rather
+    // than the step actually in flight — a Pounce two hits deep still read as
+    // Charge. A chain step carries no ActionID of its own, so the truthful label
+    // is the pool entry that dispatches this step's tag, and the tag's own leaf
+    // name when the step is reachable only from inside the chain.
+    const FGothicWeightedActionEntry* StepEntry = Actions.FindByPredicate(
+        [&StepTag](const FGothicWeightedActionEntry& E)
+        {
+            return E.AbilityTag.IsValid() && E.AbilityTag.GetTagName() == StepTag;
+        });
+
+    FName StepActionID = StepEntry ? StepEntry->ActionID : NAME_None;
+
+    if (StepActionID.IsNone())
+    {
+        FString TagString = StepTag.ToString();
+        FString Leaf;
+        StepActionID = TagString.Split(TEXT("."), nullptr, &Leaf,
+                            ESearchCase::CaseSensitive, ESearchDir::FromEnd)
+            ? FName(*Leaf)
+            : FName(*TagString);
+    }
+
     Commit->ChainStepIndex  = NextStep;
+    Commit->CommittedActionID = StepActionID;
     Commit->CommittedTagName = StepTag;
     Commit->CommitTime      = Now;      // re-arm the deadlock breaker per step
     Commit->bDispatched     = false;
     Commit->LastStepEndTime = -1.f;
 
     LogTimeline(TEXT("CHAIN-advance"),
-        FString::Printf(TEXT("chain=%s|step=%d->%d/%d|tag=%s|via=%s|held=%.3f|dist=%.1f"),
+        FString::Printf(TEXT("chain=%s|step=%d->%d/%d|action='%s'|tag=%s|via=%s|held=%.3f|dist=%.1f"),
             *DescribeChain(Commit->ChainIndex), FromStep, NextStep, Chain.Steps.Num(),
-            *StepTag.ToString(), *BranchReason,
+            *StepActionID.ToString(), *StepTag.ToString(), *BranchReason,
             Commit->ChainEnterTime >= 0.f ? (Now - Commit->ChainEnterTime) : -1.f,
             DistanceToTarget),
         /*bAlways=*/true);
