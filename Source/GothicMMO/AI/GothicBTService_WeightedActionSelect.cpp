@@ -845,9 +845,11 @@ bool UGothicBTService_WeightedActionSelect::TryAdvanceChain(
     UBlackboardComponent* BB, FBlackboard::FKey AttackKeyID,
     UGothicAttackCommitmentComponent* Commit, UAbilitySystemComponent* ASC,
     float DistanceToTarget, float Now, EGothicChainExitReason& OutReason,
+    FString& OutBranchReason,
     TFunctionRef<void(const TCHAR*, const FString&, bool)> LogTimeline) const
 {
     OutReason = EGothicChainExitReason::Completed;
+    OutBranchReason = TEXT("-");
 
     if (!BB || !Commit || !Chains.IsValidIndex(Commit->ChainIndex))
     {
@@ -870,6 +872,13 @@ bool UGothicBTService_WeightedActionSelect::TryAdvanceChain(
     int32 NextStep = FromStep + 1;
     FString BranchReason = TEXT("sequential");
 
+    // Which of the two ways "no branch passed" can happen actually happened.
+    // The loop treats both as `continue`, but they are different problems: a
+    // range gate rejecting every branch is the dodge check working, while a
+    // gate passed and then failed on bRequireAbilityReady is a cooldown
+    // collision. Nothing downstream could tell them apart before this.
+    bool bAnyBranchPassedRange = false;
+
     if (Branches.Num() > 0)
     {
         NextStep = INDEX_NONE;
@@ -890,6 +899,8 @@ bool UGothicBTService_WeightedActionSelect::TryAdvanceChain(
                     continue;
                 }
             }
+
+            bAnyBranchPassedRange = true;
 
             // An authored early finish. Passing the gate and naming no step is a
             // decision, not a failure, so it takes effect immediately rather
@@ -913,11 +924,25 @@ bool UGothicBTService_WeightedActionSelect::TryAdvanceChain(
         }
     }
 
+    if (Branches.Num() > 0 && NextStep == INDEX_NONE && bAnyBranchPassedRange
+        && BranchReason == TEXT("no-branch-passed"))
+    {
+        // A gate was passed; what killed it was the readiness test after it.
+        BranchReason = TEXT("no-branch-ready");
+    }
+
+    OutBranchReason = BranchReason;
+
     if (!Chain.Steps.IsValidIndex(NextStep))
     {
-        // Ran off the end, or nothing passed. Both are the chain finishing as
-        // authored — an unreachable follow-up is a short version of the combo,
-        // not a fault.
+        // Ran off the end, or nothing passed. None of these is a fault — an
+        // unreachable follow-up is a short version of the combo — but they are
+        // three different stories and the exit line has to tell them apart.
+        OutReason = bAnyBranchPassedRange || Branches.Num() == 0
+            ? (BranchReason == TEXT("no-branch-ready")
+                ? EGothicChainExitReason::StepOnCooldown
+                : EGothicChainExitReason::AuthoredEnd)
+            : EGothicChainExitReason::NoBranchInRange;
         return false;
     }
 
@@ -1016,10 +1041,18 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
         : NAME_None;
     const FName CurrentAction = BB->GetValue<UBlackboardKeyType_Name>(ChosenActionKey.GetSelectedKeyID());
 
+    // The branch string from the last advance attempt, if the exit came from
+    // one. The enum names the KIND of ending; this names which branch produced
+    // it, which is the difference between "the chain ended on a range gate" and
+    // "the chain ended on branch 1's range gate". Reset per exit path by
+    // TryAdvanceChain; "-" for every exit that never asked it anything.
+    FString ChainBranchReason = TEXT("-");
+
     // Emits CHAIN-exit when the commitment being released was part of a chain,
     // so a chain's end is always one line naming its cause — an abnormal cause
-    // at Error, since every one of them is a wiring or authoring fault rather
-    // than a fight outcome.
+    // at Error, since those are wiring or authoring faults rather than fight
+    // outcomes. A chain ending on a range gate or a cooldown is neither; see
+    // IsAbnormalChainExit.
     auto ExitChain = [&](EGothicChainExitReason Reason)
     {
         if (!Commit->IsChaining())
@@ -1028,16 +1061,17 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
         }
 
         const FString Detail = FString::Printf(
-            TEXT("chain=%s|step=%d/%d|reason=%s|held=%.3f"),
+            TEXT("chain=%s|step=%d/%d|reason=%s|branch=%s|held=%.3f"),
             *DescribeChain(Commit->ChainIndex),
             Commit->ChainStepIndex,
             Chains.IsValidIndex(Commit->ChainIndex) ? Chains[Commit->ChainIndex].Steps.Num() : -1,
             *UEnum::GetDisplayValueAsText(Reason).ToString(),
+            *ChainBranchReason,
             Commit->ChainEnterTime >= 0.f ? (Now - Commit->ChainEnterTime) : -1.f);
 
         LogTimeline(TEXT("CHAIN-exit"), Detail, /*bAlways=*/true);
 
-        if (Reason != EGothicChainExitReason::Completed)
+        if (IsAbnormalChainExit(Reason))
         {
             UE_LOG(LogVigilCombat, Error,
                 TEXT("WeightedActionSelect[%s]: attack chain exited abnormally — %s"),
@@ -1133,7 +1167,7 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
                     EGothicChainExitReason AdvanceFailure = EGothicChainExitReason::Completed;
 
                     if (TryAdvanceChain(BB, AttackKeyID, Commit, ASC, DistanceToTarget,
-                            Now, AdvanceFailure, LogTimeline))
+                            Now, AdvanceFailure, ChainBranchReason, LogTimeline))
                     {
                         // Locked, and the next step is already on the key.
                         // Neither layer is scored — the movement layer never

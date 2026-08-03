@@ -613,12 +613,21 @@ private:
      * WITHOUT clearing the commitment — the lock never opens between steps.
      *
      * Returns false when the chain is over, with OutReason naming why:
-     * Completed for running out of steps or an authored NextStep of -1, BadStep
-     * for a step whose tag is not registered.
+     * AuthoredEnd for running out of steps or an authored NextStep of -1,
+     * NoBranchInRange when no branch's range gate passed, StepOnCooldown when
+     * one did but bRequireAbilityReady rejected every candidate, BadStep for a
+     * step whose tag is not registered.
+     *
+     * OutBranchReason carries the finer-grained string the CHAIN-advance line
+     * already used — "sequential", "branch<N>", "branch<N>-ends",
+     * "no-branch-passed", "no-branch-ready" — because the enum says a chain
+     * ended on a range gate but not WHICH branch's range gate. Set on every
+     * path, "-" when the call bailed before there was anything to say.
      */
     bool TryAdvanceChain(UBlackboardComponent* BB, FBlackboard::FKey AttackKeyID,
         UGothicAttackCommitmentComponent* Commit, UAbilitySystemComponent* ASC,
         float DistanceToTarget, float Now, EGothicChainExitReason& OutReason,
+        FString& OutBranchReason,
         TFunctionRef<void(const TCHAR*, const FString&, bool)> LogTimeline) const;
 
     /** A step's RecoveryWindow, or ChainRecoveryWindow when it is unset. */

@@ -249,21 +249,39 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
     // offset is meant to be meaningful "from the pawn's actual current
     // position", and only the bearing ever was).
     //
-    // RepositionRadius keeps its authored values and its purpose — it is now
-    // a CEILING, so a pawn still closing from long range strafes on a sane arc
-    // instead of a huge one, but a pawn already in its attack band strafes
-    // inside that band and stays swingable. Nothing new is tuned here: the
-    // lower bound is whatever distance the approach logic already converged
-    // on (measured floor 125uu, capsule contact), and min(150, 350) = 150 sits
-    // inside the Claw band's 160uu reach where the old 350 did not.
+    // That fix briefly kept RepositionRadius on as a CEILING —
+    // min(CurrentDistance2D, RepositionRadius) — on the reasoning that a pawn
+    // closing from long range should strafe on a sane arc rather than a huge
+    // one. That reasoning was only ever safe while she was permanently pinned
+    // in contact: with the pawn parked at 125uu the ceiling never bound, so it
+    // could only stop a reposition becoming a retreat. It does not survive the
+    // give-ground branch above, which legitimately seats her at 600-750uu. From
+    // out there the same min() is not a ceiling at all — it is an APPROACH
+    // wearing a strafe's name. Measured over 26 strafes in one session, 22
+    // collapsed to exactly sepTo=350.0 (from 1217, 878, 686, 481...); the other
+    // four "held" only because they were already inside 350. She gave ground
+    // for exactly one action and the next reposition walked it back, which is
+    // the whole of the user-facing "she never backs off".
     //
-    // If the two are effectively stacked, there is no current separation worth
+    // So the ceiling is gone: a strafe PRESERVES separation, full stop. The
+    // clamp's stated purpose — a reposition must never seat the point farther
+    // from the target than the pawn already stands — is served exactly by
+    // orbiting at CurrentDistance2D itself, which by construction moves her
+    // neither outward nor inward. And the "sane arc from long range" worry is
+    // already covered elsewhere and better: Reposition is authored maxRange 800
+    // on both phases, so the action pool cannot even SELECT a reposition beyond
+    // 800uu. The widest orbit this task can be asked for is bounded by that
+    // gate, where a designer can see it, rather than by this task's own
+    // property.
+    //
+    // RepositionRadius survives only as the degenerate fallback below. If the
+    // two are effectively stacked there is no current separation worth
     // preserving (and no meaningful bearing either — GetSafeNormal2D returned
     // zero above, so CurrentBearing is an arbitrary 0). Fall back to the
     // authored radius so the pawn steps out rather than writing the target's
     // own location as the destination.
     const float OrbitRadius = CurrentDistance2D > KINDA_SMALL_NUMBER
-        ? FMath::Min(CurrentDistance2D, RepositionRadius)
+        ? CurrentDistance2D
         : RepositionRadius;
 
     // Minimum-displacement floor — the strafe has to be a WALK, not a shuffle.
@@ -307,9 +325,9 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
     // arc exists that would do it — does the radius step out. That solve is
     // R2 = R1*cos(t) + sqrt(d^2 - R1^2*sin^2(t)) from the law of cosines: the
     // smallest radius on the already-widened bearing that reaches the floor,
-    // clamped to the authored RepositionRadius ceiling and never below the
-    // current separation. It is a concession, taken only where the alternative
-    // is another 0.0uu no-op walk.
+    // never below the current separation and never past the wider of it and the
+    // authored RepositionRadius. It is a concession, taken only where the
+    // alternative is another 0.0uu no-op walk.
     const float R1 = CurrentDistance2D;
     auto Displacement = [R1](float RadiusOut, float AngleRad)
     {
