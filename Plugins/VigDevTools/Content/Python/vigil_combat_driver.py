@@ -611,10 +611,13 @@ def _dist(a, b):
 
 
 # Candidate aim points are the vital, then rings around it in the plane
-# perpendicular to the line of sight, at these fractions of HitDetectionRadius.
+# perpendicular to the line of sight, at these fractions of the EFFECTIVE hit
+# radius (scaled by mesh world scale, same as the runtime threshold).
 # Any mesh surface within the vital radius projects to within roughly that
 # radius of the vital as seen from the shooter, so this covers the reachable
-# set without a solver.
+# set without a solver. Using the scaled radius keeps the ring spread
+# proportional to the enemy -- on the 4x Lucid the unscaled rings all landed
+# inside a single hand.
 _VITAL_AIM_RINGS = (0.4, 0.75, 1.0, 1.35)
 _VITAL_AIM_SPOKES = 8
 
@@ -636,13 +639,40 @@ def _weapon_trace_range(pawn):
         % _FALLBACK_TRACE_RANGE)
 
 
-def _hit_detection_radius(vital):
+def _effective_hit_radius(vital):
+    """The radius the RUNTIME adjudicates against, not the authored one.
+
+    IsVitalPointHit thresholds on GetEffectiveHitRadius() -- HitDetectionRadius
+    times the largest component of the owning mesh's world scale
+    (GothicVitalPointComponent.cpp:240-242, 447-463). Reading the raw
+    UPROPERTY instead reports 30.0 on every enemy in the game, which on the
+    4.005x Lucid understates the real threshold of 120.2 by a factor of four
+    and made this action refuse aims the game would have scored VITAL.
+
+    Ask the component. Do not re-derive the scale here -- "largest component,
+    not average" is a decision that lives in C++ and must only live there.
+    """
     try:
-        return float(vital.get_editor_property("hit_detection_radius")), None
+        return float(vital.get_effective_hit_radius()), None
     except Exception as exc:
-        return 30.0, ("assumed 30.0 -- HitDetectionRadius unreadable (%s: %s); "
-                      "GothicVitalPointComponent.h:193 declares the default"
-                      % (type(exc).__name__, exc))
+        pass
+
+    # GetEffectiveHitRadius is BlueprintPure (GothicVitalPointComponent.h:178),
+    # so this branch means the plugin is running against older C++ than the
+    # scaled-radius change. The authored value is the honest fallback, but say
+    # loudly that it is UNSCALED so nobody reads a refusal threshold as truth.
+    try:
+        raw = float(vital.get_editor_property("hit_detection_radius"))
+        return raw, ("UNSCALED %.1f -- GetEffectiveHitRadius unreachable "
+                     "(%s: %s); this is the authored HitDetectionRadius with no "
+                     "mesh scale applied and will under-report on scaled enemies"
+                     % (raw, type(exc).__name__, exc))
+    except Exception as raw_exc:
+        return 30.0, ("assumed UNSCALED 30.0 -- neither GetEffectiveHitRadius "
+                      "(%s: %s) nor HitDetectionRadius (%s: %s) readable; "
+                      "GothicVitalPointComponent.h:229 declares the default"
+                      % (type(exc).__name__, exc,
+                         type(raw_exc).__name__, raw_exc))
 
 
 def _solve_vital_aim(world, pawn, target, vital):
@@ -659,8 +689,8 @@ def _solve_vital_aim(world, pawn, target, vital):
 
     A vital registers on the IMPACT POINT, not the aim point:
     UGothicVitalPointComponent::IsVitalPointHit compares Dist(ImpactPoint,
-    CurrentVitalLocation) against HitDetectionRadius + BonusRadius
-    (GothicVitalPointComponent.cpp:229-238), and GA_Fire feeds it Hit.ImpactPoint
+    CurrentVitalLocation) against GetEffectiveHitRadius() + BonusRadius
+    (GothicVitalPointComponent.cpp:447-463), and GA_Fire feeds it Hit.ImpactPoint
     (GA_Fire.cpp:309). So the aim point has to be chosen such that the surface
     the ray lands on is inside the vital sphere.
 
@@ -674,7 +704,7 @@ def _solve_vital_aim(world, pawn, target, vital):
     start = _aim_origin(pawn)
     vital_loc = vital.get_current_vital_world_location()
     trace_range, range_note = _weapon_trace_range(pawn)
-    radius, radius_note = _hit_detection_radius(vital)
+    radius, radius_note = _effective_hit_radius(vital)
 
     base_dir = _unit(unreal.Vector(vital_loc.x - start.x,
                                    vital_loc.y - start.y,
@@ -727,7 +757,7 @@ def _solve_vital_aim(world, pawn, target, vital):
                 "candidate": label,
                 "candidates_tried": tried,
                 "vital_location": vital_loc,
-                "hit_detection_radius": radius,
+                "effective_hit_radius": radius,
                 "trace_range": trace_range,
                 "range_note": range_note,
                 "radius_note": radius_note,
@@ -738,7 +768,7 @@ def _solve_vital_aim(world, pawn, target, vital):
         "vital_index": int(vital.get_active_vital_index()),
         "shooter_camera": common.vec(start),
         "distance_to_vital": round(_dist(start, vital_loc), 1),
-        "hit_detection_radius": radius,
+        "effective_hit_radius": radius,
         "candidates_tried": len(candidates),
         "trace_channel": _resolve_weapon_trace_type()[1],
         "trace_range_source": range_note,
@@ -749,10 +779,14 @@ def _solve_vital_aim(world, pawn, target, vital):
         detail["closest_impact_bone"] = best["bone"]
     if wrong_actor is not None:
         detail["blocked_by"] = wrong_actor
+    if radius_note is not None:
+        detail["radius_note"] = radius_note
 
     raise RuntimeError(
         "No aim point on %s puts an ECC_Weapon impact within %.1fcm of its "
-        "vital. %s. Refusing to aim -- the shot would miss and GA_Fire is "
+        "vital (the effective hit radius the runtime adjudicates against: "
+        "GetEffectiveHitRadius, authored radius x mesh world scale). %s. "
+        "Refusing to aim -- the shot would miss and GA_Fire is "
         "silent on a miss (GA_Fire.cpp:259-266). Detail: %s"
         % (target.get_name(), radius,
            ("Closest reachable surface was %.1fcm away on bone '%s'"
@@ -839,7 +873,7 @@ def _a_aim_at_vital(world, step):
         "predicted_impact": common.vec(solution["impact_point"]),
         "predicted_impact_gap": round(solution["impact_gap"], 1),
         "predicted_impact_bone": solution["impact_bone"],
-        "hit_detection_radius": solution["hit_detection_radius"],
+        "effective_hit_radius": solution["effective_hit_radius"],
         "solved_by": solution["candidate"],
         "rotation": [round(rot.pitch, 2), round(rot.yaw, 2), round(rot.roll, 2)],
         "trace_channel": _resolve_weapon_trace_type()[1],
