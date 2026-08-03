@@ -482,8 +482,10 @@ private:
     void CheckLeash();
 
     /**
-     * True when Actor is still worth fighting: valid, and alive if it is a
-     * AGothicCharacterBase. Static because it asks nothing of this controller.
+     * True when Actor is still worth fighting. Thin forward to
+     * AGothicCharacterBase::IsFightableActor, which is the one definition of
+     * fightability the whole project shares — do not re-implement the test here.
+     * Static because it asks nothing of this controller.
      */
     static bool IsFightableTarget(const AActor* Actor);
 
