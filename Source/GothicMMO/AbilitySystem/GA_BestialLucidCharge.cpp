@@ -10,6 +10,7 @@
 #include "Character/GothicPlayerCharacter.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
@@ -82,6 +83,101 @@ AGothicEnemyAIController* UGA_BestialLucidCharge::GetEnemyController() const
 void UGA_BestialLucidCharge::HandleLeapLanded(bool bLanded)
 {
     EndChargeDamageWindow(TEXT("landed"));
+}
+
+FVector UGA_BestialLucidCharge::ComputeChargeLaunchVelocity(const AActor* Target)
+{
+    const AActor* Avatar = GetAvatarActorFromActorInfo();
+    if (!Avatar || !Target)
+    {
+        // Deliberately not a guess. A default direction here would launch her at
+        // full speed into whatever the last valid facing happened to be.
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Charge[%s]: ComputeChargeLaunchVelocity called with %s — returning zero, no leap."),
+            *GetNameSafe(Avatar), Target ? TEXT("no avatar") : TEXT("no target"));
+        return FVector::ZeroVector;
+    }
+
+    const FVector MyLoc     = Avatar->GetActorLocation();
+    const FVector TargetLoc = Target->GetActorLocation();
+
+    // Horizontal only, for the same reason the action pool's range bands are:
+    // an actor's location is its capsule CENTRE, and this boss's centre sits
+    // ~291uu above a floor-standing player's. Folding that constant into the
+    // direction would tilt every charge downward by an amount that describes the
+    // rig rather than the fight.
+    FVector Delta2D = TargetLoc - MyLoc;
+    Delta2D.Z = 0.f;
+
+    const float CommitDistance = Delta2D.Size();
+    if (CommitDistance <= KINDA_SMALL_NUMBER)
+    {
+        return FVector(0.f, 0.f, ChargeLaunchZSpeed);
+    }
+
+    const FVector Dir2D = Delta2D / CommitDistance;
+
+    // ── Airtime ──────────────────────────────────────────────────────────────
+    //
+    // Ballistic, then calibrated against the leap guard's measurements. For a
+    // launch that lands at or below its own height, t = 2*Vz/g.
+    //
+    //     g   = 980 uu/s^2 (UE default) * GravityScale
+    //     t   = 2 * 400 / 980            = 0.8163s
+    //     t'  = 0.8163 * 1.015           = 0.8286s
+    //
+    // Measured, nine guarded flights: 0.824-0.943s, median 0.828. The predicted
+    // 0.8286 lands on that median, which is the whole reason this derivation is
+    // trustworthy — see ChargeAirtimeCalibration for what the correction is
+    // actually correcting.
+    //
+    // Gravity is read from the world and the movement component rather than
+    // hardcoded at 980, so a project-wide gravity change or a GravityScale tweak
+    // on her Blueprint moves the solve with it instead of silently invalidating
+    // it. GravityScale is a Blueprint/CDO value on this character — nothing in
+    // C++ sets it — so reading it is the only way to know it.
+    float GravityZ = 980.f;
+    if (const ACharacter* AvatarChar = Cast<ACharacter>(Avatar))
+    {
+        if (const UCharacterMovementComponent* Move = AvatarChar->GetCharacterMovement())
+        {
+            GravityZ = FMath::Abs(Move->GetGravityZ());
+        }
+    }
+    GravityZ = FMath::Max(1.f, GravityZ);
+
+    const float Airtime =
+        FMath::Max(KINDA_SMALL_NUMBER,
+            (2.f * ChargeLaunchZSpeed / GravityZ) * ChargeAirtimeCalibration);
+
+    // ── Where she is actually aiming ─────────────────────────────────────────
+    //
+    // Short of the target, not at it. Clamped at zero so a target already inside
+    // the standoff produces a stationary-ish launch rather than a charge that
+    // flies BACKWARDS out of a negative distance.
+    const float TravelDistance = FMath::Max(0.f, CommitDistance - ChargeLandingStandoff);
+
+    const float DesiredSpeed = TravelDistance / Airtime;
+    const float LaunchSpeed  = FMath::Clamp(DesiredSpeed,
+        FMath::Min(MinChargeLaunchSpeed, MaxChargeLaunchSpeed), MaxChargeLaunchSpeed);
+
+    const FVector LaunchVelocity = (Dir2D * LaunchSpeed) + FVector(0.f, 0.f, ChargeLaunchZSpeed);
+
+    // predictedLand= is the whole point of this line: a verification pass can
+    // diff it against the landing the guard reports and know immediately whether
+    // a bad charge was a bad SOLVE or a bad FLIGHT (air control, geometry, a
+    // stagger mid-leap). Those two failures are indistinguishable from the
+    // outside and were being confused for each other.
+    const UWorld* World = GetWorld();
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|Charge|LAUNCH-solve|commitDist=%.0f|standoff=%.0f|")
+        TEXT("travel=%.0f|airtime=%.3f|speed=%.0f|clamped=%d|predictedLand=%.0f"),
+        World ? World->GetTimeSeconds() : 0.f, *GetNameSafe(Avatar),
+        CommitDistance, ChargeLandingStandoff, TravelDistance, Airtime, LaunchSpeed,
+        FMath::IsNearlyEqual(LaunchSpeed, DesiredSpeed, 1.f) ? 0 : 1,
+        LaunchSpeed * Airtime);
+
+    return LaunchVelocity;
 }
 
 void UGA_BestialLucidCharge::BeginChargeDamageWindow()
