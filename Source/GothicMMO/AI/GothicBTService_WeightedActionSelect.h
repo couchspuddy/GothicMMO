@@ -33,10 +33,12 @@
 #include "BehaviorTree/BTService.h"
 #include "BehaviorTree/BehaviorTreeTypes.h"
 #include "GameplayTagContainer.h"
+#include "AI/GothicAttackCommitmentComponent.h"   // EGothicChainExitReason
 #include "GothicBTService_WeightedActionSelect.generated.h"
 
 class UAbilitySystemComponent;
 class UBlackboardComponent;
+class UGothicAttackCommitmentComponent;
 
 /** One candidate in the weighted pool. */
 USTRUCT()
@@ -113,6 +115,152 @@ struct FGothicWeightedActionEntry
 
     UPROPERTY(EditAnywhere, Category = "Action")
     float MaxRange = -1.f;
+};
+
+// ── Attack chains (phase 3) ──────────────────────────────────────────────────
+//
+// Phase 2 gave a lock around ONE ability. A chain makes that lock span a SERIES:
+// a three-hit combo is one commitment with three dispatches, so the movement
+// layer cannot wedge itself between the hits. "Once in those events it's locked
+// to those" — full commitment, no bail-outs, and the player is rewarded for
+// learning the sequence because the sequence is a real object rather than three
+// independent rolls that happened to land in a row.
+//
+// Every step dispatches through the SAME GothicBTTask_ActivateAbilityByTag node
+// reading the same Blackboard key. There are no per-step BT branches: advancing
+// writes the next step's tag into the key WITHOUT opening the lock, so the tree
+// is byte-identical whether it is running a single attack or the middle of a
+// combo. The dispatch task never learns that chains exist.
+
+/**
+ * One conditional exit from a step. First branch whose gate passes wins; a step
+ * with no branches simply falls through to the next step in the array.
+ *
+ * This is where the Destiny-style positional intelligence lives: the same opener
+ * continues into a different follow-up depending on where the player ended up,
+ * which is a decision made once, at the moment the step ends, and then committed
+ * to like everything else.
+ */
+USTRUCT()
+struct FGothicAttackStepBranch
+{
+    GENERATED_BODY()
+
+    /**
+     * Horizontal (XY) range gate from pawn to target, same semantics and same
+     * reason as FGothicWeightedActionEntry's — capsule half-heights must never
+     * move a range band. -1 means no limit on that side.
+     */
+    UPROPERTY(EditAnywhere, Category = "Branch")
+    float MinRange = -1.f;
+
+    UPROPERTY(EditAnywhere, Category = "Branch")
+    float MaxRange = -1.f;
+
+    /**
+     * Require the destination step's ability to be off cooldown and activatable.
+     * On by default: a branch into an ability that cannot fire would dispatch a
+     * step that immediately clears the key, which reads as a chain stuttering
+     * rather than as the cooldown it actually is.
+     */
+    UPROPERTY(EditAnywhere, Category = "Branch")
+    bool bRequireAbilityReady = true;
+
+    /**
+     * Index into the chain's Steps array. INDEX_NONE (-1) ends the chain here —
+     * an authored early finish, which is the difference between "the combo has a
+     * short version" and a bail-out.
+     */
+    UPROPERTY(EditAnywhere, Category = "Branch")
+    int32 NextStep = -1;
+};
+
+/** One dispatch in a chain. */
+USTRUCT()
+struct FGothicAttackStep
+{
+    GENERATED_BODY()
+
+    /**
+     * Matched against the ability's ASSET TAGS — the same field the pool
+     * entries, CombatSync and the dispatch task all read, NOT AbilityInputTag.
+     */
+    UPROPERTY(EditAnywhere, Category = "Step")
+    FGameplayTag AbilityTag;
+
+    /**
+     * Seconds this step's end may go unobserved before the chain is abandoned.
+     * <= 0 uses the service's ChainRecoveryWindow.
+     *
+     * NOT a bail-out window and not a combo timer the player can beat. It
+     * measures how long the BEHAVIOR TREE was absent, which is normally one
+     * service tick: the step ends, the branch unwinds, the subtree is re-entered
+     * and the next tick advances. It only ever expires when something took the
+     * subtree away — a stagger, a phase transition — and resuming a combo into a
+     * fight that has moved on is not commitment, it is a stale decision.
+     */
+    UPROPERTY(EditAnywhere, Category = "Step")
+    float RecoveryWindow = -1.f;
+
+    /** Evaluated in order; first passing branch wins. Empty = next step in the array. */
+    UPROPERTY(EditAnywhere, Category = "Step")
+    TArray<FGothicAttackStepBranch> Branches;
+};
+
+/**
+ * A named series of attacks, entered as one decision.
+ *
+ * Chains do NOT compete in the attack pool as extra entries — that would change
+ * the odds of every single attack the moment one was authored. A chain hangs off
+ * the pool entries named in EntryTags: the normal weighted roll picks a winner
+ * exactly as it does today, and only then does an eligible chain get the chance
+ * to convert that win into a series. So an empty Chains array is not merely
+ * default-off, it is algebraically inert.
+ */
+USTRUCT()
+struct FGothicAttackChain
+{
+    GENERATED_BODY()
+
+    /** Identity in the CHAIN-enter/advance/exit timeline lines. Keep it short and stable. */
+    UPROPERTY(EditAnywhere, Category = "Chain")
+    FName ChainID;
+
+    /**
+     * Ability tags of the pool entries that can open this chain. EMPTY MEANS
+     * NEVER, deliberately — an empty container attaching to every attack would
+     * make a half-authored chain fire on abilities nobody aimed it at.
+     */
+    UPROPERTY(EditAnywhere, Category = "Chain")
+    FGameplayTagContainer EntryTags;
+
+    /**
+     * Horizontal range band the chain may be ENTERED in, over and above the
+     * entry's own band. -1 on either bound means no limit on that side.
+     */
+    UPROPERTY(EditAnywhere, Category = "Chain")
+    float EntryMinRange = -1.f;
+
+    UPROPERTY(EditAnywhere, Category = "Chain")
+    float EntryMaxRange = -1.f;
+
+    /**
+     * Weight of taking this chain, relative to a FIXED weight of 1.0 for "just
+     * do the single attack that was picked". So 1.0 means the chain fires half
+     * the time it is eligible, 3.0 means three quarters. Relative to the other
+     * eligible chains as well, in the same roll.
+     *
+     * Expressed against a fixed 1.0 rather than as a probability because it
+     * composes: N eligible chains and the single attack are one weighted roll
+     * over N+1 options, with no normalisation for a designer to keep in their
+     * head.
+     */
+    UPROPERTY(EditAnywhere, Category = "Chain")
+    float Weight = 1.f;
+
+    /** Dispatched in order unless a step's Branches say otherwise. */
+    UPROPERTY(EditAnywhere, Category = "Chain")
+    TArray<FGothicAttackStep> Steps;
 };
 
 UCLASS(meta = (DisplayName = "Gothic Weighted Action Select"))
@@ -301,6 +449,32 @@ protected:
     float AttackDispatchTimeout = 1.5f;
 
     /**
+     * Attack chains available to this character. EMPTY BY DEFAULT, and an empty
+     * array reproduces the phase-2 behaviour exactly — nothing regresses until a
+     * tree opts in by authoring one.
+     *
+     * Designer-facing and per-BT-asset, like Actions: the same C++ serves the
+     * Retained's small moveset and the boss's phase-gated one, and what differs
+     * is the data on the asset.
+     */
+    UPROPERTY(EditAnywhere, Category = "Selection|Attack Chains")
+    TArray<FGothicAttackChain> Chains;
+
+    /**
+     * Default for a step whose RecoveryWindow is <= 0. See FGothicAttackStep —
+     * this measures the behavior tree's absence between two steps, not the
+     * player's reaction time.
+     *
+     * 1.0s: the observed path is one service tick (worst case 0.25s) for the
+     * branch to unwind and be re-entered, so this is four ticks of slack. Large
+     * enough that a normal advance never trips it, small enough that a stagger
+     * or a phase transition — the events that legitimately end a chain — always
+     * do.
+     */
+    UPROPERTY(EditAnywhere, Category = "Selection|Attack Chains")
+    float ChainRecoveryWindow = 1.f;
+
+    /**
      * Delay before the one-shot AssetTag validation runs. Matches CombatSync.
      * Must stay above zero: validating on the frame the branch becomes relevant
      * reads the pawn before BeginPlay has granted its StartupAbilities, and
@@ -420,6 +594,38 @@ private:
      * every load, and must never survive into a saved asset.
      */
     bool bAttackLayerAliased = false;
+
+    // ── Chain helpers (phase 3) ──────────────────────────────────────────────
+
+    /**
+     * Which chain, if any, the winning attack entry opens. Returns INDEX_NONE
+     * for "run it as a single attack", which is both the default and the answer
+     * whenever Chains is empty — so the no-chains case costs one array-empty
+     * check and cannot perturb the roll that already happened.
+     *
+     * The roll here is over the eligible chains PLUS a fixed weight of 1.0 for
+     * the single attack; see FGothicAttackChain::Weight.
+     */
+    int32 PickChainForEntry(const FGothicWeightedActionEntry& Entry, float DistanceToTarget) const;
+
+    /**
+     * Advances Commit to the next step and writes its tag to the attack key
+     * WITHOUT clearing the commitment — the lock never opens between steps.
+     *
+     * Returns false when the chain is over, with OutReason naming why:
+     * Completed for running out of steps or an authored NextStep of -1, BadStep
+     * for a step whose tag is not registered.
+     */
+    bool TryAdvanceChain(UBlackboardComponent* BB, FBlackboard::FKey AttackKeyID,
+        UGothicAttackCommitmentComponent* Commit, UAbilitySystemComponent* ASC,
+        float DistanceToTarget, float Now, EGothicChainExitReason& OutReason,
+        TFunctionRef<void(const TCHAR*, const FString&, bool)> LogTimeline) const;
+
+    /** A step's RecoveryWindow, or ChainRecoveryWindow when it is unset. */
+    float GetRecoveryWindow(int32 ChainIndex, int32 StepIndex) const;
+
+    /** ChainID for the timeline lines, or "none" — never an empty field. */
+    FString DescribeChain(int32 ChainIndex) const;
 
     bool IsAbilityReady(UAbilitySystemComponent* ASC, const FGameplayTag& AbilityTag) const;
 

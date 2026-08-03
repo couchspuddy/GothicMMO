@@ -2,6 +2,7 @@
 
 #include "AI/GothicBTService_WeightedActionSelect.h"
 #include "GothicMMO.h"                      // LogVigilCombat
+#include "AI/GothicAttackCommitmentComponent.h"
 #include "AI/GothicBossArenaManager.h"
 #include "AIController.h"
 #include "Kismet/GameplayStatics.h"
@@ -39,34 +40,19 @@ namespace
 
         // ── Attack commitment (bSplitAttackPool) ─────────────────────────────
         //
-        // The lock lives HERE and not on the Blackboard key alone, because the
-        // key answers "what is committed" but not "have we seen it dispatch
-        // yet", and the deadlock breaker needs the second question. The key is
-        // still the authority on whether a commitment exists at all — the
-        // dispatch task clears it, and this block reconciles to that.
+        // NOT HERE ANY MORE. Phase 2 kept the commitment in this struct and it
+        // worked for a lock around one ability, but the release/advance point
+        // it was written to feed could never execute: the dispatch task returns
+        // Succeeded, the branch unwinds, the subtree is re-entered, and
+        // OnBecomeRelevant zeroes this memory in the very same event that was
+        // supposed to be observed. Measured over a full PIE session: 13
+        // ATTACK-commit, 47 ATTACK-committed, 0 ATTACK-release.
         //
-        // PHASE 3 (attack chains): this is the struct a chain lives in. A chain
-        // commitment sets bAttackCommitted once and then, each time the key
-        // clears, advances StepIndex and re-writes the next step's tag instead
-        // of releasing. Nothing else in the lock has to change — release is
-        // driven by "the key went empty AND the service chose not to re-arm",
-        // and only this block gets to make that choice. The dispatch task never
-        // learns that chains exist.
-        bool  bAttackCommitted  = false;
-        bool  bAttackDispatched = false;
-        float AttackCommitTime  = -1.f;
-
-        // FName and not FString for the same reason LastTimelineHash is a hash:
-        // BT node memory is a raw byte block that is never constructed or
-        // destructed. FName is a trivially-copyable index pair that owns no
-        // allocation, and zeroed memory reads as NAME_None, which is exactly
-        // the right "nothing committed" default.
-
-        /** ActionID of the committed entry, for logging and for phase-3 chain lookup. */
-        FName CommittedActionID = NAME_None;
-
-        /** Full tag name written to ChosenAttackTagKey, so release can verify identity. */
-        FName CommittedTagName = NAME_None;
+        // The commitment now lives on UGothicAttackCommitmentComponent, whose
+        // lifetime is the controller's possession rather than a subtree's
+        // activation. See that file's header for why it beat Blackboard keys
+        // and controller-class state. Everything left in this struct is
+        // genuinely per-branch-activation and SHOULD die on re-entry.
 
         /**
          * Diagnostic only — hash of the last VigilTimeline line emitted for
@@ -178,16 +164,23 @@ void UGothicBTService_WeightedActionSelect::OnBecomeRelevant(UBehaviorTreeCompon
         Memory->bSearchedForArena = false;
         Memory->LastTimelineHash  = 0;
 
-        // A branch re-activation (phase change, combat re-entry, death and
-        // respawn) is a hard interrupt by definition — whatever was committed
-        // belongs to the previous activation and must not be inherited. The
-        // Blackboard key is cleared alongside it in TickNode's first pass; here
-        // we only drop our own belief so the two cannot disagree.
-        Memory->bAttackCommitted  = false;
-        Memory->bAttackDispatched = false;
-        Memory->AttackCommitTime  = -1.f;
-        Memory->CommittedActionID = NAME_None;
-        Memory->CommittedTagName  = NAME_None;
+        // The attack commitment is deliberately NOT cleared here any more.
+        //
+        // Phase 2 treated every branch re-activation as a hard interrupt. That
+        // read is wrong, and it is wrong in the most common case rather than an
+        // edge one: the ordinary end of a successful attack IS a branch
+        // re-activation. The dispatch task succeeds, the Selector succeeds, the
+        // Sequence completes, the subtree is re-entered — so clearing here
+        // erased every commitment exactly when the service needed to observe it
+        // ending, and the release/advance point never ran once in a full
+        // session. A chain cannot survive a single step under that rule.
+        //
+        // What still interrupts a commitment, all of it enforced in SelectSplit
+        // where the world can actually be read: target loss, the per-step
+        // recovery deadline (which is what turns "the branch went away for a
+        // stagger or a phase change" into a chain exit), the dispatch timeout,
+        // and an outside writer taking the key. Re-activation on its own is not
+        // evidence of any of those — it is the sound of the tree working.
     }
 }
 
@@ -746,6 +739,222 @@ void UGothicBTService_WeightedActionSelect::SelectAndWrite(UBehaviorTreeComponen
 // which is not a commitment window: it fires only when the ability NEVER went
 // active, means the tree is miswired, and says so at Error.
 // ============================================================================
+// ── Chain helpers (phase 3) ──────────────────────────────────────────────────
+
+FString UGothicBTService_WeightedActionSelect::DescribeChain(int32 ChainIndex) const
+{
+    if (!Chains.IsValidIndex(ChainIndex))
+    {
+        return TEXT("none");
+    }
+
+    const FName ID = Chains[ChainIndex].ChainID;
+    return ID.IsNone() ? FString::Printf(TEXT("#%d"), ChainIndex) : ID.ToString();
+}
+
+float UGothicBTService_WeightedActionSelect::GetRecoveryWindow(int32 ChainIndex, int32 StepIndex) const
+{
+    if (Chains.IsValidIndex(ChainIndex) && Chains[ChainIndex].Steps.IsValidIndex(StepIndex))
+    {
+        const float Authored = Chains[ChainIndex].Steps[StepIndex].RecoveryWindow;
+        if (Authored > 0.f)
+        {
+            return Authored;
+        }
+    }
+
+    return ChainRecoveryWindow;
+}
+
+int32 UGothicBTService_WeightedActionSelect::PickChainForEntry(
+    const FGothicWeightedActionEntry& Entry, float DistanceToTarget) const
+{
+    // The overwhelmingly common case, and the one that must cost nothing: no
+    // chains authored, so the attack that just won the roll runs as a single
+    // attack exactly as it did in phase 2.
+    if (Chains.Num() == 0 || !Entry.AbilityTag.IsValid())
+    {
+        return INDEX_NONE;
+    }
+
+    TArray<int32> Eligible;
+    TArray<float> Weights;
+
+    // The fixed 1.0 for "no chain" is seeded first, so a chain's Weight is read
+    // against it directly and the roll needs no normalisation.
+    float Total = 1.f;
+
+    for (int32 i = 0; i < Chains.Num(); ++i)
+    {
+        const FGothicAttackChain& Chain = Chains[i];
+
+        // An empty EntryTags attaches to nothing, on purpose — see the struct.
+        if (Chain.Steps.Num() == 0 || Chain.Weight <= 0.f
+            || !Chain.EntryTags.HasTag(Entry.AbilityTag))
+        {
+            continue;
+        }
+
+        // Entry band, over and above the pool entry's own gate. Horizontal, for
+        // the same reason every other range in this file is.
+        if (DistanceToTarget >= 0.f)
+        {
+            if (Chain.EntryMinRange >= 0.f && DistanceToTarget < Chain.EntryMinRange)
+            {
+                continue;
+            }
+            if (Chain.EntryMaxRange >= 0.f && DistanceToTarget > Chain.EntryMaxRange)
+            {
+                continue;
+            }
+        }
+
+        // A chain whose FIRST step cannot be dispatched is not eligible: entering
+        // it would burn the commitment on a step that clears the key immediately.
+        if (!Chains[i].Steps[0].AbilityTag.IsValid())
+        {
+            continue;
+        }
+
+        Eligible.Add(i);
+        Weights.Add(Chain.Weight);
+        Total += Chain.Weight;
+    }
+
+    if (Eligible.Num() == 0)
+    {
+        return INDEX_NONE;
+    }
+
+    float Roll = FMath::FRandRange(0.f, Total);
+
+    for (int32 k = 0; k < Eligible.Num(); ++k)
+    {
+        Roll -= Weights[k];
+        if (Roll <= 0.f)
+        {
+            return Eligible[k];
+        }
+    }
+
+    // Fell through the chain weights into the fixed 1.0 remainder: no chain.
+    return INDEX_NONE;
+}
+
+bool UGothicBTService_WeightedActionSelect::TryAdvanceChain(
+    UBlackboardComponent* BB, FBlackboard::FKey AttackKeyID,
+    UGothicAttackCommitmentComponent* Commit, UAbilitySystemComponent* ASC,
+    float DistanceToTarget, float Now, EGothicChainExitReason& OutReason,
+    TFunctionRef<void(const TCHAR*, const FString&, bool)> LogTimeline) const
+{
+    OutReason = EGothicChainExitReason::Completed;
+
+    if (!BB || !Commit || !Chains.IsValidIndex(Commit->ChainIndex))
+    {
+        return false;
+    }
+
+    const FGothicAttackChain& Chain = Chains[Commit->ChainIndex];
+    const int32 FromStep = Commit->ChainStepIndex;
+
+    if (!Chain.Steps.IsValidIndex(FromStep))
+    {
+        return false;
+    }
+
+    // ── Where does this step go? ─────────────────────────────────────────────
+    // First passing branch wins. No branches at all means the plain sequential
+    // next step, which is what a straight three-hit combo authors as.
+    const TArray<FGothicAttackStepBranch>& Branches = Chain.Steps[FromStep].Branches;
+
+    int32 NextStep = FromStep + 1;
+    FString BranchReason = TEXT("sequential");
+
+    if (Branches.Num() > 0)
+    {
+        NextStep = INDEX_NONE;
+        BranchReason = TEXT("no-branch-passed");
+
+        for (int32 b = 0; b < Branches.Num(); ++b)
+        {
+            const FGothicAttackStepBranch& Branch = Branches[b];
+
+            if (DistanceToTarget >= 0.f)
+            {
+                if (Branch.MinRange >= 0.f && DistanceToTarget < Branch.MinRange)
+                {
+                    continue;
+                }
+                if (Branch.MaxRange >= 0.f && DistanceToTarget > Branch.MaxRange)
+                {
+                    continue;
+                }
+            }
+
+            // An authored early finish. Passing the gate and naming no step is a
+            // decision, not a failure, so it takes effect immediately rather
+            // than letting a later branch answer for it.
+            if (!Chain.Steps.IsValidIndex(Branch.NextStep))
+            {
+                NextStep = INDEX_NONE;
+                BranchReason = FString::Printf(TEXT("branch%d-ends"), b);
+                break;
+            }
+
+            if (Branch.bRequireAbilityReady
+                && !IsAbilityReady(ASC, Chain.Steps[Branch.NextStep].AbilityTag))
+            {
+                continue;
+            }
+
+            NextStep = Branch.NextStep;
+            BranchReason = FString::Printf(TEXT("branch%d"), b);
+            break;
+        }
+    }
+
+    if (!Chain.Steps.IsValidIndex(NextStep))
+    {
+        // Ran off the end, or nothing passed. Both are the chain finishing as
+        // authored — an unreachable follow-up is a short version of the combo,
+        // not a fault.
+        return false;
+    }
+
+    const FName StepTag = Chain.Steps[NextStep].AbilityTag.GetTagName();
+
+    if (StepTag.IsNone()
+        || !FGameplayTag::RequestGameplayTag(StepTag, /*ErrorIfNotFound=*/false).IsValid())
+    {
+        // Authoring fault, and it must be loud: dispatching this would write a
+        // tag the task cannot resolve, which presents as a chain that silently
+        // stops one hit early.
+        OutReason = EGothicChainExitReason::BadStep;
+        return false;
+    }
+
+    // ── Advance ──────────────────────────────────────────────────────────────
+    // The key is written but the commitment is NOT cleared and NOT re-taken —
+    // this is the whole difference between a chain and three attacks in a row.
+    BB->SetValue<UBlackboardKeyType_Name>(AttackKeyID, StepTag);
+
+    Commit->ChainStepIndex  = NextStep;
+    Commit->CommittedTagName = StepTag;
+    Commit->CommitTime      = Now;      // re-arm the deadlock breaker per step
+    Commit->bDispatched     = false;
+    Commit->LastStepEndTime = -1.f;
+
+    LogTimeline(TEXT("CHAIN-advance"),
+        FString::Printf(TEXT("chain=%s|step=%d->%d/%d|tag=%s|via=%s|held=%.3f|dist=%.1f"),
+            *DescribeChain(Commit->ChainIndex), FromStep, NextStep, Chain.Steps.Num(),
+            *StepTag.ToString(), *BranchReason,
+            Commit->ChainEnterTime >= 0.f ? (Now - Commit->ChainEnterTime) : -1.f,
+            DistanceToTarget),
+        /*bAlways=*/true);
+
+    return true;
+}
+
 void UGothicBTService_WeightedActionSelect::SelectSplit(
     UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory,
     UBlackboardComponent* BB, APawn* Pawn, UAbilitySystemComponent* ASC,
@@ -754,6 +963,21 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
     TFunctionRef<void(const TCHAR*, const FString&, bool)> LogTimeline)
 {
     auto* Memory = CastInstanceNodeMemory<FGothicWeightedActionMemory>(NodeMemory);
+
+    // The commitment, on the controller so it outlives this subtree's
+    // activation. Everything below reads Commit where phase 2 read Memory.
+    UGothicAttackCommitmentComponent* Commit =
+        UGothicAttackCommitmentComponent::FindOrAdd(OwnerComp.GetAIOwner());
+
+    if (!Commit)
+    {
+        // No AI controller at all. Nothing can be committed to, so the attack
+        // layer has no state to reason about; refuse loudly rather than run a
+        // lock whose memory silently does not persist.
+        LogTimeline(TEXT("SPLIT-no-controller"),
+            TEXT("no AIController — attack commitment has nowhere to live"), /*bAlways=*/false);
+        return;
+    }
 
     // No output key means the attack layer has nowhere to write. Refusing here
     // rather than quietly falling back to the combined path: a silent fallback
@@ -792,21 +1016,50 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
         : NAME_None;
     const FName CurrentAction = BB->GetValue<UBlackboardKeyType_Name>(ChosenActionKey.GetSelectedKeyID());
 
-    auto ReleaseCommitment = [&](bool bClearKey)
+    // Emits CHAIN-exit when the commitment being released was part of a chain,
+    // so a chain's end is always one line naming its cause — an abnormal cause
+    // at Error, since every one of them is a wiring or authoring fault rather
+    // than a fight outcome.
+    auto ExitChain = [&](EGothicChainExitReason Reason)
     {
+        if (!Commit->IsChaining())
+        {
+            return;
+        }
+
+        const FString Detail = FString::Printf(
+            TEXT("chain=%s|step=%d/%d|reason=%s|held=%.3f"),
+            *DescribeChain(Commit->ChainIndex),
+            Commit->ChainStepIndex,
+            Chains.IsValidIndex(Commit->ChainIndex) ? Chains[Commit->ChainIndex].Steps.Num() : -1,
+            *UEnum::GetDisplayValueAsText(Reason).ToString(),
+            Commit->ChainEnterTime >= 0.f ? (Now - Commit->ChainEnterTime) : -1.f);
+
+        LogTimeline(TEXT("CHAIN-exit"), Detail, /*bAlways=*/true);
+
+        if (Reason != EGothicChainExitReason::Completed)
+        {
+            UE_LOG(LogVigilCombat, Error,
+                TEXT("WeightedActionSelect[%s]: attack chain exited abnormally — %s"),
+                *GetNameSafe(Pawn), *Detail);
+        }
+
+        Commit->ClearChain();
+    };
+
+    auto ReleaseCommitment = [&](bool bClearKey, EGothicChainExitReason Reason)
+    {
+        ExitChain(Reason);
+
         if (bClearKey && bAttackLayerLive)
         {
             BB->SetValue<UBlackboardKeyType_Name>(AttackKeyID, NAME_None);
         }
 
+        Commit->ClearAll();
+
         if (Memory)
         {
-            Memory->bAttackCommitted  = false;
-            Memory->bAttackDispatched = false;
-            Memory->AttackCommitTime  = -1.f;
-            Memory->CommittedActionID = NAME_None;
-            Memory->CommittedTagName  = NAME_None;
-
             // Force the movement layer to re-roll on this very tick instead of
             // serving out the remainder of a commit window that was frozen for
             // the whole attack. The positioning decision that was current when
@@ -821,13 +1074,13 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
     // she keeps swinging at nothing after the fight is over.
     if (!TargetActorKey.IsNone() && !Target)
     {
-        if (Memory && Memory->bAttackCommitted)
+        if (Commit->bCommitted)
         {
             LogTimeline(TEXT("ATTACK-interrupt"),
                 FString::Printf(TEXT("committed='%s'|reason=no-target"),
-                    *Memory->CommittedActionID.ToString()),
+                    *Commit->CommittedActionID.ToString()),
                 /*bAlways=*/true);
-            ReleaseCommitment(/*bClearKey=*/true);
+            ReleaseCommitment(/*bClearKey=*/true, EGothicChainExitReason::NoTarget);
         }
 
         LogTimeline(TEXT("HOLD-no-target"),
@@ -838,30 +1091,72 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
     }
 
     // ── Commitment gate ──────────────────────────────────────────────────────
-    if (Memory && Memory->bAttackCommitted)
+    if (Commit->bCommitted)
     {
         if (CommittedTag.IsNone())
         {
-            // The dispatch task cleared the key: this attack is over, however it
+            // The dispatch task cleared the key: this step is over, however it
             // ended (finished, refused, cancelled, aborted).
             //
-            // PHASE 3 HOOK. This is the single place a chain advances. A chain
-            // commitment would, instead of releasing, look up the next step from
-            // the committed entry's chain data, write ITS tag back into the key,
-            // reset AttackCommitTime/bAttackDispatched, and return — the lock
-            // never opens between steps, so a three-hit combo is one commitment
-            // with three dispatches rather than three commitments the movement
-            // layer can wedge itself between. Everything else in this function,
-            // and the whole of the dispatch task, is already chain-agnostic.
-            LogTimeline(TEXT("ATTACK-release"),
-                FString::Printf(TEXT("was='%s'|tag=%s|dispatched=%d|held=%.3f"),
-                    *Memory->CommittedActionID.ToString(),
-                    *Memory->CommittedTagName.ToString(),
-                    Memory->bAttackDispatched ? 1 : 0,
-                    Memory->AttackCommitTime >= 0.f ? (Now - Memory->AttackCommitTime) : -1.f),
-                /*bAlways=*/true);
+            // THE CHAIN ADVANCE POINT. This is the branch that phase 2 wrote and
+            // that never once executed, because the state it tested was zeroed
+            // by OnBecomeRelevant in the same event that produced the
+            // transition. With the commitment on the controller it survives the
+            // re-entry and this is reachable.
+            //
+            // The stopwatch matters here and nowhere else in the lock: the gap
+            // between one step ending and this tick observing it is normally one
+            // service tick, but if the subtree was taken away by a stagger or a
+            // phase transition it can be arbitrarily long, and resuming a combo
+            // into a fight that has moved is not commitment, it is a bug that
+            // looks like one. LastStepEndTime is stamped on the first tick that
+            // sees the key clear, so the deadline measures the branch's absence
+            // rather than the swing's length.
+            if (Commit->LastStepEndTime < 0.f)
+            {
+                Commit->LastStepEndTime = Now;
+            }
 
-            ReleaseCommitment(/*bClearKey=*/false);
+            const float SinceStepEnd = Now - Commit->LastStepEndTime;
+
+            if (Commit->IsChaining())
+            {
+                const float Window = GetRecoveryWindow(Commit->ChainIndex, Commit->ChainStepIndex);
+
+                if (SinceStepEnd > Window)
+                {
+                    ReleaseCommitment(/*bClearKey=*/false, EGothicChainExitReason::RecoveryLapsed);
+                    // Fall through and re-plan.
+                }
+                else
+                {
+                    EGothicChainExitReason AdvanceFailure = EGothicChainExitReason::Completed;
+
+                    if (TryAdvanceChain(BB, AttackKeyID, Commit, ASC, DistanceToTarget,
+                            Now, AdvanceFailure, LogTimeline))
+                    {
+                        // Locked, and the next step is already on the key.
+                        // Neither layer is scored — the movement layer never
+                        // gets a tick between two hits of a combo, which is the
+                        // entire point of a chain being ONE commitment.
+                        return;
+                    }
+
+                    ReleaseCommitment(/*bClearKey=*/false, AdvanceFailure);
+                }
+            }
+            else
+            {
+                LogTimeline(TEXT("ATTACK-release"),
+                    FString::Printf(TEXT("was='%s'|tag=%s|dispatched=%d|held=%.3f"),
+                        *Commit->CommittedActionID.ToString(),
+                        *Commit->CommittedTagName.ToString(),
+                        Commit->bDispatched ? 1 : 0,
+                        Commit->CommitTime >= 0.f ? (Now - Commit->CommitTime) : -1.f),
+                    /*bAlways=*/true);
+
+                ReleaseCommitment(/*bClearKey=*/false, EGothicChainExitReason::Completed);
+            }
             // Fall through and re-plan on this tick — no dead frame between the
             // end of a swing and the next decision.
         }
@@ -871,13 +1166,23 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
             // sequence, a designer forcing an opener). Adopt it rather than
             // fight over it — re-arming the timeout from now is the honest
             // reading of "a new commitment just started."
-            if (CommittedTag != Memory->CommittedTagName)
+            if (CommittedTag != Commit->CommittedTagName)
             {
-                Memory->CommittedTagName  = CommittedTag;
-                Memory->CommittedActionID = NAME_None;
-                Memory->AttackCommitTime  = Now;
-                Memory->bAttackDispatched = false;
+                // An outside writer has taken the key from under an in-flight
+                // chain. The chain's remaining steps describe a sequence that is
+                // no longer what the pawn is doing, so it exits (loudly) rather
+                // than resuming after whatever was forced in finishes.
+                ExitChain(EGothicChainExitReason::Superseded);
+
+                Commit->CommittedTagName  = CommittedTag;
+                Commit->CommittedActionID = NAME_None;
+                Commit->CommitTime        = Now;
+                Commit->bDispatched       = false;
             }
+
+            // A step is running again, so the next key-clear is a fresh
+            // observation rather than one already stamped.
+            Commit->LastStepEndTime = -1.f;
 
             const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(CommittedTag, /*ErrorIfNotFound=*/false);
 
@@ -888,12 +1193,17 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
             // dispatch that never happened.
             if (Tag.IsValid() && IsAbilityActive(ASC, Tag))
             {
-                Memory->bAttackDispatched = true;
+                Commit->bDispatched = true;
             }
 
-            const float Held = Memory->AttackCommitTime >= 0.f ? (Now - Memory->AttackCommitTime) : 0.f;
+            // Measured from the CURRENT step's dispatch, not from the chain's
+            // entry. AttackDispatchTimeout is a deadlock breaker for "the tree
+            // never reached the dispatch task", and each step gets to the task
+            // independently, so a three-hit combo must not accumulate its steps'
+            // durations into a timeout that fires mid-chain.
+            const float Held = Commit->CommitTime >= 0.f ? (Now - Commit->CommitTime) : 0.f;
 
-            if (!Memory->bAttackDispatched && Held > AttackDispatchTimeout)
+            if (!Commit->bDispatched && Held > AttackDispatchTimeout)
             {
                 // Error, not Verbose. In a correctly wired tree this is
                 // unreachable: the key is set, so the attack branch's decorator
@@ -907,16 +1217,16 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
                          "Releasing. The tree never reached the dispatch task — check that the attack branch's "
                          "decorator is 'ChosenAttackTag Is Set' with Observer Aborts, and that the dispatch task's "
                          "AbilityTagKey points at the same Blackboard key this service writes."),
-                    *GetNameSafe(Pawn), *Memory->CommittedActionID.ToString(),
+                    *GetNameSafe(Pawn), *Commit->CommittedActionID.ToString(),
                     *CommittedTag.ToString(), Held);
 
                 LogTimeline(TEXT("ATTACK-dispatch-timeout"),
                     FString::Printf(TEXT("committed='%s'|tag=%s|held=%.3f|timeout=%.3f"),
-                        *Memory->CommittedActionID.ToString(), *CommittedTag.ToString(),
+                        *Commit->CommittedActionID.ToString(), *CommittedTag.ToString(),
                         Held, AttackDispatchTimeout),
                     /*bAlways=*/true);
 
-                ReleaseCommitment(/*bClearKey=*/true);
+                ReleaseCommitment(/*bClearKey=*/true, EGothicChainExitReason::DispatchTimeout);
                 // Fall through and re-plan.
             }
             else
@@ -926,9 +1236,10 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
                 // those" — there is no weight, no range band and no better
                 // option that can reach past this return.
                 LogTimeline(TEXT("ATTACK-committed"),
-                    FString::Printf(TEXT("committed='%s'|tag=%s|dispatched=%d|held=%.3f|dist=%.1f"),
-                        *Memory->CommittedActionID.ToString(), *CommittedTag.ToString(),
-                        Memory->bAttackDispatched ? 1 : 0, Held, DistanceToTarget),
+                    FString::Printf(TEXT("committed='%s'|tag=%s|chain=%s|step=%d|dispatched=%d|held=%.3f|dist=%.1f"),
+                        *Commit->CommittedActionID.ToString(), *CommittedTag.ToString(),
+                        *DescribeChain(Commit->ChainIndex), Commit->ChainStepIndex,
+                        Commit->bDispatched ? 1 : 0, Held, DistanceToTarget),
                     /*bAlways=*/false);
                 return;
             }
@@ -936,10 +1247,15 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
     }
     else if (!CommittedTag.IsNone())
     {
-        // The key is set but we hold no commitment — a value left over from a
-        // previous branch activation (OnBecomeRelevant drops our belief but
-        // cannot reach the Blackboard) or a hand-set stray. Clear it, or the
-        // attack branch's decorator passes forever on a ghost.
+        // The key is set but we hold no commitment — a hand-set stray, or a key
+        // written by something outside this service while the attack layer was
+        // open. Clear it, or the attack branch's decorator passes forever on a
+        // ghost.
+        //
+        // No longer reachable via branch re-activation, which used to be its
+        // main cause: the commitment survives re-entry now, so the ordinary end
+        // of an attack goes through the release path above instead of arriving
+        // here as an orphan.
         LogTimeline(TEXT("ATTACK-stale-clear"),
             FString::Printf(TEXT("stale=%s"), *CommittedTag.ToString()), /*bAlways=*/true);
         BB->SetValue<UBlackboardKeyType_Name>(AttackKeyID, NAME_None);
@@ -1043,23 +1359,51 @@ void UGothicBTService_WeightedActionSelect::SelectSplit(
         if (Actions.IsValidIndex(Winner))
         {
             const FGothicWeightedActionEntry& Entry = Actions[Winner];
-            const FName TagName = Entry.AbilityTag.GetTagName();
+
+            // Does this pick open a chain? Chains are selected by the SAME roll
+            // that just happened — a chain is entered by its entry action
+            // winning the attack layer, not by a second competing roll — so the
+            // weighting is untouched by their existence and an empty Chains
+            // array is exactly the pre-phase-3 behaviour.
+            const int32 ChainIdx = PickChainForEntry(Entry, DistanceToTarget);
+
+            FName TagName = Entry.AbilityTag.GetTagName();
+
+            if (Chains.IsValidIndex(ChainIdx))
+            {
+                // The chain's first step replaces the entry's own tag. An entry
+                // that opens a chain is a doorway, not a hit.
+                const FName StepTag = Chains[ChainIdx].Steps[0].AbilityTag.GetTagName();
+                if (!StepTag.IsNone())
+                {
+                    TagName = StepTag;
+                }
+
+                Commit->ChainIndex      = ChainIdx;
+                Commit->ChainStepIndex  = 0;
+                Commit->ChainEnterTime  = Now;
+                Commit->LastStepEndTime = -1.f;
+
+                LogTimeline(TEXT("CHAIN-enter"),
+                    FString::Printf(TEXT("chain=%s|steps=%d|via='%s'|step=0|tag=%s|roll=%.3f"),
+                        *DescribeChain(ChainIdx), Chains[ChainIdx].Steps.Num(),
+                        *Entry.ActionID.ToString(), *TagName.ToString(), RollValue),
+                    /*bAlways=*/true);
+            }
 
             LogTimeline(bWasTail ? TEXT("ATTACK-commit-tail") : TEXT("ATTACK-commit"),
-                FString::Printf(TEXT("'%s'|tag=%s|roll=%.3f|%s"),
-                    *Entry.ActionID.ToString(), *TagName.ToString(), RollValue, *Breakdown),
+                FString::Printf(TEXT("'%s'|tag=%s|chain=%s|roll=%.3f|%s"),
+                    *Entry.ActionID.ToString(), *TagName.ToString(),
+                    *DescribeChain(Commit->ChainIndex), RollValue, *Breakdown),
                 /*bAlways=*/true);
 
             BB->SetValue<UBlackboardKeyType_Name>(AttackKeyID, TagName);
 
-            if (Memory)
-            {
-                Memory->bAttackCommitted  = true;
-                Memory->bAttackDispatched = false;
-                Memory->AttackCommitTime  = Now;
-                Memory->CommittedActionID = Entry.ActionID;
-                Memory->CommittedTagName  = TagName;
-            }
+            Commit->bCommitted        = true;
+            Commit->bDispatched       = false;
+            Commit->CommitTime        = Now;
+            Commit->CommittedActionID = Entry.ActionID;
+            Commit->CommittedTagName  = TagName;
         }
         return;
     }
