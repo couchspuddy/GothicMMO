@@ -70,6 +70,12 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
     const FVector ToPawn = (Pawn->GetActorLocation() - Target->GetActorLocation()).GetSafeNormal2D();
     const float CurrentBearing = FMath::Atan2(ToPawn.Y, ToPawn.X);
 
+    // Hoisted above the branch rolls because the give-ground gate needs it to
+    // decide ELIGIBILITY, not just to place a point. The strafe math below still
+    // reads exactly the same value; nothing about its meaning changed.
+    const float CurrentDistance2D =
+        FVector::Dist2D(Pawn->GetActorLocation(), Target->GetActorLocation());
+
     FGothicRepositionMemory* Memory = reinterpret_cast<FGothicRepositionMemory*>(NodeMemory);
     Memory->bHolding    = false;
     Memory->HoldElapsed = 0.f;
@@ -115,6 +121,86 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
     }
 
     const float Now = Pawn->GetWorld() ? Pawn->GetWorld()->GetTimeSeconds() : 0.f;
+
+    // -------------------------------------------------------------------------
+    // Branch one: give ground. Rolled FIRST, ahead of the hold and the strafe.
+    //
+    // This is the only branch in the whole action pool that can INCREASE
+    // separation. Approach closes, Charge closes, Claw and Roar fire in place,
+    // and the strafe below is explicitly capped at the separation the pawn
+    // already has, so without this the distance to the player only ever ratchets
+    // down and the boss parks on top of them permanently — the measured ~125uu
+    // with no punish window anywhere in the fight.
+    //
+    // It rolls first because it is the rarest and most deliberate beat: put it
+    // after the hold and its effective rate becomes GiveGroundChance * (1 -
+    // EffectiveHoldChance), which is both quieter than the authored number says
+    // and a moving target as arena aggression scales the hold. Rolling first
+    // makes the authored chance mean what it reads as.
+    //
+    // Gated on proximity, because a disengage is a response to being crowded,
+    // not a general movement option — see GiveGroundTriggerRange.
+    if (GiveGroundChance > 0.f
+        && CurrentDistance2D < GiveGroundTriggerRange
+        && FMath::FRand() < GiveGroundChance)
+    {
+        // Straight AWAY from the target: the target-to-pawn bearing, i.e. the
+        // side of the arena she is already on, extended. Not a fresh random
+        // bearing and not a cut across the target's front — either of those
+        // would walk her through the player's firing line for the length of the
+        // retreat, which is the opposite of buying a punish window.
+        //
+        // Jitter is a small dedicated spread rather than the strafe's 45-110
+        // band (see GiveGroundAngleJitter): enough that repeated disengages do
+        // not wear one groove into the arena, small enough that each still reads
+        // unmistakably as backing off.
+        const float JitterDeg = FMath::FRandRange(-GiveGroundAngleJitter, GiveGroundAngleJitter);
+        const float AwayBearing = CurrentBearing + FMath::DegreesToRadians(JitterDeg);
+
+        // Distance is measured FROM THE TARGET, not travelled from the pawn:
+        // the point of the beat is the separation she ends at, and a
+        // displacement-based retreat would land somewhere different every time
+        // depending on how close she had crept.
+        const float GiveGroundDistance = FMath::FRandRange(
+            FMath::Min(GiveGroundMinDistance, GiveGroundMaxDistance),
+            FMath::Max(GiveGroundMinDistance, GiveGroundMaxDistance));
+
+        // Based on the TARGET's location, exactly as the strafe below is. The
+        // pawn's own actor location is the capsule ORIGIN, ~379.5uu above the
+        // floor at her scale, which is past UE's 250uu default nav query extent
+        // and unprojectable — a point built off it fails projection and the
+        // paired Move To reports that failure as an instant finish.
+        const FVector AwayDirection(FMath::Cos(AwayBearing), FMath::Sin(AwayBearing), 0.f);
+        const FVector GiveGroundPoint =
+            Target->GetActorLocation() + AwayDirection * GiveGroundDistance;
+
+        BB->SetValue<UBlackboardKeyType_Vector>(
+            OutputPointKey.GetSelectedKeyID(), GiveGroundPoint);
+
+        // MinRepositionDistance is deliberately not consulted here, and the two
+        // cannot fight. That floor exists so a CHORD around the target does not
+        // collapse below the paired Move To's reach test at close range; a
+        // disengage is radial, not tangential, and its displacement is at least
+        // (GiveGroundMinDistance - GiveGroundTriggerRange) = 350uu by
+        // construction under the defaults — comfortably above the 200uu floor
+        // and above any plausible re-tuning of it. Running the widen-then-step-
+        // out solver on this point could only push it FARTHER out, which is
+        // spending separation the branch has already decided how to spend.
+        //
+        // sepFrom/sepTo are the pair that make the beat readable on a timeline:
+        // sepTo is the whole point of the branch, and the gap between them is
+        // the punish window this exists to manufacture.
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|Reposition|GIVEGROUND|aggression=%.3f|holdChance=%.3f|point=%s|moveDist2D=%.1f|jitterDeg=%.1f|sepFrom=%.1f|sepTo=%.1f"),
+            Now, *GetNameSafe(Pawn), Aggression, EffectiveHoldChance,
+            *GiveGroundPoint.ToCompactString(),
+            FVector::Dist2D(Pawn->GetActorLocation(), GiveGroundPoint),
+            JitterDeg, CurrentDistance2D, GiveGroundDistance);
+
+        // A real move, not a stall — Succeeded, like the strafe, so the
+        // Sequence's Move To runs for real.
+        return EBTNodeResult::Succeeded;
+    }
 
     // Roll the menacing hold. On a hold, point the paired Move To at where she
     // already stands (a no-op walk) and stay InProgress so she plants and stares
@@ -176,8 +262,6 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
     // zero above, so CurrentBearing is an arbitrary 0). Fall back to the
     // authored radius so the pawn steps out rather than writing the target's
     // own location as the destination.
-    const float CurrentDistance2D =
-        FVector::Dist2D(Pawn->GetActorLocation(), Target->GetActorLocation());
     const float OrbitRadius = CurrentDistance2D > KINDA_SMALL_NUMBER
         ? FMath::Min(CurrentDistance2D, RepositionRadius)
         : RepositionRadius;
@@ -308,7 +392,10 @@ void UGothicBTTask_ComputeRepositionPoint::TickTask(
 
 FString UGothicBTTask_ComputeRepositionPoint::GetStaticDescription() const
 {
-    return FString::Printf(TEXT("%s\nOffset: %.0f-%.0f deg, Radius: %.0f, Min move: %.0f"),
+    return FString::Printf(
+        TEXT("%s\nOffset: %.0f-%.0f deg, Radius: %.0f, Min move: %.0f\nGive ground: %.0f%% under %.0fuu, out to %.0f-%.0f"),
         *Super::GetStaticDescription(), MinAngleOffset, MaxAngleOffset,
-        RepositionRadius, MinRepositionDistance);
+        RepositionRadius, MinRepositionDistance,
+        GiveGroundChance * 100.f, GiveGroundTriggerRange,
+        GiveGroundMinDistance, GiveGroundMaxDistance);
 }

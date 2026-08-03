@@ -12,6 +12,12 @@
 // varies. A predator that only ever walks straight at prey isn't prowling,
 // it's chasing. This gives the pool a second kind of movement to pick.
 //
+// It now picks between three: a menacing hold, a lateral strafe, and a give-
+// ground disengage. The third exists because the rest of the pool physically
+// cannot produce one — every other branch closes distance or preserves it — so
+// separation was a one-way ratchet and the boss ended every fight parked in the
+// player's face. See the Give Ground block at the bottom of this header.
+//
 // Instant, not latent — runs once per activation, writes the point, ends
 // immediately. The Sequence's next node (stock Move To) does the actual
 // walking.
@@ -61,8 +67,9 @@ protected:
     /**
      * Lateral offset range, degrees, applied to either side of the current
      * bearing at random. Deliberately excludes near-zero (that's just
-     * Approach again) and near-180 (that's a retreat, a different trait
-     * entirely — the boss doesn't back off tactically, per her kit).
+     * Approach again) and near-180 (that's a retreat, which is a separate
+     * branch with its own gate and its own distance band — see Give Ground
+     * below — not something the strafe should back into by accident).
      */
     UPROPERTY(EditAnywhere, Category = "Reposition")
     float MinAngleOffset = 45.f;
@@ -141,4 +148,98 @@ protected:
     /** Seconds to hold the menace before the branch completes. */
     UPROPERTY(EditAnywhere, Category = "Menace", meta = (ClampMin = "0.0"))
     float HoldDuration = 1.6f;
+
+    // -------------------------------------------------------------------------
+    // Give ground — the disengage the action pool cannot otherwise express.
+    //
+    // Read the Bestial Lucid's authored pool and nothing in it can INCREASE
+    // separation: Approach closes, Charge closes, Claw and Roar are attacks that
+    // fire from where she stands, and Reposition orbits at
+    // min(CurrentDistance2D, RepositionRadius) — a ceiling, never a floor, by
+    // deliberate design (see RepositionRadius above; that ceiling is what fixed
+    // the orbit-and-never-swing bug and it is not up for revision here).
+    // Separation is therefore a one-way ratchet: every branch either shortens it
+    // or preserves it, so once she converges on her measured ~125uu parking
+    // distance she stays in the player's face for the rest of the fight and
+    // there is never a punish window. The intended fantasy — stalk, pounce,
+    // brief assault, disengage, repeat — is missing its fourth beat entirely.
+    //
+    // This branch is that beat, and it is the ONLY place in the kit permitted to
+    // spend separation, which is why it is gated behind both a low chance and a
+    // proximity test rather than living in the orbit math.
+    // -------------------------------------------------------------------------
+
+    /** Chance (0-1) an eligible Reposition becomes a disengage instead of a hold
+     *  or a strafe. Rolled FIRST, ahead of the hold, because it is the rarest
+     *  and most deliberate beat in the branch — losing it to a hold roll would
+     *  make it rarer still and much harder to read on a timeline.
+     *
+     *  Deliberately NOT scaled by the arena aggression multiplier: aggression
+     *  buys back holds (standing still), and a disengage is not standing still —
+     *  it is the setup for a Charge. Making a stripped arena disengage less
+     *  would remove the pounce exactly when the fight is meant to peak. */
+    UPROPERTY(EditAnywhere, Category = "Give Ground", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float GiveGroundChance = 0.25f;
+
+    /**
+     * Distance band from the TARGET the disengage point sits in — an absolute
+     * separation to arrive at, not a displacement to travel, which is the whole
+     * difference between this and the strafe above.
+     *
+     * 600-750 is chosen against Charge's authored 550-2000 band and nothing
+     * else. Charge is currently unreachable by construction: no branch in the
+     * pool can push her past Reposition's 500uu maxRange, so her separation
+     * never enters the band its minRange demands and the ability has never had
+     * an opportunity to fire in normal play. Landing the disengage just inside
+     * that band means the retreat-then-charge pattern falls out of the geometry
+     * rather than needing a scripted chain — she gives ground, becomes Charge-
+     * eligible on the next selection, and pounces. 600 rather than 550 so a
+     * little overshoot or player drift during the walk does not drop her back
+     * under the minRange before the pool re-rolls; 750 rather than higher so the
+     * walk back in is a pounce and not a trek.
+     *
+     * These are STARTING POINTS for a measured pass, not tuned values. Nothing
+     * here has been observed in PIE — the band is derived from the authored
+     * action-pool numbers, and the real disengage distance should be set from
+     * measured time-to-close and the player's actual punish window.
+     */
+    UPROPERTY(EditAnywhere, Category = "Give Ground", meta = (ClampMin = "0.0"))
+    float GiveGroundMinDistance = 600.f;
+
+    UPROPERTY(EditAnywhere, Category = "Give Ground", meta = (ClampMin = "0.0"))
+    float GiveGroundMaxDistance = 750.f;
+
+    /**
+     * Eligibility gate: give ground only rolls when the pawn is already closer
+     * to the target than this. Beyond it the branch never fires.
+     *
+     * A disengage is a response to CROWDING, not a movement option. Without the
+     * gate she would roll it from mid-range too and the result reads as timidity
+     * — backing away from a player she was never pressuring — and would also
+     * fight the Approach branch for the same beats. 250uu sits comfortably above
+     * the measured ~125uu parking distance and above Claw's 160uu reach, so the
+     * gate passes in exactly the situation the user described (on top of the
+     * player, no punish window) and stays shut once she has any real spacing.
+     *
+     * Also a starting point, not a measurement.
+     */
+    UPROPERTY(EditAnywhere, Category = "Give Ground", meta = (ClampMin = "0.0"))
+    float GiveGroundTriggerRange = 250.f;
+
+    /**
+     * Bearing jitter, degrees, applied to either side of the straight-away
+     * bearing at random.
+     *
+     * Deliberately its own small spread rather than a reuse of
+     * MinAngleOffset/MaxAngleOffset (45-110): those exist to make a strafe read
+     * as a strafe, and 45-110 degrees off the retreat line would turn a
+     * disengage into a wide arc across the front of the player — visually a
+     * flank, and it would drag her through the player's firing line for the
+     * whole walk. A disengage should read as backing off along her own side of
+     * the arena. 25 degrees is enough that repeated disengages do not retrace
+     * one line into a rut, and small enough that every one of them still reads
+     * as "away".
+     */
+    UPROPERTY(EditAnywhere, Category = "Give Ground", meta = (ClampMin = "0.0", ClampMax = "89.0"))
+    float GiveGroundAngleJitter = 25.f;
 };
