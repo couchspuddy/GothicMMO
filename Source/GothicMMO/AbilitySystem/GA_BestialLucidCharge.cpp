@@ -1,6 +1,7 @@
 // GA_BestialLucidCharge.cpp
 
 #include "AbilitySystem/GA_BestialLucidCharge.h"
+#include "GothicMMO.h"                      // LogVigilCombat
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
@@ -12,6 +13,7 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
 
@@ -55,7 +57,7 @@ void UGA_BestialLucidCharge::EndAbility(
     // Cancelled mid-charge (staggered, killed, phase transition) stops being
     // dangerous immediately. A charge that is no longer happening must not keep
     // running people over.
-    EndChargeDamageWindow();
+    EndChargeDamageWindow(bWasCancelled ? TEXT("cancelled") : TEXT("ability-end"));
 
     // And the boss must not be left mid-flight with a paused brain and zero air
     // control. Unconditional, not gated on bWasCancelled: a normal end that
@@ -79,7 +81,7 @@ AGothicEnemyAIController* UGA_BestialLucidCharge::GetEnemyController() const
 
 void UGA_BestialLucidCharge::HandleLeapLanded(bool bLanded)
 {
-    EndChargeDamageWindow();
+    EndChargeDamageWindow(TEXT("landed"));
 }
 
 void UGA_BestialLucidCharge::BeginChargeDamageWindow()
@@ -94,6 +96,10 @@ void UGA_BestialLucidCharge::BeginChargeDamageWindow()
 
     HitPawnsThisCharge.Reset();
 
+    ChargeSweepsThisWindow = 0;
+    ChargeMinDist2D        = TNumericLimits<float>::Max();
+    ChargeMinDist3D        = TNumericLimits<float>::Max();
+
     const AActor* Owner = GetOwningActorFromActorInfo();
     UWorld* World = GetWorld();
 
@@ -104,7 +110,7 @@ void UGA_BestialLucidCharge::BeginChargeDamageWindow()
 
     if (!ChargeDamageEffect)
     {
-        UE_LOG(LogTemp, Warning,
+        UE_LOG(LogVigilCombat, Warning,
             TEXT("BestialLucidCharge[%s]: ChargeDamageEffect is unassigned — the charge moves the boss and damages nobody"),
             *GetNameSafe(GetAvatarActorFromActorInfo()));
         return;
@@ -123,7 +129,7 @@ void UGA_BestialLucidCharge::BeginChargeDamageWindow()
     }
     else
     {
-        UE_LOG(LogTemp, Warning,
+        UE_LOG(LogVigilCombat, Warning,
             TEXT("BestialLucidCharge[%s]: no AGothicEnemyAIController — the damage window can only "
                  "close on its %.2fs backstop, and the leap itself is unguarded"),
             *GetNameSafe(GetAvatarActorFromActorInfo()), ChargeDamageWindow);
@@ -138,18 +144,54 @@ void UGA_BestialLucidCharge::BeginChargeDamageWindow()
     // only arm the repeat if it is still open.
     if (bChargeWindowOpen)
     {
+        // Bound through a delegate rather than the member-pointer overload
+        // because the sweep now takes a flag; the repeating sweeps are all
+        // ordinary ones.
+        FTimerDelegate SweepDelegate = FTimerDelegate::CreateUObject(
+            this, &UGA_BestialLucidCharge::SweepChargeDamage, /*bFinalSweep=*/false);
+
         World->GetTimerManager().SetTimer(
-            ChargeSweepTimerHandle, this,
-            &UGA_BestialLucidCharge::SweepChargeDamage,
+            ChargeSweepTimerHandle, SweepDelegate,
             FMath::Max(0.01f, ChargeSweepInterval), true);
     }
 }
 
-void UGA_BestialLucidCharge::EndChargeDamageWindow()
+void UGA_BestialLucidCharge::EndChargeDamageWindow(const TCHAR* ClosedBy)
 {
+    // Nothing open, or we are already inside the close path (a final sweep that
+    // finds no ASC calls back in here). Either way there is no window to sweep,
+    // no clock to stop and nothing to summarise.
+    if (!bChargeWindowOpen || bClosingChargeWindow)
+    {
+        bChargeWindowOpen = false;
+        return;
+    }
+
+    bClosingChargeWindow = true;
+
+    // ── The touchdown sweep ──────────────────────────────────────────────────
+    //
+    // One last sweep, synchronously, before anything is torn down — and it runs
+    // on BOTH close paths, the landing and the backstop.
+    //
+    // The window used to close ON the landed signal, which threw away the single
+    // most dangerous instant of the whole move. The boss's closest approach to a
+    // player who does not dodge is the landing itself: chained charges touch down
+    // 124-156uu from the player (the chain branch that fires them is gated at
+    // <=160uu), while the minimum MID-FLIGHT approach measured 328uu+. So every
+    // sample the window ever took was of the half of the charge that cannot
+    // connect, and the half that can was discarded a frame before it was
+    // measured. The final sweep tests the overlap at touchdown instead.
+    //
+    // It cannot double-hit: HitPawnsThisCharge is still populated and still
+    // consulted, so anyone already run over this charge is skipped here.
+    SweepChargeDamage(/*bFinalSweep=*/true);
+
     bChargeWindowOpen = false;
 
-    if (UWorld* World = GetWorld())
+    UWorld* World = GetWorld();
+
+    if (World)
     {
         World->GetTimerManager().ClearTimer(ChargeSweepTimerHandle);
     }
@@ -161,31 +203,55 @@ void UGA_BestialLucidCharge::EndChargeDamageWindow()
     {
         EnemyAIC->OnLeapLanded.RemoveDynamic(this, &UGA_BestialLucidCharge::HandleLeapLanded);
     }
+
+    // One line per charge that answers the geometric question outright: how
+    // close did she actually get, and did anything land. A min approach well
+    // outside the inflated capsule means the sweep never had a chance and the
+    // charge needs steering or reach, not a bigger number.
+    const float Now = World ? World->GetTimeSeconds() : 0.f;
+
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|ChargeSweep|WINDOW-closed|hits=%d|sweeps=%d|")
+        TEXT("minDist2D=%.1f|minDist3D=%.1f|closedBy=%s|open=%.3f"),
+        Now, *GetNameSafe(GetAvatarActorFromActorInfo()),
+        HitPawnsThisCharge.Num(), ChargeSweepsThisWindow,
+        ChargeMinDist2D == TNumericLimits<float>::Max() ? -1.f : ChargeMinDist2D,
+        ChargeMinDist3D == TNumericLimits<float>::Max() ? -1.f : ChargeMinDist3D,
+        ClosedBy ? ClosedBy : TEXT("unknown"),
+        World ? (World->GetTimeSeconds() - ChargeWindowStartSeconds) : -1.0);
+
+    bClosingChargeWindow = false;
 }
 
-void UGA_BestialLucidCharge::SweepChargeDamage()
+void UGA_BestialLucidCharge::SweepChargeDamage(bool bFinalSweep)
 {
     UWorld* World = GetWorld();
     AActor* Avatar = GetAvatarActorFromActorInfo();
 
     if (!World || !Avatar || !ChargeDamageEffect)
     {
-        EndChargeDamageWindow();
+        EndChargeDamageWindow(TEXT("no-avatar-or-effect"));
         return;
     }
 
-    if (World->GetTimeSeconds() - ChargeWindowStartSeconds >= ChargeDamageWindow)
+    // The backstop is not consulted on the final sweep: the window is already
+    // being closed, and an expired backstop is one of the two things that closes
+    // it. Testing it here would refuse the touchdown overlap in exactly the case
+    // the final sweep was added to cover.
+    if (!bFinalSweep && World->GetTimeSeconds() - ChargeWindowStartSeconds >= ChargeDamageWindow)
     {
-        EndChargeDamageWindow();
+        EndChargeDamageWindow(TEXT("backstop"));
         return;
     }
 
     UAbilitySystemComponent* BossASC = GetAbilitySystemComponentFromActorInfo();
     if (!BossASC)
     {
-        EndChargeDamageWindow();
+        EndChargeDamageWindow(TEXT("no-asc"));
         return;
     }
+
+    ++ChargeSweepsThisWindow;
 
     TArray<AActor*> IgnoreActors;
     IgnoreActors.Add(Avatar);
@@ -219,6 +285,40 @@ void UGA_BestialLucidCharge::SweepChargeDamage()
         // collision cylinder, which is still measured from the actor rather than
         // guessed. Only a truly collision-less avatar reaches the floor below.
         Avatar->GetSimpleCollisionCylinder(BodyRadius, BodyHalfHeight);
+    }
+
+    // ── Min-approach telemetry ───────────────────────────────────────────────
+    //
+    // Measured against the LOCAL PLAYER PAWNS rather than the boss's combat
+    // target: the ability has no cheap, honest read of the Blackboard target
+    // from here (it would mean walking the controller to its BT component), that
+    // target can be null or stale exactly when a charge is in flight, and the
+    // question this number answers — "could this sweep ever have touched the
+    // player" — is about the player, not about who the AI believes it is
+    // fighting. In a single-player session the two are the same actor anyway.
+    //
+    // Actor-origin to actor-origin, both 2D and 3D, because that is the pair the
+    // chain's range gates and the old hand-reconstructed probe samples are
+    // expressed in. The capsule offset that makes 3D read ~165uu high vs 2D is
+    // precisely why both are logged instead of one.
+    const FVector AvatarLocation = Avatar->GetActorLocation();
+
+    for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+    {
+        const APlayerController* PC = It->Get();
+        const APawn* PlayerPawn = PC ? PC->GetPawn() : nullptr;
+
+        if (!PlayerPawn)
+        {
+            continue;
+        }
+
+        const FVector PlayerLocation = PlayerPawn->GetActorLocation();
+
+        ChargeMinDist2D = FMath::Min(ChargeMinDist2D,
+            static_cast<float>(FVector::Dist2D(AvatarLocation, PlayerLocation)));
+        ChargeMinDist3D = FMath::Min(ChargeMinDist3D,
+            static_cast<float>(FVector::Dist(AvatarLocation, PlayerLocation)));
     }
 
     TArray<AActor*> Overlapping;
@@ -270,9 +370,9 @@ void UGA_BestialLucidCharge::SweepChargeDamage()
 
         HitPawnsThisCharge.Add(Victim);
 
-        UE_LOG(LogTemp, Log,
-            TEXT("BestialLucidCharge[%s]: ran over %s for %.0f raw (%.2fs into the window)"),
-            *Avatar->GetName(), *Victim->GetName(), ChargeDamage,
-            World->GetTimeSeconds() - ChargeWindowStartSeconds);
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|ChargeSweep|HIT|victim=%s|raw=%.0f|tWindow=%.3f|final=%d"),
+            World->GetTimeSeconds(), *Avatar->GetName(), *Victim->GetName(), ChargeDamage,
+            World->GetTimeSeconds() - ChargeWindowStartSeconds, bFinalSweep ? 1 : 0);
     }
 }

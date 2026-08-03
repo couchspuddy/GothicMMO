@@ -175,11 +175,21 @@ protected:
     float ChargeSweepInterval = 0.05f;
 
 private:
-    /** One sweep: overlap pawns around the boss, damage each at most once. */
-    void SweepChargeDamage();
+    /**
+     * One sweep: overlap pawns around the boss, damage each at most once.
+     *
+     * bFinalSweep marks the synchronous sweep run from the close path. It skips
+     * the backstop expiry check and never closes the window itself — the caller
+     * is already closing it, and letting this re-enter EndChargeDamageWindow
+     * would recurse.
+     */
+    void SweepChargeDamage(bool bFinalSweep = false);
 
-    /** Disarms the sweep and unbinds the landing hook. Safe when nothing is armed. */
-    void EndChargeDamageWindow();
+    /**
+     * Runs the touchdown sweep, disarms, and emits the window summary.
+     * Safe when nothing is armed. ClosedBy names the cause for the summary line.
+     */
+    void EndChargeDamageWindow(const TCHAR* ClosedBy = TEXT("ability-end"));
 
     /**
      * The controller's leap ended — stop sweeping. A charge that is over must
@@ -194,10 +204,36 @@ private:
     /** True between BeginChargeDamageWindow and EndChargeDamageWindow. */
     bool bChargeWindowOpen = false;
 
+    /**
+     * Re-entrancy guard for the close path. The final sweep runs INSIDE
+     * EndChargeDamageWindow and every failure branch of a sweep closes the
+     * window, so without this a final sweep that finds no ASC would call back
+     * into the function that is calling it.
+     */
+    bool bClosingChargeWindow = false;
+
     FTimerHandle ChargeSweepTimerHandle;
 
     /** World time the window opened, so the sweep can close it on schedule. */
     double ChargeWindowStartSeconds = 0.0;
+
+    // ── Window telemetry ─────────────────────────────────────────────────────
+    //
+    // The closest the boss's body ever got to the player during one charge, in
+    // both measurements, tracked per sweep so the summary line can state it
+    // outright. This is the number that decides whether the capsule sweep is
+    // geometrically capable of connecting at all, and the last two verification
+    // runs had to reconstruct it by hand from 0.1s probe samples taken from
+    // outside the ability — at a sampling rate coarser than the sweep's own.
+
+    /** Sweeps run this window, final touchdown sweep included. */
+    int32 ChargeSweepsThisWindow = 0;
+
+    /** Closest horizontal (XY) actor-to-actor approach to a player pawn, uu. */
+    float ChargeMinDist2D = TNumericLimits<float>::Max();
+
+    /** Closest 3D actor-to-actor approach to a player pawn, uu. */
+    float ChargeMinDist3D = TNumericLimits<float>::Max();
 
     /**
      * Who this charge has already hit. A charge lasts over a second; without
