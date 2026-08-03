@@ -2,6 +2,10 @@
 
 #include "AI/GothicBossArenaManager.h"
 #include "AI/GothicRotundaPillar.h"
+#include "AI/GothicEnemyBase.h"
+#include "Kismet/GameplayStatics.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
 
 AGothicBossArenaManager::AGothicBossArenaManager()
 {
@@ -11,6 +15,10 @@ AGothicBossArenaManager::AGothicBossArenaManager()
     // Default aggression curve: index = pillars remaining
     // [0 pillars, 1 pillar, 2 pillars, 3 pillars, 4 pillars]
     AggressionByPillarCount = { 2.0f, 1.6f, 1.35f, 1.15f, 1.0f };
+
+    // Ambient collapse interval, same indexing. Index 0 is never read.
+    // UNMEASURED starting points — see the header.
+    CollapseIntervalByPillarCount = { 0.f, 50.f, 60.f, 75.f, 90.f };
 }
 
 void AGothicBossArenaManager::BeginPlay()
@@ -26,6 +34,52 @@ void AGothicBossArenaManager::BeginPlay()
         }
     }
 
+    // Self-election. Every consumer of this actor reaches it through
+    // GetActorOfClass, so whichever instance that call returns is the only one
+    // anybody is actually talking to — and it is therefore the only one entitled
+    // to run a timer. See bIsElectedManager in the header for why the level makes
+    // this necessary.
+    //
+    // The bookkeeping above is deliberately NOT gated on this: every manager
+    // keeps listening to its pillars, so GetPillarsRemaining and the aggression
+    // curve stay correct on all four and a level cleanup that deletes the wrong
+    // three changes nothing.
+    const AActor* Elected = UGameplayStatics::GetActorOfClass(this, AGothicBossArenaManager::StaticClass());
+    bIsElectedManager = (Elected == this);
+
+    if (!bIsElectedManager)
+    {
+        UE_LOG(LogTemp, Verbose,
+            TEXT("BossArena[%s]: not the elected manager (%s is) — abdicating the ambient collapse timer"),
+            *GetName(), *GetNameSafe(Elected));
+        return;
+    }
+
+    // An arena with no interval curve simply has no ambient clock. That is a
+    // supported configuration — Wall Pound alone is a valid degradation model —
+    // so there is nothing to say about it and nothing to poll for.
+    if (CollapseIntervalByPillarCount.Num() == 0)
+    {
+        return;
+    }
+
+    if (!ResolveBoss())
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("BossArena[%s]: ambient collapse is configured but no boss could be found — ")
+            TEXT("assign BossActor on the placed instance, or set BossClass on the Blueprint. ")
+            TEXT("Without a combat signal the timer stays disarmed rather than collapsing the ")
+            TEXT("arena while the player is walking through it."),
+            *GetName());
+        return;
+    }
+
+    // The whole point of the poll: a BeginPlay-armed collapse timer would drop
+    // the Rotunda's ceiling on a player who has not met the boss yet.
+    GetWorldTimerManager().SetTimer(
+        CombatPollTimerHandle, this,
+        &AGothicBossArenaManager::PollCombatState,
+        FMath::Max(0.1f, CombatPollInterval), true);
 }
 
 int32 AGothicBossArenaManager::GetPillarsRemaining() const
@@ -121,4 +175,160 @@ void AGothicBossArenaManager::OnPillarDestroyed(AGothicRotundaPillar* Pillar)
         *GetName(), *GetNameSafe(Pillar), Remaining, Aggression);
 
     OnArenaAggressionChanged.Broadcast(Aggression, Remaining);
+
+    // Re-arm from here rather than only from the timer's own expiry, so a pillar
+    // lost to ANY cause — Wall Pound, Cry damage, the ambient timer itself —
+    // restarts the clock at the new, shorter interval.
+    //
+    // This is what keeps the two pressures composing instead of stacking. Without
+    // it, a Wall Pound landing ten seconds before an ambient expiry would take
+    // two pillars in quick succession and the player would read the arena as
+    // arbitrary. With it, taking a pillar yourself buys the same grace the timer
+    // would have given, and the fight always has exactly one collapse pending.
+    //
+    // Both guards matter. The abdicated managers are still bound to the same
+    // pillars and still run this function, so the election check is what stops
+    // them arming a timer here that BeginPlay refused them; bFightActive is what
+    // stops a pillar destroyed outside the fight starting a clock.
+    if (bIsElectedManager && bFightActive)
+    {
+        ArmAmbientCollapseTimer();
+    }
+}
+
+AGothicEnemyBase* AGothicBossArenaManager::ResolveBoss()
+{
+    if (BossActor)
+    {
+        return BossActor;
+    }
+
+    if (BossClass)
+    {
+        BossActor = Cast<AGothicEnemyBase>(UGameplayStatics::GetActorOfClass(this, BossClass));
+    }
+
+    return BossActor;
+}
+
+void AGothicBossArenaManager::PollCombatState()
+{
+    AGothicEnemyBase* Boss = ResolveBoss();
+
+    // The combat signal is the boss's own combat latch — the same one the AI
+    // reads. It is set through SetCombatTarget, which every aggro source in the
+    // project funnels through (perception, encounter volumes, pack propagation,
+    // damage retaliation) and which refuses targets while the controller is
+    // leashing home. So "she has a target" is exactly "the fight is on",
+    // including the disengage: a boss that has leashed back to her anchor stops
+    // the arena decaying, which is the behaviour a player who ran away should
+    // get.
+    //
+    // Death is checked separately because the latch is not guaranteed to clear
+    // on it, and a dead boss must not keep dropping the ceiling.
+    const bool bNowActive = Boss && Boss->IsAlive() && Boss->GetCombatTarget() != nullptr;
+
+    if (bNowActive == bFightActive)
+    {
+        return;
+    }
+
+    bFightActive = bNowActive;
+
+    if (bFightActive)
+    {
+        UE_LOG(LogTemp, Log,
+            TEXT("BossArena[%s]: fight started — ambient collapse armed"), *GetName());
+        ArmAmbientCollapseTimer();
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log,
+            TEXT("BossArena[%s]: fight ended (boss dead or disengaged) — ambient collapse disarmed"),
+            *GetName());
+        DisarmAmbientCollapseTimer();
+    }
+}
+
+void AGothicBossArenaManager::ArmAmbientCollapseTimer()
+{
+    DisarmAmbientCollapseTimer();
+
+    const int32 Remaining = GetPillarsRemaining();
+
+    // Nothing left to take. The endgame is four sealed zones and maximum
+    // aggression, not a wipe timer — so the clock simply stops here and the
+    // fight finishes on its own terms.
+    if (Remaining <= 0)
+    {
+        return;
+    }
+
+    if (!CollapseIntervalByPillarCount.IsValidIndex(Remaining))
+    {
+        // Short or empty array. Silent by design: an unconfigured curve means
+        // "this arena does not want an ambient clock", and warning about it on
+        // every re-arm would be noise in the one configuration most arenas use.
+        return;
+    }
+
+    const float Interval = CollapseIntervalByPillarCount[Remaining];
+    if (Interval <= 0.f)
+    {
+        return;
+    }
+
+    GetWorldTimerManager().SetTimer(
+        AmbientCollapseTimerHandle, this,
+        &AGothicBossArenaManager::TriggerAmbientCollapse,
+        Interval, false);
+
+    UE_LOG(LogTemp, Log,
+        TEXT("BossArena[%s]: next ambient collapse in %.0fs (%d pillar(s) standing)"),
+        *GetName(), Interval, Remaining);
+}
+
+void AGothicBossArenaManager::DisarmAmbientCollapseTimer()
+{
+    GetWorldTimerManager().ClearTimer(AmbientCollapseTimerHandle);
+}
+
+void AGothicBossArenaManager::TriggerAmbientCollapse()
+{
+    // Random rather than nearest or farthest. The boss-driven destroyer is
+    // already positional — Wall Pound takes whatever she is standing next to —
+    // so making the ambient one positional too would give the player a second
+    // thing to steer. Random keeps it as weather: it says the building is
+    // failing, not that anything in particular chose this pillar.
+    TArray<AGothicRotundaPillar*> Survivors;
+    for (AGothicRotundaPillar* Pillar : Pillars)
+    {
+        if (Pillar && !Pillar->IsDestroyed())
+        {
+            Survivors.Add(Pillar);
+        }
+    }
+
+    if (Survivors.Num() == 0)
+    {
+        return;
+    }
+
+    AGothicRotundaPillar* Doomed = Survivors[FMath::RandRange(0, Survivors.Num() - 1)];
+
+    UE_LOG(LogTemp, Log,
+        TEXT("BossArena[%s]: ambient collapse — %s is coming down"),
+        *GetName(), *GetNameSafe(Doomed));
+
+    // The same entry point Wall Pound uses, so the player gets the same read:
+    // the full WarningDuration telegraph, then the slab. An ambient collapse
+    // that skipped the warning would be an unavoidable hit from a system the
+    // player cannot see coming, which is the one thing the telegraph exists to
+    // prevent.
+    Doomed->TriggerWallCollapse();
+
+    // TriggerWallCollapse marks the pillar destroyed immediately (the slab lands
+    // WarningDuration later), so OnPillarDestroyed has already fired by now and
+    // has already re-armed this timer at the new count. Nothing to do here —
+    // re-arming again would double-book the clock.
 }
