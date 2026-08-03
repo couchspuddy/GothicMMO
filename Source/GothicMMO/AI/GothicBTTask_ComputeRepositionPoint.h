@@ -83,6 +83,32 @@ protected:
     UPROPERTY(EditAnywhere, Category = "Reposition")
     float RepositionRadius = 450.f;
 
+    /**
+     * MINIMUM 2D displacement the computed point must sit from where the pawn
+     * currently stands. A floor on the move, not on the orbit.
+     *
+     * The orbit-at-current-separation rule above is right about WHERE to stand
+     * but says nothing about how far the walk actually is, and the two are not
+     * the same number: the point sits on an arc around the target, so the
+     * displacement is the CHORD, and the chord collapses as the pawn closes.
+     * The Bestial Lucid parks at a measured 125uu from the player, which with
+     * a 45-110 degree offset is a chord of only 96-205uu — against a capsule
+     * radius of 90uu (60 x 1.5 scale). A stock Move To's reach test adds the
+     * agent radius to its AcceptableRadius, so a walk that short can register
+     * as AlreadyAtGoal and return instantly with no path request and no log
+     * line, which is exactly the measured symptom: Reposition chosen on 92-100%
+     * of samples and the boss moving exactly 0.0uu across 299 of them.
+     *
+     * 250uu is that 90uu capsule plus room for any sane authored
+     * AcceptableRadius on top, so the floor holds no matter what the paired
+     * Move To node is tuned to — the fix does not depend on reading it.
+     * Reached by stepping the point outward first and only widening the
+     * bearing if the RepositionRadius ceiling runs out, because the outward
+     * step preserves the strafe's shape where a wide swing does not.
+     */
+    UPROPERTY(EditAnywhere, Category = "Reposition", meta = (ClampMin = "0.0"))
+    float MinRepositionDistance = 250.f;
+
     // -------------------------------------------------------------------------
     // Menacing hold — the "she doesn't just orbit forever" beat.
     //
@@ -101,7 +127,8 @@ protected:
      *  Divided at runtime by the arena aggression multiplier where a
      *  GothicBossArenaManager exists, so holds get rarer as pillars fall; the
      *  authored value is what rolls at the baseline 1.0 and in every level that
-     *  has no manager. */
+     *  has no manager, and it is a hard CEILING — aggression can only ever
+     *  reduce this, never inflate it (see the clamp in ExecuteTask). */
     UPROPERTY(EditAnywhere, Category = "Menace", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float HoldChance = 0.35f;
 
