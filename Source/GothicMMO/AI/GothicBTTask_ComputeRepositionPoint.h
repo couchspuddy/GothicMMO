@@ -99,15 +99,21 @@ protected:
      * line, which is exactly the measured symptom: Reposition chosen on 92-100%
      * of samples and the boss moving exactly 0.0uu across 299 of them.
      *
-     * 250uu is that 90uu capsule plus room for any sane authored
-     * AcceptableRadius on top, so the floor holds no matter what the paired
-     * Move To node is tuned to — the fix does not depend on reading it.
-     * Reached by stepping the point outward first and only widening the
-     * bearing if the RepositionRadius ceiling runs out, because the outward
-     * step preserves the strafe's shape where a wide swing does not.
+     * 200uu is that 90uu capsule plus a stock AcceptableRadius of 50 and half
+     * again on top, so the floor holds without this file having to read the
+     * paired node's tuning. Not higher: the maximum chord available at a fixed
+     * separation is 2*R, which at her 125uu is exactly 250uu, so a 250 floor
+     * would demand a near-180-degree swing every time — a lap around the
+     * player, not a strafe — and would force the radius concession constantly.
+     * 200 is reachable at ~106 degrees with the separation untouched.
+     *
+     * Reached by widening the bearing first and stepping the radius outward
+     * only when the capped arc cannot get there, because separation is the one
+     * budget a reposition must not spend (see the ordering note in
+     * ExecuteTask).
      */
     UPROPERTY(EditAnywhere, Category = "Reposition", meta = (ClampMin = "0.0"))
-    float MinRepositionDistance = 250.f;
+    float MinRepositionDistance = 200.f;
 
     // -------------------------------------------------------------------------
     // Menacing hold — the "she doesn't just orbit forever" beat.

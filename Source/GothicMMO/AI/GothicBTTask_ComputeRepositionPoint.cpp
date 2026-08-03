@@ -201,16 +201,31 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
     // authored in the Behavior Tree asset and can change without this file
     // knowing), enforce the floor here so the fix holds for any value of it.
     //
-    // Order of attack matters. Step the point OUTWARD first, keeping the
-    // authored bearing: solving R2 = R1*cos(t) + sqrt(d^2 - R1^2*sin^2(t)) for
-    // the law of cosines gives the smallest radius on the chosen bearing that
-    // clears the floor, and it preserves the strafe's shape — a lateral arc,
-    // just a wider one. Only if RepositionRadius runs out before the floor is
-    // met do we widen the bearing instead, which is the uglier lever because a
-    // very wide offset starts reading as a circle-around rather than a strafe.
-    // The point never moves INWARD: R2 is floored at OrbitRadius, so a
-    // reposition can still never become a retreat toward the player, which was
-    // the whole point of the orbit-at-current-separation rule above.
+    // Order of attack matters, and the arc goes FIRST. The separation is the
+    // one thing this task is not allowed to spend: the previous fix
+    // (orbit-at-current-separation, above) exists precisely because seating the
+    // point at a fixed radius sent an enemy in contact at ~150uu out to 350uu —
+    // a reposition point FARTHER from the player than the pawn already stood,
+    // which drops her out of Claw's 160uu reach and turns every cooldown beat
+    // into a walk back in. That fix is what took her from 0.51 to 1.168 DPS.
+    // Buying displacement by pushing the radius outward would hand it straight
+    // back, so the radius is the lever of LAST resort, not first.
+    //
+    // Widening the bearing costs nothing from that budget: at constant
+    // separation the chord is 2*R*sin(t/2), so at her measured 125uu, 106 deg
+    // buys 200uu and 170 deg buys 249uu — the same displacement the radius
+    // solve produced, with the pawn still standing exactly as close as she was.
+    // 170 deg is the hard stop; past that the "offset" is a flip to the far
+    // side of the target and stops reading as a strafe at all.
+    //
+    // Only when the capped arc still cannot clear the floor — the genuinely
+    // stacked or very-close case, where 2*R is itself under the floor and no
+    // arc exists that would do it — does the radius step out. That solve is
+    // R2 = R1*cos(t) + sqrt(d^2 - R1^2*sin^2(t)) from the law of cosines: the
+    // smallest radius on the already-widened bearing that reaches the floor,
+    // clamped to the authored RepositionRadius ceiling and never below the
+    // current separation. It is a concession, taken only where the alternative
+    // is another 0.0uu no-op walk.
     const float R1 = CurrentDistance2D;
     auto Displacement = [R1](float RadiusOut, float AngleRad)
     {
@@ -218,9 +233,25 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
             R1 * R1 + RadiusOut * RadiusOut - 2.f * R1 * RadiusOut * FMath::Cos(AngleRad)));
     };
 
+    const float MaxWidenedAngleRad = FMath::DegreesToRadians(170.f);
+
     float AngleRad    = FMath::DegreesToRadians(FMath::Abs(OffsetDeg));
     float PointRadius = OrbitRadius;
 
+    // Lever one: widen the arc, holding the separation.
+    if (Displacement(PointRadius, AngleRad) < MinRepositionDistance
+        && R1 > KINDA_SMALL_NUMBER && PointRadius > KINDA_SMALL_NUMBER)
+    {
+        const float CosNeeded =
+            (R1 * R1 + PointRadius * PointRadius - MinRepositionDistance * MinRepositionDistance)
+            / (2.f * R1 * PointRadius);
+        AngleRad = CosNeeded <= -1.f
+            ? MaxWidenedAngleRad
+            : FMath::Max(AngleRad, FMath::Acos(FMath::Clamp(CosNeeded, -1.f, 1.f)));
+        AngleRad = FMath::Min(AngleRad, MaxWidenedAngleRad);
+    }
+
+    // Lever two, only if the widest legible arc still falls short.
     if (Displacement(PointRadius, AngleRad) < MinRepositionDistance)
     {
         const float CosT = FMath::Cos(AngleRad);
@@ -232,21 +263,6 @@ EBTNodeResult::Type UGothicBTTask_ComputeRepositionPoint::ExecuteTask(
         }
         // Never inside the current separation, never outside the authored ceiling.
         PointRadius = FMath::Clamp(PointRadius, OrbitRadius, FMath::Max(OrbitRadius, RepositionRadius));
-    }
-
-    if (Displacement(PointRadius, AngleRad) < MinRepositionDistance
-        && R1 > KINDA_SMALL_NUMBER && PointRadius > KINDA_SMALL_NUMBER)
-    {
-        // Ceiling reached and still short — buy the rest with bearing. 170 deg
-        // is the hard stop: past that the "offset" is just a flip to the far
-        // side of the target and the arc stops reading as a strafe at all.
-        const float CosNeeded =
-            (R1 * R1 + PointRadius * PointRadius - MinRepositionDistance * MinRepositionDistance)
-            / (2.f * R1 * PointRadius);
-        AngleRad = CosNeeded <= -1.f
-            ? PI
-            : FMath::Max(AngleRad, FMath::Acos(FMath::Clamp(CosNeeded, -1.f, 1.f)));
-        AngleRad = FMath::Min(AngleRad, FMath::DegreesToRadians(170.f));
     }
 
     // Re-derive the bearing from the (possibly widened) angle, keeping the side
