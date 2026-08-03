@@ -165,6 +165,19 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|VitalPoint")
     int32 GetActiveVitalIndex() const { return ActiveVitalIndex; }
 
+    /**
+     * HitDetectionRadius scaled by the owning mesh's world scale, which is what
+     * hit detection and the debug draw actually use.
+     *
+     * The scale factor is the LARGEST component of the mesh's world scale, not
+     * the average. On a non-uniformly scaled rig the average under-scales the
+     * radius along the stretched axis, which is precisely the axis on which the
+     * vital is hardest to reach; and an over-generous radius still demands a hit
+     * on the body, so being generous is the safe direction to be wrong in.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|VitalPoint")
+    float GetEffectiveHitRadius() const;
+
     // ── Read highlight ────────────────────────────────────────────────────
 
     /**
@@ -205,11 +218,55 @@ public:
     float ShiftThreshold = 100.f;
 
     /**
-     * How close a hit needs to be to count as a vital point hit (cm).
-     * The shimmer visual should match this radius so the feedback is honest.
+     * How close a hit needs to be to count as a vital point hit (cm) on a
+     * 1.0-scale enemy. The shimmer visual should match this radius so the
+     * feedback is honest.
+     *
+     * This is the AUTHORED radius, not the effective one — it is multiplied by
+     * the owning mesh's world scale before use. See GetEffectiveHitRadius().
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|VitalPoint")
     float HitDetectionRadius = 30.f;
+
+    /**
+     * Projects the computed vital position onto the owner's collision surface
+     * before it is used for hit detection or the overlay glow.
+     *
+     * Off, the vital sits wherever bone origin + offset lands. Measured, that is
+     * two distinct failures: on a 4x-scaled rig (Bestial Lucid) the bone origins
+     * are buried 60-100cm inside the body, so no surface shot ever reaches them
+     * and the overlay has no surface pixels near enough to glow; and where an
+     * author has hand-tuned a +-50cm LocalOffset (Thrall) the point is pushed
+     * clean off the body into open air. Both are the same geometry bug — the
+     * vital is not ON the mesh — and one projection fixes both.
+     *
+     * EditAnywhere so it can be flipped on a placed actor while comparing
+     * against the debug draw.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|VitalPoint|Projection")
+    bool bProjectVitalToSurface = true;
+
+    /**
+     * How far inside the collision surface the projected vital is placed (cm,
+     * pre-scale). A vital sitting exactly ON the surface is a coin flip for
+     * grazing shots — the impact point of a trace lands a hair outside the hull
+     * and measures a positive distance. A few cm of inset costs nothing and
+     * makes the edge of the shimmer a real target.
+     *
+     * Scaled by the mesh's world scale alongside the radius, so it stays the
+     * same proportional depth on every enemy.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|VitalPoint|Projection")
+    float SurfaceInsetDepth = 5.f;
+
+    /**
+     * How far outside the bone the projection ray starts (cm, pre-scale). Only
+     * needs to clear the body's hull along the outward direction; the ray is
+     * also automatically extended past an off-body LocalOffset so a hand-authored
+     * point always sits between the ray's start and the surface.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|VitalPoint|Projection")
+    float MaxSurfaceProjectionDistance = 400.f;
 
     /**
      * Editor only — draws the actual hit volume so it can be compared against
@@ -338,10 +395,45 @@ protected:
 
     // ── Internal ─────────────────────────────────────────────────────────────
 
+    // ── Surface projection cache ─────────────────────────────────────────────
+    //
+    // The projection is a physics query, and GetCurrentVitalWorldLocation is
+    // called every tick by the overlay and again on every shot — so it is
+    // computed ONCE per shift and cached, matching the cadence the vital
+    // actually moves at (the ~5s timer, the damage threshold, and freeze).
+    //
+    // What is cached is the result in BONE SPACE, not world space. That is the
+    // whole trick: the per-frame path stays a single TransformPosition, so the
+    // projected vital rides the animation exactly as the raw bone+offset point
+    // did, and the shimmer and the hit volume still agree. The cost is that the
+    // projection reflects the pose at shift time — a limb that swings after the
+    // shift carries its vital along rather than re-hugging the new silhouette,
+    // which is invisible at these radii.
+
+    /** ActiveVitalIndex the cache below was computed for. INDEX_NONE = cold. */
+    mutable int32 ProjectionCacheIndex = INDEX_NONE;
+
+    /** Projected vital in the anchor bone's space. Meaningless unless bProjectionCacheValid. */
+    mutable FVector ProjectedBoneSpaceOffset = FVector::ZeroVector;
+
+    /** False when projection was skipped or failed — callers fall back to the raw point. */
+    mutable bool bProjectionCacheValid = false;
+
+    /**
+     * Recomputes the projection cache for the current ActiveVitalIndex and emits
+     * the VigilTimeline telemetry line. Const + mutable state so the per-frame
+     * const accessors can refresh it lazily on an index change; that lazy path
+     * is the ONLY thing that drives it, so every route that moves the vital
+     * (shift, freeze-snap, OnRep) is covered without each having to remember to.
+     */
+    void RefreshVitalProjection() const;
+
     /** Moves the active vital to the pre-committed NextVitalIndex and rolls a new one. */
     void ShiftVitalPoint();
 
     void RollNextVitalIndex();
+
+    /** Raw bone origin + transformed offset. No surface projection. */
     FVector ComputeWorldLocation(int32 Index) const;
     void OnShiftTimerFired();
     void SpawnShimmer();
