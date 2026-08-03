@@ -324,13 +324,26 @@ protected:
      *
      * The ratios that used to be quoted here ("~8.5x the reposition orbit, 10x
      * the engage distance") described the C++ CDO and NOTHING ELSE, which made
-     * them wrong everywhere they mattered. Blueprint children override both
-     * numbers: the Bestial Lucid runs LeashRange 10000 against a
-     * PreferredEngageDistance of 150 — a ratio of ~67x, not 10x — and the
-     * reposition radius is a property of the tree, not of this class (boss 350,
-     * Thrall 450). Read the values off the Blueprint, not off this comment.
+     * them wrong everywhere they mattered. Blueprint children and placed
+     * instances override the number to fit their room, and the reposition radius
+     * is a property of the tree, not of this class (boss 350, Thrall 450). Read
+     * the values off the Blueprint and the instance, not off this comment.
+     *
+     * KEPT AS A WARNING: this comment used to record that the Bestial Lucid ran
+     * LeashRange 10000. That single override is why she chased respawning
+     * players out of the Rotunda to the PlayerStart, with every part of the
+     * leash machinery below working correctly the whole time. See
+     * AGothicBossAIController_BestialLucid's constructor for the replacement.
+     *
+     * EDITANYWHERE, not EditDefaultsOnly. A placed enemy freezes its overrides at
+     * placement time, so an EditDefaultsOnly leash can never be repaired on an
+     * actor already standing in the level — the only remedy is to delete and
+     * re-place it. A leash radius is per-encounter data: an arena boss and a
+     * corridor patroller want different numbers out of the same class, and the
+     * entire point of the property is that it gets fitted to the room the enemy
+     * is guarding. That belongs on the instance.
      */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI")
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|AI")
     float LeashRange = 3000.f;
 
     // ── Leash / disengage ────────────────────────────────────────────────────

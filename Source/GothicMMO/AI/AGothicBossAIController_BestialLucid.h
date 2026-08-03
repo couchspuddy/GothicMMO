@@ -36,6 +36,8 @@ class GOTHICMMO_API AGothicBossAIController_BestialLucid : public AGothicBossAIC
 	GENERATED_BODY()
 
 public:
+	AGothicBossAIController_BestialLucid();
+
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnUnPossess() override;
 
