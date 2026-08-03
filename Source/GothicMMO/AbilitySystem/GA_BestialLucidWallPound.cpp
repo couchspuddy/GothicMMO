@@ -1,6 +1,7 @@
 // GA_BestialLucidWallPound.cpp
 
 #include "AbilitySystem/GA_BestialLucidWallPound.h"
+#include "GothicMMO.h"                      // LogVigilCombat
 #include "AI/GothicRotundaPillar.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "GameFramework/Actor.h"
@@ -74,7 +75,11 @@ void UGA_BestialLucidWallPound::EndAbility(
 
 void UGA_BestialLucidWallPound::HandleWallPoundSafetyTimeout()
 {
-    UE_LOG(LogTemp, Error,
+    // LogVigilCombat rather than LogTemp even though this is an Error and Errors
+    // survive the project's [Core.Log] LogTemp=Warning clamp: one channel means
+    // one grep. A verification run that filters for this ability's telemetry must
+    // not have to remember that the failure case lives somewhere else.
+    UE_LOG(LogVigilCombat, Error,
         TEXT("WallPound[%s]: force-ended after %.1fs — the Blueprint graph never called EndAbility. ")
         TEXT("Wire EndAbility to every completion pin of PlayMontageAndWait; until then this attack ")
         TEXT("burns its cooldown and would otherwise hold the attack-commitment lock forever."),
@@ -85,16 +90,32 @@ void UGA_BestialLucidWallPound::HandleWallPoundSafetyTimeout()
 
 void UGA_BestialLucidWallPound::ExecuteWallPoundImpact()
 {
+    AActor* Owner  = GetOwningActorFromActorInfo();
+    AActor* Avatar = GetAvatarActorFromActorInfo();
+
+    const UWorld* World = GetWorld();
+    const float Now = World ? World->GetTimeSeconds() : 0.f;
+
     // One pillar per activation. A notify on a looping montage section, or a
     // graph wired to call this on two pins, must not collapse the arena two
     // pillars at a time off a single attack.
-    if (bImpactFiredThisActivation)
+    const bool bGuardRejected = bImpactFiredThisActivation;
+
+    // Entry line, emitted BEFORE the guard and before every early return below.
+    // This function is called from the Blueprint graph, so its absence has two
+    // completely different causes — the graph never wired the call, or the call
+    // happened and found nothing — and the last verification run could not tell
+    // them apart from the outside. One line at the door settles it.
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|WallPound|IMPACT-called|avatar=%s|guard=%s|authority=%d"),
+        Now, *GetNameSafe(Avatar), *GetNameSafe(Avatar),
+        bGuardRejected ? TEXT("rejected-double-fire") : TEXT("passed"),
+        (Owner && Owner->HasAuthority()) ? 1 : 0);
+
+    if (bGuardRejected)
     {
         return;
     }
-
-    AActor* Owner = GetOwningActorFromActorInfo();
-    AActor* Avatar = GetAvatarActorFromActorInfo();
 
     if (!Owner || !Avatar || !Owner->HasAuthority())
     {
@@ -164,9 +185,10 @@ void UGA_BestialLucidWallPound::ExecuteWallPoundImpact()
         // volume, nav blocker. This ability only decided which pillar and when.
         NearestPillar->TriggerWallCollapse();
 
-        UE_LOG(LogTemp, Log,
-            TEXT("WallPound[%s]: struck %s at %.0fuu — collapse telegraph started"),
-            *Avatar->GetName(), *NearestPillar->GetName(), FMath::Sqrt(NearestDistSq));
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|WallPound|IMPACT-strike|pillar=%s|dist=%.0f|searchRadius=%.0f"),
+            Now, *Avatar->GetName(), *NearestPillar->GetName(),
+            FMath::Sqrt(NearestDistSq), SearchRadius);
     }
     else
     {
@@ -175,8 +197,8 @@ void UGA_BestialLucidWallPound::ExecuteWallPoundImpact()
         // chain does not know or care where the pillars are — a smash into bare
         // floor is the expected outcome of a player who kited her away from
         // them, and late in the fight there may be no pillars left at all.
-        UE_LOG(LogTemp, Log,
-            TEXT("WallPound[%s]: no surviving '%s' pillar within %.0f — the smash lands on empty floor"),
-            *Avatar->GetName(), *TerrainTag.ToString(), SearchRadius);
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|WallPound|IMPACT-whiff|searchRadius=%.0f|tag=%s|candidates=%d"),
+            Now, *Avatar->GetName(), SearchRadius, *TerrainTag.ToString(), Overlapping.Num());
     }
 }
