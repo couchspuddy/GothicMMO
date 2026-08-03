@@ -144,33 +144,23 @@ protected:
      * BACKSTOP on how long the charge stays dangerous, measured from the LAUNCH
      * (seconds). Not from activation — see the file header.
      *
-     * This is no longer the primary closer. The window normally ends on the
-     * controller's OnLeapLanded, which is the real end of the travel; this only
-     * catches a leap whose landing never arrives. So it wants to be an upper
-     * bound on the traversal, and over-running it is cheap where undershooting
-     * is not.
+     * THIS IS NOT A TUNING VALUE. The window's normal close is the landing:
+     * HandleLeapLanded fires on the controller's OnLeapLanded and the landing
+     * has always arrived first, so this backstop has never actually fired. It
+     * exists for the leap that never lands — one eaten by geometry, or a
+     * controller that loses the flight — and its only job is to stop the boss
+     * sweeping forever. Nothing about the charge's feel is set here.
      *
-     * WHY IT IS NOT 1.3. That number was justified as MaxChargeDistance /
-     * ChargeSpeed = 1500 / 1200 = 1.25s, which is arithmetically fine and wrong
-     * twice over: it counted the 0.8s stationary windup as travel, and 1200 is
-     * the BT task's speed, not the graph's. The graph launches at 1800 XY /
-     * 400 Z. Redone against the real numbers:
+     * Measured, not derived. Launch-to-landing over nine guarded leaps ran
+     * 0.824-0.943s, median 0.828. 1.3 is the worst of those plus ~35% headroom.
      *
-     *   horizontal  1500 / 1800                     = 0.83s
-     *   ballistic   2 * 400 / 980 (default gravity) = 0.82s
-     *
-     * Both say under a second, and both disagree with the measurement: she was
-     * observed still in the air and ARRIVING 1.2-1.5s after the old ability end
-     * at ~1.43s, i.e. roughly 1.8-2.0s of travel after the launch. Neither
-     * derivation accounts for her GravityScale, her 1.5x capsule, or a landing
-     * on a lower floor than the launch.
-     *
-     * 2.0 is the top of that measured arrival band. It is a STARTING POINT for a
-     * measured pass, not a tuned value — measure the launch-to-landed interval
-     * over several charges and set this a little above the worst one.
+     * The old 2.0 was reasoned from an observed ability-end time rather than
+     * measured from launch to landing, and it put the backstop more than twice
+     * the real traversal away — harmless while the landing keeps closing the
+     * window, and a very long tail of free sweeping on the day it does not.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Charge")
-    float ChargeDamageWindow = 2.0f;
+    float ChargeDamageWindow = 1.3f;
 
     /**
      * Seconds between sweeps.
