@@ -127,29 +127,62 @@ def _actor(world, step, key="actor"):
     return common.resolve_actor(_step_world(world, step), label)
 
 
-def _activate(pawn, slot_name):
+def _activate(pawn, slot_name, result_key):
     """Shared slot activation. OnFire/OnMelee used to exist as direct C++ calls
     and were deleted as duplicate damage paths -- they applied damage in
     ADDITION to the ability, on an ECC_Pawn capsule trace with no authority
     check. Everything now goes through the ability, which is also what input
-    drives, so driving the slot exercises the real path."""
+    drives, so driving the slot exercises the real path.
+
+    Returns the whole step payload rather than a bare bool. A false under
+    `result_key` used to be unreadable: TryActivateAbilityBySlot answers the
+    same silent false whether NO ability is bound to the slot or the bound one
+    refused to activate (GothicAbilitySystemComponent.cpp, the bare
+    `return false` after the map lookup misses). On a false the payload also
+    carries `slot_bound` and `registered_slot_count` off the ASC, so the empty
+    client-world map names itself instead of looking like a refused cast.
+
+    Deliberately no fallback route: if the slot path is broken, the step must
+    fail, not quietly succeed by some other means.
+    """
     asc = pawn.get_gothic_asc()
     if asc is None:
         raise LookupError("no ASC on %s" % pawn.get_name())
-    return bool(asc.try_activate_ability_by_slot(common.ability_slot(slot_name)))
+
+    activated = bool(asc.try_activate_ability_by_slot(common.ability_slot(slot_name)))
+    payload = {result_key: activated}
+
+    if not activated:
+        # try_read, not a direct call: GetRegisteredAbilitySlotCount is only
+        # BlueprintPure as of the client-map fix, so an older binary answers
+        # with an error object here rather than raising through the scenario.
+        count = common.try_read(
+            lambda: int(asc.get_registered_ability_slot_count()))
+        payload["slot"] = slot_name
+        payload["registered_slot_count"] = count
+        payload["slot_bound"] = (count > 0) if isinstance(count, int) else count
+        payload["failure_means"] = (
+            "no ability is bound to any slot on this ASC -- on a client world "
+            "that is the replicated-map defect, not a refused activation"
+            if count == 0 else
+            "an ability IS bound; activation itself was refused (cooldown, "
+            "cost, blocking tag, or not locally controlled for a "
+            "LocalPredicted ability)")
+
+    return payload
 
 
 @_action("fire")
 def _a_fire(world, step):
     """Fire the equipped weapon. Runs the real trace and damage path."""
     pawn = _actor(world, step)
-    return {"fired": _activate(pawn, "PRIMARY_FIRE")}
+    return _activate(pawn, "PRIMARY_FIRE", "fired")
 
 
 @_action("melee")
 def _a_melee(world, step):
     pawn = _actor(world, step)
-    return {"melee": _activate(pawn, "LIGHT_ATTACK")}
+    return _activate(pawn, "LIGHT_ATTACK", "melee")
 
 
 @_action("reload")
@@ -391,11 +424,7 @@ def _a_grant_test_items(world, step):
 def _a_activate(world, step):
     """Activate an ability by slot through the ASC, bypassing input."""
     pawn = _actor(world, step)
-    asc = pawn.get_gothic_asc()
-    if asc is None:
-        raise LookupError("no ASC on %s" % pawn.get_name())
-    slot = common.ability_slot(step.get("slot", "ABILITY1"))
-    return {"activated": bool(asc.try_activate_ability_by_slot(slot))}
+    return _activate(pawn, step.get("slot", "ABILITY1"), "activated")
 
 
 DEFAULT_DAMAGE_EFFECT = "/Game/Data/Effects/GE_Damage.GE_Damage_C"

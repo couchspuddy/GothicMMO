@@ -382,7 +382,7 @@ class VigilPIETools(unreal.ToolsetDefinition):
 
     @toolset_registry.tool_call
     @staticmethod
-    def describe_combatant(actor_label: str) -> str:
+    def describe_combatant(actor_label: str, world: str = "server") -> str:
         """Deep state dump for one live pawn.
 
         Reads GAS vitals, Steadfast charge and conversion latch, vital point
@@ -392,11 +392,16 @@ class VigilPIETools(unreal.ToolsetDefinition):
 
         Args:
             actor_label: Pawn name from list_combatants. A unique substring works.
+                Labels are per-world -- resolve it in the same world you listed it
+                from, or you will describe a different pawn than you meant to.
+            world: "server" (default, preserves prior behaviour byte-for-byte),
+                "client"/"client2"/..., a bare PIE instance index, or a
+                "UEDPIE_<n>_" spelling. See vigil_pie_common.resolve_world.
 
         Returns:
             JSON state dump for the resolved pawn.
         """
-        world = common.require_world()
+        world = common.resolve_world(world)
         actor = common.resolve_actor(world, actor_label)
 
         out = {
@@ -522,7 +527,8 @@ class VigilPIETools(unreal.ToolsetDefinition):
     @staticmethod
     def probe_start(actor_labels: str,
                     metrics: str,
-                    interval_seconds: float = 0.1) -> str:
+                    interval_seconds: float = 0.1,
+                    world: str = "server") -> str:
         """Start recording state over time without blocking the game.
 
         Samples on the engine tick into a memory buffer and returns immediately.
@@ -534,7 +540,9 @@ class VigilPIETools(unreal.ToolsetDefinition):
         Steadfast fill curve or a vital point shift.
 
         Args:
-            actor_labels: Comma-separated pawn names from list_combatants.
+            actor_labels: Comma-separated pawn names from list_combatants, and
+                resolved in the world below -- the same name picks out a
+                different pawn per world.
             metrics: Comma-separated metric keys. See capabilities for the
                 full list -- it is generated from the readers, so it is always
                 current. For crowd control, sample `tags`: it is the only
@@ -543,11 +551,14 @@ class VigilPIETools(unreal.ToolsetDefinition):
                 runtime.
             interval_seconds: Sample period. 0.1 is usually right; 0.016 for
                 single-frame events like a hit registration window.
+            world: "server" (default, preserves prior behaviour byte-for-byte),
+                "client"/"client2"/..., a bare PIE instance index, or a
+                "UEDPIE_<n>_" spelling. See vigil_pie_common.resolve_world.
 
         Returns:
             JSON confirming what is being recorded.
         """
-        world = common.require_world()
+        world = common.resolve_world(world)
         if probe.is_running():
             return common.as_json({
                 "started": False,
