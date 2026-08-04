@@ -262,6 +262,12 @@ void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
                 // player-facing), driven by RegisterEnemyHealthBar on hit — not
                 // the old world-space HealthBarWidget, which never faced the
                 // camera and whose widget was never bound to this enemy's health.
+                //
+                // Unfiltered on purpose: SetCombatTarget refuses unfightable
+                // actors itself. This site is why that filter lives there — a
+                // downed pawn keeps refreshing stimuli, so acquiring here without
+                // the test handed the body back to the enemy that had just
+                // dropped it, once per stimulus, forever.
                 SetCombatTarget(Actor);
                 break;
             }
@@ -380,6 +386,64 @@ void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget)
     if (AIC && !AIC->IsAcceptingCombatTargets())
     {
         return;
+    }
+
+    // Fightability is filtered HERE, at the choke point, and not at each caller.
+    //
+    // Every acquisition source — perception (OnPerceptionUpdated), the encounter
+    // volume's overlap aggro and its wave hand-off, GA_FeralBreakout's rally,
+    // retaliation, and the leash tick's drop-rescan — arrives through this one
+    // function, so one test covers all of them and no future caller can
+    // reintroduce the hole by forgetting to check. The alternative, a check at
+    // each of the four external call sites, is exactly how the bug happened: PR
+    // #23 taught the controller and NotifyDamagedBy about downed targets and
+    // missed perception, so a still-perceived downed body was handed back at
+    // stimulus rate — TargetDrop/TargetAcquire oscillating every ~2s until the
+    // enemy ended up targetless with a live survivor 68uu away.
+    //
+    // Nothing legitimately sets an unfightable target today: all four callers
+    // already gate on IsAlive or on IsFightableTarget, so this only ever rejects
+    // what they meant to reject anyway. Solo is unchanged — a lone living player
+    // is always fightable.
+    //
+    // A null target passes through as an explicit clear. Clearing is normally
+    // ClearCombatTarget's job, but refusing a null here would turn a
+    // SetCombatTarget(nullptr) into a silent no-op that leaves the old latch set,
+    // which is a far worse failure than the one this guard exists to prevent.
+    if (NewTarget && !AGothicCharacterBase::IsFightableActor(NewTarget))
+    {
+        // Edge-latched on the ACTOR, like the retaliation reject line. A downed
+        // pawn that stays in the enemy's cone is re-sensed continuously, so an
+        // unlatched line here would print at stimulus rate — the very noise that
+        // made this bug hard to read in the timeline. The latch releases only
+        // when that same actor is accepted (it got back up), so the next genuine
+        // refusal of them is news again.
+        if (LastAcquireRejectTarget.Get() != NewTarget)
+        {
+            LastAcquireRejectTarget = NewTarget;
+
+            const AGothicCharacterBase* RejectedChar = Cast<AGothicCharacterBase>(NewTarget);
+            const TCHAR* Reason = (RejectedChar && !RejectedChar->IsAlive())
+                ? TEXT("dead")
+                : TEXT("downed");
+
+            const UWorld* World = GetWorld();
+            UE_LOG(LogVigilCombat, Verbose,
+                TEXT("VigilTimeline|t=%.3f|%s|AcquireReject|actor=%s|reason=%s"),
+                World ? World->GetTimeSeconds() : 0.f, *GetNameSafe(this),
+                *GetNameSafe(NewTarget), Reason);
+        }
+
+        return;
+    }
+
+    // Re-arm only for the actor that was being refused. Clearing the latch on any
+    // accepted target would defeat it in the exact case it is for: an enemy
+    // alternating between a downed body (refused) and the survivor (accepted)
+    // would re-arm on every accept and log the refusal again each time round.
+    if (LastAcquireRejectTarget.Get() == NewTarget)
+    {
+        LastAcquireRejectTarget = nullptr;
     }
 
     CombatTarget = NewTarget;

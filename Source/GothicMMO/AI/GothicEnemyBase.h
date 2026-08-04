@@ -65,6 +65,12 @@ public:
      * AGothicEnemyAIController::IsAcceptingCombatTargets. This is the single
      * choke point every aggro source shares (perception, encounter volumes,
      * pack propagation), so gating it here is what makes a disengage stick.
+     *
+     * It is also where fightability is enforced: an unfightable target (dead, or
+     * a DOWNED player) is refused outright rather than latched, through the
+     * shared AGothicCharacterBase::IsFightableActor. Callers do not need to
+     * pre-filter — and must not rely on being able to skip this by calling in
+     * with a target they know is down. A null passes through as a clear.
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Enemy")
     void SetCombatTarget(AActor* NewTarget);
@@ -335,6 +341,22 @@ protected:
      * never be the thing keeping one alive.
      */
     TWeakObjectPtr<AActor> LastRetaliationRejectAttacker;
+
+    /**
+     * Edge-trigger for the AcquireReject timeline line, and nothing else — no
+     * behaviour reads it.
+     *
+     * Same shape and same reason as LastRetaliationRejectAttacker above, against a
+     * faster source: perception re-senses a downed body every stimulus refresh, so
+     * an unlatched reject line writes continuously for as long as the body lies in
+     * view. Holding the last refused actor prints the refusal once. It releases
+     * only when that actor is ACCEPTED — not on any accepted target — so an enemy
+     * alternating between the body and the survivor stays quiet.
+     *
+     * Weak, not raw: a refused actor is by definition one on its way out (downed or
+     * dead), and this must never be the thing keeping it alive.
+     */
+    TWeakObjectPtr<AActor> LastAcquireRejectTarget;
 
     /**
      * Whether losing sight of the combat target for TargetForgetSeconds drops it.
