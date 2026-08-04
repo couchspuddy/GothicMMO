@@ -423,13 +423,29 @@ class VigilPIETools(unreal.ToolsetDefinition):
 
         steadfast = common.component(actor, "GothicSteadfastComponent")
         if steadfast is not None:
+            # THE FILL RATE IS NOT THE COMPONENT PROPERTY.
+            # GothicSteadfastComponent.cpp:65-66 fills at
+            #   max(0, FillRatePerSecond + AttributeSet->GetSteadfastRate())
+            # and SteadfastRate is gear-rolled, so the component property alone
+            # reported 5.0 while the pawn was measurably filling at 12.7/s.
+            # Both halves are published, and the sum is labelled "effective".
+            base_rate = common.try_read(
+                lambda: float(steadfast.get_editor_property("fill_rate_per_second")))
+            rate_attr = common.attribute_current(
+                common.attribute_set(actor), "steadfast_rate")
+            if isinstance(base_rate, float) and rate_attr is not None:
+                effective = round(max(0.0, base_rate + rate_attr), 3)
+            else:
+                effective = None
+
             out["steadfast"] = {
                 "current": common.try_read(
                     lambda: round(float(steadfast.get_current_steadfast()), 3)),
                 "max": common.try_read(
                     lambda: round(float(steadfast.get_max_steadfast()), 3)),
-                "fill_rate_per_second": common.try_read(
-                    lambda: steadfast.get_editor_property("fill_rate_per_second")),
+                "base_fill_rate_per_second": base_rate,
+                "steadfast_rate_attribute": rate_attr,
+                "effective_fill_rate_per_second": effective,
                 # Latch state lives on the character, not the component. If the
                 # component value is healthy and this is False while holding the
                 # key, the defect is upstream in the Input Action trigger.

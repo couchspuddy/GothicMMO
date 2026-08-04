@@ -304,12 +304,15 @@ class VigGASTools(unreal.ToolsetDefinition):
         # which is a code defect, not an absent component. Let it raise. The
         # only thing that legitimately means "this actor has no ASC" is the
         # library returning None, which is handled below.
-        if hasattr(actor, "get_player_state"):
-            ps = actor.get_player_state()
-            if ps:
-                asc = lib.get_ability_system_component(ps)
-                if asc:
-                    return asc
+        # Resolved through common.player_state, NOT hasattr(actor,
+        # "get_player_state"): APawn::GetPlayerState is a non-UFUNCTION
+        # template and is absent from the bindings on every pawn, so the old
+        # hasattr guard was never true and this fallback never ran.
+        ps = common.player_state(actor)
+        if ps:
+            asc = lib.get_ability_system_component(ps)
+            if asc:
+                return asc
 
         return {
             "actor": actor.get_actor_label(),

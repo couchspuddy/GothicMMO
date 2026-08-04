@@ -1394,21 +1394,122 @@ class ItemNotFound(LookupError):
     """Nothing in the inventory matched the requested item address."""
 
 
+def player_state(pawn):
+    """The APlayerState for `pawn`, or None. Tries every route that exists.
+
+    THE TRAP THIS EXISTS FOR
+    ------------------------
+    `APawn::GetPlayerState()` is a TEMPLATE (Pawn.h) and carries no UFUNCTION,
+    so it is NOT in the Python bindings -- `pawn.get_player_state` is absent on
+    every pawn, always. Code that probed for it with getattr/hasattr therefore
+    concluded "this is not a player pawn" about the live player and reported
+    that as fact. The harness inventory actions were unusable for exactly this
+    reason.
+
+    What DOES exist is the reflected data behind it:
+      1. APawn::PlayerState  -- UPROPERTY (Pawn.h, replicated) -> "player_state"
+      2. AController::PlayerState -- UPROPERTY (Controller.h) -> "player_state",
+         reached through APawn::GetController, which IS a UFUNCTION.
+      3. the old getter, kept last purely so a future engine version that
+         exports it is not ignored.
+
+    Returns None (never raises) so callers can phrase their own domain error;
+    `player_state_routes` reports which route answered, for diagnostics.
+    """
+    for _route, value in _player_state_candidates(pawn):
+        if is_valid(value):
+            return value
+    return None
+
+
+def player_state_route(pawn):
+    """Which route in `player_state` answered for this pawn, or None."""
+    for route, value in _player_state_candidates(pawn):
+        if is_valid(value):
+            return route
+    return None
+
+
+def _player_state_candidates(pawn):
+    """(route_name, value_or_None) for each route, evaluated lazily in order."""
+    yield ("pawn.player_state",
+           try_read_or_none(lambda: pawn.get_editor_property("player_state")))
+
+    controller = try_read_or_none(lambda: pawn.get_controller())
+    if is_valid(controller):
+        yield ("controller.player_state",
+               try_read_or_none(
+                   lambda: controller.get_editor_property("player_state")))
+
+    getter = getattr(pawn, "get_player_state", None)
+    if getter is not None:
+        yield ("pawn.get_player_state()", try_read_or_none(getter))
+
+
+def try_read_or_none(fn):
+    """try_read, but a failure is None instead of an error dict.
+
+    try_read returns a dict describing the failure, which is right for a JSON
+    dump and wrong for control flow -- a dict is truthy, so `if try_read(...)`
+    treats every failure as a success.
+    """
+    value = try_read(fn)
+    if isinstance(value, dict):
+        return None
+    return value
+
+
+def attribute_set(actor):
+    """The UGothicAttributeSet for `actor`, or None.
+
+    AGothicCharacterBase::GetAttributeSet (GothicCharacterBase.h:71-72) covers
+    the player and every Accursed; the PlayerState hop is the fallback for a
+    pawn whose set is owned by its state.
+
+    Note the deliberate absence of any FGameplayAttribute: one cannot be built
+    from a string in Python (the TFieldPath that identifies the attribute is
+    left null), which is why every read here goes through the attribute set's
+    BlueprintReadOnly FGameplayAttributeData UPROPERTYs instead.
+    """
+    attrs = try_read_or_none(lambda: actor.get_attribute_set())
+    if is_valid(attrs):
+        return attrs
+
+    state = player_state(actor)
+    if state is not None:
+        attrs = try_read_or_none(lambda: state.get_attribute_set())
+        if is_valid(attrs):
+            return attrs
+    return None
+
+
+def attribute_current(attrs, property_name):
+    """CurrentValue of one FGameplayAttributeData UPROPERTY, or None.
+
+    `property_name` is the PYTHON spelling of the UPROPERTY -- SteadfastRate
+    arrives here as "steadfast_rate".
+    """
+    if attrs is None:
+        return None
+    data = try_read_or_none(lambda: attrs.get_editor_property(property_name))
+    if data is None:
+        return None
+    return try_read_or_none(lambda: float(data.get_editor_property("current_value")))
+
+
 def inventory_component(pawn):
     """The live UGothicInventoryComponent for `pawn`. Raises if unreachable."""
-    getter = getattr(pawn, "get_player_state", None)
-    if getter is None:
-        raise InventoryUnavailable(
-            "%s has no get_player_state, so it is not a player pawn. The "
-            "inventory lives on AGothicPlayerState (GothicPlayerState.h:70-72), "
-            "never on the character." % pawn.get_name())
-
-    state = getter()
+    state = player_state(pawn)
     if state is None:
         raise InventoryUnavailable(
-            "%s has no PlayerState yet. In PIE the PlayerState arrives a frame "
-            "or two after the pawn; schedule the step slightly later."
-            % pawn.get_name())
+            "No PlayerState reachable from %s, so no inventory. Tried the "
+            "APawn::PlayerState UPROPERTY, the pawn's controller's "
+            "AController::PlayerState, and the (normally absent, non-UFUNCTION) "
+            "GetPlayerState getter. If this is genuinely the player pawn, the "
+            "usual cause is timing: in PIE the PlayerState arrives a frame or "
+            "two after the pawn, so schedule the step slightly later. The "
+            "inventory lives on AGothicPlayerState (GothicPlayerState.h:70-72), "
+            "never on the character." % pawn.get_name())
 
     inv = try_read(lambda: state.get_editor_property("inventory_component"))
     if isinstance(inv, dict):       # try_read error object, not a component

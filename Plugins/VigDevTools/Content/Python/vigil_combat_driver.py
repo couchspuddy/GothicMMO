@@ -301,6 +301,102 @@ def _a_convert(world, step):
     return {"converted": bool(pawn.convert_steadfast_to_reserve())}
 
 
+@_action("set_steadfast")
+def _a_set_steadfast(world, step):
+    """Force Steadfast to `value` (0..MaxSteadfast). Dev harness only.
+
+    WHY THIS EXISTS: nothing in the game drains Steadfast on demand. Reloads
+    cost 1-3 points and convert_steadfast only pays out when the pawn can
+    afford the cost, so the 0/1/2-pip band thresholds could not be driven to a
+    chosen value -- they were untestable, not unverified.
+
+    HOW IT WRITES, and why not a GameplayEffect: a GE applied with a default
+    FPredictionKey silently applies nothing and returns an invalid handle, with
+    no log. So this uses the two routes the C++ itself uses.
+
+      DOWN  -- UGothicSteadfastComponent::TryConvertSteadfast(delta, 0.0)
+               (BlueprintCallable, GothicSteadfastComponent.h:38-39). It
+               subtracts exactly `delta` via the same AttributeSet->SetSteadfast
+               the fill tick uses, and the ammo grant is the caller's job, so
+               passing 0.0 makes it a pure drain with no ammo side effect.
+      UP    -- write the FGameplayAttributeData UPROPERTY on the attribute set
+               (BaseValue and CurrentValue together), which is the same field
+               SetSteadfast lands on. This is the raw route; it is acceptable
+               in a dev tool and nowhere else. It is verified by re-reading,
+               and raises rather than reporting a write it did not achieve.
+
+    AUTHORITY ONLY. The fill tick is server-authoritative
+    (GothicSteadfastComponent.cpp:40-42), so a client-side poke is overwritten
+    on the next replication.
+    """
+    pawn = _actor(world, step)
+
+    component = common.component(pawn, "GothicSteadfastComponent")
+    if component is None:
+        raise LookupError(
+            "%s has no UGothicSteadfastComponent; components present: %s"
+            % (pawn.get_name(), common.component_names(pawn)))
+
+    if not bool(common.try_read_or_none(lambda: pawn.has_authority())):
+        raise RuntimeError(
+            "set_steadfast needs authority -- Steadfast accumulation is "
+            "server-side (GothicSteadfastComponent.cpp:40-42) and a client "
+            "write is overwritten on the next replication. Target the "
+            "server-world pawn (list_combatants(world=\"server\")).")
+
+    if "value" not in step:
+        raise ValueError("set_steadfast needs a \"value\" (0..MaxSteadfast)")
+
+    maximum = float(component.get_max_steadfast())
+    target = max(0.0, min(float(step["value"]), maximum))
+    before = float(component.get_current_steadfast())
+
+    if target < before:
+        component.try_convert_steadfast(before - target, 0.0)
+        route = "TryConvertSteadfast drain"
+    elif target > before:
+        route = _raise_steadfast(pawn, target)
+    else:
+        route = "no change"
+
+    after = float(component.get_current_steadfast())
+    if abs(after - target) > 0.01:
+        raise RuntimeError(
+            "set_steadfast asked for %.3f but the attribute reads %.3f after "
+            "the write (was %.3f, route: %s). Do not treat the pip state as "
+            "set." % (target, after, before, route))
+
+    return {"requested": round(float(step["value"]), 3),
+            "clamped_to": round(target, 3),
+            "before": round(before, 3),
+            "after": round(after, 3),
+            "max": round(maximum, 3),
+            "route": route}
+
+
+def _raise_steadfast(pawn, target):
+    """Push Steadfast UP by writing the attribute data struct. Returns the route.
+
+    Python hands back a COPY of an FGameplayAttributeData, so the copy is
+    edited and then written back to the UPROPERTY -- editing the copy in place
+    changes nothing on the actor, which is the failure mode to watch for here.
+    BaseValue and CurrentValue are both set: the fill tick reads CurrentValue,
+    while replication and any later aggregation start from BaseValue, and
+    leaving them disagreeing produces a value that snaps back under load.
+    """
+    attrs = common.attribute_set(pawn)
+    if attrs is None:
+        raise LookupError(
+            "No UGothicAttributeSet on %s or its PlayerState, so Steadfast "
+            "cannot be raised." % pawn.get_name())
+
+    data = attrs.get_editor_property("steadfast")
+    data.set_editor_property("base_value", target)
+    data.set_editor_property("current_value", target)
+    attrs.set_editor_property("steadfast", data)
+    return "attribute data write (BaseValue+CurrentValue)"
+
+
 @_action("swap_weapon")
 def _a_swap(world, step):
     pawn = _actor(world, step)

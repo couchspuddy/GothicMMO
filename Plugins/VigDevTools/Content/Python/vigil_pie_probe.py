@@ -360,14 +360,15 @@ def _asc(actor):
     if common.is_valid(asc):
         return asc
 
-    state_getter = getattr(actor, "get_player_state", None)
-    if state_getter is not None:
-        state = common.try_read(state_getter)
-        if common.is_valid(state):
-            asc = common.try_read(
-                lambda: library.get_ability_system_component(state))
-            if common.is_valid(asc):
-                return asc
+    # NOT getattr(actor, "get_player_state"): that method is non-UFUNCTION and
+    # absent from every pawn, so this fallback never once ran. See
+    # vigil_pie_common.player_state.
+    state = common.player_state(actor)
+    if common.is_valid(state):
+        asc = common.try_read(
+            lambda: library.get_ability_system_component(state))
+        if common.is_valid(asc):
+            return asc
 
     return None
 
