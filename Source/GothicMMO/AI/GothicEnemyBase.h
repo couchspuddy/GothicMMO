@@ -311,6 +311,21 @@ protected:
     bool bRetaliationOverridesCurrentTarget = false;
 
     /**
+     * Edge-trigger for the RetaliationReject timeline line, and nothing else — no
+     * behaviour reads it.
+     *
+     * Retaliation is evaluated per damage event, and a damage event is per ROUND at
+     * the player's fire rate, so an unlatched log here writes several identical
+     * lines a second while a burst lands. Holding the last rejected attacker means
+     * the refusal prints on the transition and stays quiet afterwards; it clears
+     * when a target is actually taken, so the next real refusal still shows up.
+     *
+     * Weak, not raw: this outlives the attacker's pawn across a respawn, and it must
+     * never be the thing keeping one alive.
+     */
+    TWeakObjectPtr<AActor> LastRetaliationRejectAttacker;
+
+    /**
      * Whether losing sight of the combat target for TargetForgetSeconds drops it.
      *
      * DEFAULT FALSE, and that is a design decision waiting on a playtest rather

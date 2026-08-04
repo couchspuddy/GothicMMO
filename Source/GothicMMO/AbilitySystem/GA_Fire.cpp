@@ -10,6 +10,7 @@
 #include "AI/GothicVitalPointComponent.h"
 #include "Character/GothicPlayerCharacter.h"
 #include "Camera/CameraComponent.h"
+#include "GameFramework/Controller.h"           // GetPlayerViewPoint, the no-camera fallback
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -368,12 +369,75 @@ namespace
 
 void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 {
-    UCameraComponent* Camera = Char->FindComponentByClass<UCameraComponent>();
     UWorld* World = Char->GetWorld();
 
-    if (!Camera || !World)
+    // Only half of the old `!Camera || !World` guard survives as a bail. A missing
+    // world is unrecoverable and should never happen; a missing camera is neither,
+    // and treating it as fatal is what made a remote player's shots vanish. It also
+    // returned in silence, above every line in this function, which is why the
+    // symptom read as "activated: true and then nothing at all".
+    if (!World)
     {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("GA_Fire: %s has no world — fire trace abandoned."), *GetNameSafe(Char));
         return;
+    }
+
+    // ── Where the shot comes from ────────────────────────────────────────────
+    // This function used to read the camera unconditionally. That is right for the
+    // pawn whose camera it actually is and wrong everywhere else, because GA_Fire is
+    // LocalPredicted: the authoritative half that calls this runs on the SERVER for
+    // every player, remote ones included. A remote pawn's server-side copy does own a
+    // UCameraComponent — it is a default subobject on AGothicPlayerCharacter, so it is
+    // present on every instance — but nothing makes it point where that player is
+    // looking. It is parented to an animation bone and resolves bUsePawnControlRotation
+    // against a control rotation the server only learns at move-update cadence.
+    //
+    // So the camera is used exactly where it is the genuine view — locally controlled —
+    // and everything else falls through to the two sources the engine provides for
+    // precisely this case:
+    //
+    //   controller — AController::GetPlayerViewPoint, which resolves through the view
+    //                target and works server-side for a player controller.
+    //   aim        — the pawn's eye height plus GetBaseAimRotation, which is built to
+    //                answer "where is this pawn aiming" without a local view.
+    //
+    // The locally-controlled path is byte-identical to the old code: the camera's
+    // component rotation Vector() is its forward vector, and Start is its location.
+    // origin= in the Fire line below records which source fired, so a multiplayer pass
+    // can separate a bad view from a bad trace instead of inferring it.
+    FVector  ViewLocation = FVector::ZeroVector;
+    FRotator ViewRotation = FRotator::ZeroRotator;
+    const TCHAR* OriginSource = TEXT("aim");
+    bool bHaveView = false;
+
+    UCameraComponent* Camera = Char->IsLocallyControlled()
+        ? Char->FindComponentByClass<UCameraComponent>()
+        : nullptr;
+
+    if (Camera)
+    {
+        ViewLocation = Camera->GetComponentLocation();
+        ViewRotation = Camera->GetComponentRotation();
+        OriginSource = TEXT("camera");
+        bHaveView = true;
+    }
+    else if (AController* OwningController = Char->GetController())
+    {
+        OwningController->GetPlayerViewPoint(ViewLocation, ViewRotation);
+        OriginSource = TEXT("controller");
+        bHaveView = true;
+    }
+
+    // A view point at the world origin is not a view point. GetPlayerViewPoint fills
+    // its outputs unconditionally, so a controller with no view target yet hands back
+    // zeroes rather than failing — which would fire every shot from (0,0,0) and read
+    // in the log as a clean miss forever.
+    if (!bHaveView || ViewLocation.IsNearlyZero())
+    {
+        ViewLocation = Char->GetActorLocation() + FVector(0.f, 0.f, Char->BaseEyeHeight);
+        ViewRotation = Char->GetBaseAimRotation();
+        OriginSource = TEXT("aim");
     }
 
     // Read stats from the active weapon data, falling back to GA_Fire's own defaults
@@ -393,11 +457,13 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     // these on is what finally makes the reticle honest.
     const float SpreadDegrees = Char->IsAiming() ? ADSSpreadDegrees : HipFireSpreadDegrees;
 
-    const FVector AimDir = SpreadDegrees > 0.f
-        ? FMath::VRandCone(Camera->GetForwardVector(), FMath::DegreesToRadians(SpreadDegrees))
-        : Camera->GetForwardVector();
+    const FVector ViewForward = ViewRotation.Vector();
 
-    const FVector Start = Camera->GetComponentLocation();
+    const FVector AimDir = SpreadDegrees > 0.f
+        ? FMath::VRandCone(ViewForward, FMath::DegreesToRadians(SpreadDegrees))
+        : ViewForward;
+
+    const FVector Start = ViewLocation;
     const FVector End   = Start + (AimDir * EffectiveRange);
 
     FHitResult Hit;
@@ -442,7 +508,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
         UE_LOG(LogVigilCombat, Verbose,
             TEXT("VigilTimeline|t=%.3f|%s|Fire|%s|victim=%s|impact=%s|vital=%d|distToVital=%.1f|")
-            TEXT("raw=%.1f|traceStart=%s|aimDir=%s|pointBlank=%d"),
+            TEXT("raw=%.1f|traceStart=%s|aimDir=%s|pointBlank=%d|origin=%s"),
             TimelineNow,
             *GetNameSafe(Char),
             Victim ? TEXT("HIT") : TEXT("MISS"),
@@ -453,7 +519,8 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
             RawDamage,
             *Start.ToCompactString(),
             *AimDir.ToCompactString(),
-            bPointBlank ? 1 : 0);
+            bPointBlank ? 1 : 0,
+            OriginSource);
     };
 
     if (!bHit || !Hit.GetActor())
