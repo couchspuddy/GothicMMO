@@ -581,42 +581,48 @@ def _apply_damage(target, amount, effect_path, instigator=None):
     a Thrall with 8 Defense loses (amount - 8). Pass generously when the intent
     is simply to kill.
 
-    WHO DEALT IT
-    ------------
-    With no `instigator`, the spec is built from the TARGET's own ASC and the
-    victim is named as its own attacker. That is the historical shape and it is
-    kept as the default so existing scenarios do not change meaning, but it has
-    two consequences worth knowing before reading any result produced by it:
+    WHO DEALT IT — TWO SHAPES, TWO FORMULAS
+    ---------------------------------------
+    WITH an `instigator`:   health change = max(1, Raw + instigator AttackPower
+                            - target Defense)
+    WITHOUT an instigator:  health change = max(1, Raw - target Defense)
 
-      * The VICTIM'S OWN AttackPower is what gets added. PostGameplayEffectExecute
-        reads the bonus off Context.GetOriginalInstigatorAbilitySystemComponent()
-        (GothicAttributeSet.cpp:170, :218-222), and now that the context is built
-        through MakeDamageContext that resolves to the victim's own ASC, so the
-        health change is max(1, Raw + victim AttackPower - victim Defense). No
-        ATTACKER's AttackPower is exercised, which is the real point.
-      * NotifyDamagedBy never fires with a real attacker
-        (GothicAttributeSet.cpp:246-268 skips it for self-damage), so
-        retaliation cannot be tested by harness damage at all.
+    The two shapes build their context differently and deliberately so.
 
-    Passing `instigator` fixes both by mirroring the project's blessed route,
-    UGothicAbilitySystemComponent::ApplyEffectToASC: make the spec off the
-    SOURCE's ASC and apply it to the target's.
+    An instigated hit mirrors the project's blessed route,
+    UGothicAbilitySystemComponent::ApplyEffectToASC: the spec is made off the
+    ATTACKER's ASC and applied to the target's, and the context comes from
+    UGothicAbilitySystemComponent::MakeDamageContext
+    (GothicAbilitySystemComponent.cpp:255-276) — the same static every C++ damage
+    site uses, now exposed to Python as a BlueprintCallable static.
 
-    The context is now built through UGothicAbilitySystemComponent::MakeDamageContext
-    (GothicAbilitySystemComponent.cpp:255-276), the same static every C++ damage
-    site uses, exposed to Python as a BlueprintCallable static.
-
-    THE PREVIOUS NOTE HERE WAS WRONG and this path silently carried AttackPower 0
-    for as long as it stood. It claimed stock make_effect_context() was equivalent
-    because the ASC's owner is the PlayerState, which implements
-    IAbilitySystemInterface. The owner is the CONTROLLER: AGothicCharacterBase
-    passes GetOwner() to InitializeGAS (GothicCharacterBase.cpp:100) for players
-    and enemies alike. A Controller has no ASC and implements no
-    IAbilitySystemInterface, so GetOriginalInstigatorAbilitySystemComponent()
-    came back null and the AttackBonus term at GothicAttributeSet.cpp:222 --
-    max(1, Raw + AttackBonus - Defense) -- was 0 no matter who was named.
+    THE NOTE THAT USED TO STAND HERE WAS WRONG, and instigated harness damage
+    silently carried AttackPower 0 for as long as it stood. It claimed stock
+    make_effect_context() was equivalent because the ASC's owner is the
+    PlayerState, which implements IAbilitySystemInterface. The owner is the
+    CONTROLLER: AGothicCharacterBase passes GetOwner() to InitializeGAS
+    (GothicCharacterBase.cpp:100) for players and enemies alike. A Controller has
+    no ASC and implements no IAbilitySystemInterface, so
+    GetOriginalInstigatorAbilitySystemComponent() came back null and the
+    AttackBonus term at GothicAttributeSet.cpp:222 was 0 no matter who was named.
     MakeDamageContext re-points the instigator at the AVATAR, which does resolve
-    to an ASC, which is what makes AttackPower real here.
+    to an ASC — that is what makes an attacker's AttackPower real here.
+
+    Uninstigated damage KEEPS the stock make_effect_context() path, unchanged and
+    on purpose. It is not an oversight to fix later:
+
+      * It is attributionless/environmental damage, and attributionless damage
+        must contribute no AttackPower. Routing it through MakeDamageContext
+        would name the VICTIM as its own instigator, which resolves to a real ASC
+        and would add the victim's OWN AttackPower — phantom damage from a source
+        that has no attack. Same semantics as the pillar collapse: a source with
+        no ASC contributes nothing.
+      * Every banked harness measurement was taken under it. Changing it would
+        silently move numbers nobody re-measured — a bare `apply_damage 20` on a
+        Defense-3, AttackPower-10 enemy would jump from 17 to 27.
+      * NotifyDamagedBy still never fires with a real attacker
+        (GothicAttributeSet.cpp:246-268 skips it for self-damage), so retaliation
+        is only testable with an `instigator`.
     """
     target_asc = target.get_gothic_asc()
     if target_asc is None:
@@ -644,11 +650,16 @@ def _apply_damage(target, amount, effect_path, instigator=None):
     #   exposed via ScriptName as apply_gameplay_effect_spec_to_target.
     #
     # MakeDamageContext is a static, so it is a classmethod in Python. The avatar
-    # it takes is the PAWN that dealt the blow -- the target itself in the
-    # no-instigator self-damage shape -- never the ASC's owner.
-    source_avatar = instigator if instigator is not None else target
-    context = unreal.GothicAbilitySystemComponent.make_damage_context(
-        source_asc, source_avatar)
+    # it takes is the PAWN that dealt the blow, never the ASC's owner.
+    #
+    # ONLY the instigated shape goes through it. Uninstigated damage keeps stock
+    # make_effect_context() so it stays attributionless and contributes no
+    # AttackPower -- see WHO DEALT IT above.
+    if instigator is not None:
+        context = unreal.GothicAbilitySystemComponent.make_damage_context(
+            source_asc, instigator)
+    else:
+        context = source_asc.make_effect_context()
     spec = source_asc.make_outgoing_spec(effect_class, 1.0, context)
     spec = unreal.AbilitySystemLibrary.assign_tag_set_by_caller_magnitude(
         spec, _setbycaller_tag(effect_class), float(amount))
@@ -688,18 +699,21 @@ def _a_apply_damage(world, step):
         "health_after": after,
         "alive": common.try_read(lambda: bool(target.is_alive())),
         "note": ("`raw_amount` is the SetByCaller magnitude, NOT the health "
-                 "delta: the health change is max(1, raw + attacker AttackPower "
-                 "- target Defense), and evasion can drop it entirely. "
-                 + ("Instigated: the context is built through MakeDamageContext, "
-                    "so the instigator resolves to the attacker's AVATAR ASC and "
-                    "its AttackPower really is added -- expect health_before - "
-                    "health_after to EXCEED raw_amount whenever AttackPower beats "
-                    "Defense. NotifyDamagedBy fires, so retaliation is in play."
+                 "delta, and evasion can drop the hit entirely. "
+                 + ("INSTIGATED: health change is max(1, raw + instigator "
+                    "AttackPower - target Defense). The context is built through "
+                    "MakeDamageContext, so the instigator resolves to the "
+                    "attacker's AVATAR ASC and its AttackPower really is added -- "
+                    "expect health_before - health_after to EXCEED raw_amount "
+                    "whenever AttackPower beats Defense. NotifyDamagedBy fires, "
+                    "so retaliation is in play."
                     if instigator is not None else
-                    "SELF-DAMAGE -- no instigator, so the victim is named as its "
-                    "own attacker: its own AttackPower is what gets added, and "
-                    "NotifyDamagedBy never fires. Add an 'instigator' field to "
-                    "test a real attacker or retaliation.")),
+                    "ATTRIBUTIONLESS: health change is max(1, raw - target "
+                    "Defense). No instigator ASC resolves, so NO AttackPower is "
+                    "added from either side -- deliberately, this is "
+                    "environmental damage -- and NotifyDamagedBy never fires. "
+                    "Unchanged from every previously banked measurement. Add an "
+                    "'instigator' field to exercise AttackPower or retaliation.")),
     }
 
 
