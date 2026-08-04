@@ -143,10 +143,28 @@ public:
         return Rarity == EGothicItemRarity::Salvage ? 0 : GearTier;
     }
 
+    /** True if this definition rolls weapon perks — weapons at Resonant or Pure only. */
+    bool RollsWeaponPerks() const { return IsWeapon() && HasStrain(); }
+
     /**
      * Roll a fresh item instance from this definition.
      * Star ceiling rolled within [MinStarCeiling, MaxStarCeiling].
      * Primary and secondary stats rolled from configured ranges.
+     * Weapon perks rolled when RollsWeaponPerks() — see RollWeaponPerks.
      */
     FGothicItemInstance RollInstance() const;
+
+private:
+    /**
+     * Fill Instance.WeaponPerks with one perk from each of the three buckets
+     * (WEAPON_PERK_TABLES.md). No-op for anything that is not a Resonant/Pure
+     * weapon, and for a weapon whose asset has no PerkCatalog assigned.
+     *
+     * A bucket with an empty eligible pool is skipped rather than failed — the
+     * weapon simply rolls fewer than three perks. Heavy Melee is the live case
+     * the doc already flags: six of its Fine-Tune/Verb-B entries are structurally
+     * dead, and if curation ever empties a bucket outright the drop must still
+     * be a valid item.
+     */
+    void RollWeaponPerks(FGothicItemInstance& Instance) const;
 };

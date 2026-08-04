@@ -307,6 +307,23 @@ public:
     float GetActiveWeaponTierMultiplier() const;
 
     /**
+     * Perks rolled onto the copy in the active weapon slot
+     * (WEAPON_PERK_TABLES.md). Empty for a mundane drop, for a Blueprint default
+     * loadout, and for every weapon until DA_WeaponPerkCatalog is authored.
+     *
+     * This and HasWeaponPerk() are the only route a perk effect should ever take
+     * to the equipped copy — GA_Fire, the reload path and the Steadfast path all
+     * already have the character in hand, and none of them should be reaching
+     * into WeaponSlots themselves.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    const TArray<FGameplayTag>& GetActiveWeaponPerks() const;
+
+    /** True if the active weapon's copy rolled Perk. False on an empty or perkless slot. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    bool HasWeaponPerk(FGameplayTag Perk) const;
+
+    /**
      * Overall Gear Power (average across equipped gear). No longer touches
      * damage — weapon damage now reads the weapon's own tier, and armor tier
      * expresses through Gear Score → Attack Power. Kept as the activity-gating
