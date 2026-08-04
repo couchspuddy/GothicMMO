@@ -929,7 +929,11 @@ void UGothicInventoryComponent::ApplyEquipmentStats(EGothicEquipSlot Slot, const
     // errors in the log. Every op on that effect is AddBase, so an explicit 0 is the
     // same no-op the engine already fell back to, minus the noise.
     //
-    // Keep this list in sync with GE_EquipmentStats' Modifiers array.
+    // Keep this list in sync with GE_EquipmentStats' Modifiers array. A tag set
+    // here with no matching modifier on the asset is a harmless no-op — which is
+    // the state Data.Stat.AttackPower and Data.Stat.Defense are in until the two
+    // modifier entries are added in the editor; until then Gear Score computes
+    // correctly and moves nothing.
     TMap<FName, float> TagTotals;
     for (const FName& StatTag : {
             FName("Data.Stat.MaxHealth"),
@@ -939,9 +943,33 @@ void UGothicInventoryComponent::ApplyEquipmentStats(EGothicEquipSlot Slot, const
             FName("Data.Stat.VitalPointRadius"),
             FName("Data.Stat.SteadfastRate"),
             FName("Data.Stat.HealingReceived"),
-            FName("Data.Stat.ReloadSpeed") })
+            FName("Data.Stat.ReloadSpeed"),
+            FName("Data.Stat.AttackPower"),
+            FName("Data.Stat.Defense") })
     {
         TagTotals.Add(StatTag, 0.f);
+    }
+
+    // Gear Score → Attack Power and Defense (ITEMIZATION_AND_LOOT.md, "Gear
+    // Score → Attack Power & Defense"). The doc states the stats as totals —
+    // AP = 15 + 1.0 x GearScore, Def = 8 + 0.5 x GearScore — and this effect is
+    // per-slot, so each armor piece contributes its own tier's share. The ten
+    // slots sum to exactly the doc's line, and the base 15/8 stays where it
+    // already lives, on GE_InitStats_Player.
+    //
+    // Per-slot rather than recomputed globally on every equip because the
+    // add/remove lifecycle already exists and is already correct: unequipping a
+    // piece removes its handle, and its contribution leaves with it. A global
+    // recompute would need a second effect and a second thing to forget.
+    //
+    // Weapons contribute nothing: their tier is already paid out through the
+    // weapon's own damage multiplier, and Salvage contributes nothing because it
+    // sits outside the tier ladder (GetGearScoreTier).
+    if (IsGothicArmorSlot(Slot))
+    {
+        const float TierPoints = static_cast<float>(Item.Definition->GetGearScoreTier());
+        TagTotals.FindOrAdd(FName("Data.Stat.AttackPower")) += TierPoints * AttackPowerPerGearTier;
+        TagTotals.FindOrAdd(FName("Data.Stat.Defense"))     += TierPoints * DefensePerGearTier;
     }
 
     // Primary stat → its creed-mapped attribute (PROGRESSION_STATS_AND_BALANCE.md):
@@ -999,6 +1027,19 @@ void UGothicInventoryComponent::ApplyEquipmentStats(EGothicEquipSlot Slot, const
     }
 
     ActiveStatEffects.Add(Slot, Handle);
+}
+
+int32 UGothicInventoryComponent::GetGearScore() const
+{
+    int32 Score = 0;
+    for (const FGothicEquippedSlot& Entry : EquippedItems)
+    {
+        if (Entry.Item.IsValid() && Entry.Item.Definition && IsGothicArmorSlot(Entry.Slot))
+        {
+            Score += Entry.Item.Definition->GetGearScoreTier();
+        }
+    }
+    return Score;
 }
 
 int32 UGothicInventoryComponent::GetAggregateGearPower() const

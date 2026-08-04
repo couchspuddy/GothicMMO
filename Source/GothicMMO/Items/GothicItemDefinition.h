@@ -131,6 +131,19 @@ public:
     int32 GetGearPower() const { return GearTier * 100; }
 
     /**
+     * This piece's contribution to Gear Score (ITEMIZATION_AND_LOOT.md, "Gear
+     * Score — Definition"). Its tier, except that Salvage counts 0: Salvage has
+     * no upgrade path and sits outside the tier ladder entirely, so the GearTier
+     * field's default of 1 does not mean a Salvage piece is a Tier-1 piece. This
+     * is what keeps a fresh character — whose whole starting kit is Salvage — at
+     * Gear Score 0, and therefore on today's exact damage numbers.
+     */
+    int32 GetGearScoreTier() const
+    {
+        return Rarity == EGothicItemRarity::Salvage ? 0 : GearTier;
+    }
+
+    /**
      * Roll a fresh item instance from this definition.
      * Star ceiling rolled within [MinStarCeiling, MaxStarCeiling].
      * Primary and secondary stats rolled from configured ranges.

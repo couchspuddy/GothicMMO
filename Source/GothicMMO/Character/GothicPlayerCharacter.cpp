@@ -1469,6 +1469,28 @@ int32 AGothicPlayerCharacter::GetActiveGearPower() const
     return 0;
 }
 
+float AGothicPlayerCharacter::GetActiveWeaponTierMultiplier() const
+{
+    // WEAPON_ARCHETYPES.md, DECIDED 2026-08-04: a weapon scales by its OWN
+    // instance's Gear Power, never by what the wearer is wearing. Since
+    // GetGearPower() is GearTier * 100 with no per-drop variance, the multiplier
+    // IS the tier -- x1 at Tier 1, x5 at Tier 5.
+    const int32 SlotGearPower = GetActiveGearPower();
+
+    // Zero means the slot was never filled through the inventory -- the
+    // Blueprint default loadout writes WeaponData directly and leaves GearPower
+    // at 0, which is the state the starting Revolver is in on every fresh
+    // character. Treated as the Tier-1 baseline, the same floor the doc gives
+    // Salvage weapons, so the starting kit fires at its authored book value
+    // instead of being multiplied to nothing.
+    if (SlotGearPower <= 0)
+    {
+        return 1.f;
+    }
+
+    return static_cast<float>(SlotGearPower) / WeaponTierBaselineGearPower;
+}
+
 int32 AGothicPlayerCharacter::GetAggregateGearPower() const
 {
     const AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
@@ -1864,17 +1886,16 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
     {
         WeaponSlots[WeaponIndex].WeaponData = Item.Definition->WeaponData;
 
-        // Carry the item's Gear Power across so the slot knows its tier.
+        // Carry the item's Gear Power across so the slot knows its tier. This is
+        // now load-bearing: GetActiveWeaponTierMultiplier() divides it by the
+        // Tier-1 baseline and GA_Fire multiplies the weapon's authored damage by
+        // the result, so a Tier-3 Revolver of this archetype hits for x3.
         //
-        // This does NOT make two Revolvers differ, whatever the comment here used
-        // to claim. FGothicItemInstance::GearPower is set from
+        // It does NOT make two copies of the same tier differ.
+        // FGothicItemInstance::GearPower comes from
         // UGothicItemDefinition::GetGearPower(), which is `GearTier * 100` — a
         // property of the definition, identical for every copy rolled from it.
         // Per-copy variation lives in the rolled secondaries, not here.
-        //
-        // Nothing currently reads it either: GetActiveGearPower() has no callers
-        // anywhere in Source/, and GA_Fire's damage does not consult the slot's
-        // GearPower. It is stored for the damage scaling that has not been built.
         WeaponSlots[WeaponIndex].GearPower = Item.GearPower;
         WeaponSlots[WeaponIndex].InitFromData();
     }
