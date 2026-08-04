@@ -2,6 +2,7 @@
 
 #include "AI/GothicEnemyBase.h"
 
+#include "GothicMMO.h"                          // LogVigilCombat
 #include "TimerManager.h"
 #include "AI/GothicEnemyAIController.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
@@ -445,10 +446,37 @@ void AGothicEnemyBase::NotifyDamagedBy(AActor* DamageInstigator)
             const bool bCurrentStillFightable = AGothicCharacterBase::IsFightableActor(Current);
             if (Current != DamageInstigator && bCurrentStillFightable)
             {
+                // The other half of the drop story. DropTargetIfNoLongerFightable
+                // says when an enemy let a target go; this says when it refused to
+                // take a new one, which is the answer to "I shot it and it ignored
+                // me" — and the line that distinguishes a refusal from damage that
+                // never arrived at all.
+                //
+                // Edge-triggered on the attacker, like the leash's return latch:
+                // an unbroken burst from the same shooter prints once. It re-arms
+                // the moment the attacker changes or a target is actually latched,
+                // so the next genuine refusal is not swallowed. Without this a
+                // rapid-fire weapon writes a line per round.
+                if (LastRetaliationRejectAttacker.Get() != DamageInstigator)
+                {
+                    LastRetaliationRejectAttacker = DamageInstigator;
+
+                    const UWorld* World = GetWorld();
+                    UE_LOG(LogVigilCombat, Verbose,
+                        TEXT("VigilTimeline|t=%.3f|%s|RetaliationReject|attacker=%s|")
+                        TEXT("reason=holding-fightable-target|current=%s"),
+                        World ? World->GetTimeSeconds() : 0.f, *GetNameSafe(this),
+                        *GetNameSafe(DamageInstigator), *GetNameSafe(Current));
+                }
+
                 return;
             }
         }
     }
+
+    // Re-arm the reject latch: this attacker was accepted, so the next refusal of
+    // them is news again.
+    LastRetaliationRejectAttacker = nullptr;
 
     // Through SetCombatTarget, never around it: that is the choke point that
     // consults IsAcceptingCombatTargets, and bypassing it here would break the

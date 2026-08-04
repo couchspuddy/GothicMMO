@@ -516,16 +516,35 @@ void AGothicEnemyAIController::DropTargetIfNoLongerFightable()
     // Why it stopped being fightable, so a downed release reads differently from a
     // death or a destroyed actor in the timeline. LogVigilCombat rather than
     // LogTemp because LogTemp is clamped and this line has to survive a real run.
-    const AGothicCharacterBase* BBChar   = Cast<AGothicCharacterBase>(BBTarget);
-    const AGothicCharacterBase* PawnChar = Cast<AGothicCharacterBase>(PawnTarget);
-    const bool bWentDowned =
-        (BBChar && BBChar->IsDowned()) || (PawnChar && PawnChar->IsDowned());
+    // Three reasons, not two. "downed" and "dead" both used to print as the same
+    // word once the downed state existed, and they are the two outcomes a reader
+    // most needs to tell apart: a dead target is a kill, a downed one is the design
+    // moment where the enemy abandons a body and goes hunting whoever is left.
+    // "gone" is the residue — a destroyed actor, or a respawn that swapped the pawn.
+    //
+    // Read off whichever half was actually latched, Blackboard first, matching the
+    // order every other reader of these two uses.
+    const AActor* Dropped = BBTarget ? BBTarget : PawnTarget;
+    const AGothicCharacterBase* DroppedChar = Cast<AGothicCharacterBase>(Dropped);
+
+    const TCHAR* Reason = TEXT("gone");
+    if (DroppedChar && IsValid(DroppedChar))
+    {
+        if (DroppedChar->IsDowned())
+        {
+            Reason = TEXT("downed");
+        }
+        else if (!DroppedChar->IsAlive())
+        {
+            Reason = TEXT("dead");
+        }
+    }
 
     const UWorld* World = GetWorld();
     UE_LOG(LogVigilCombat, Verbose,
-        TEXT("VigilTimeline|t=%.3f|%s|Target|DROP|reason=%s|blackboard=%s|pawn=%s"),
+        TEXT("VigilTimeline|t=%.3f|%s|TargetDrop|target=%s|reason=%s|blackboard=%s|pawn=%s"),
         World ? World->GetTimeSeconds() : 0.f, *GetNameSafe(GetPawn()),
-        bWentDowned ? TEXT("downed") : TEXT("gone"),
+        *GetNameSafe(Dropped), Reason,
         *GetNameSafe(BBTarget), *GetNameSafe(PawnTarget));
 
     ClearCombatTarget();
