@@ -94,6 +94,18 @@ protected:
 private:
     bool bHitboxActive = false;
 
+    /**
+     * Per-window overlap accounting, reset on every EnableHitbox.
+     *
+     * A whiffed damage window used to be indistinguishable from a window that
+     * never opened — both logged nothing at all. These two numbers are what
+     * separates "the notify never fired", "nothing was inside the box" and
+     * "something was inside but every guard rejected it", which is the first
+     * question asked of any melee that lands nothing.
+     */
+    int32 OverlapsThisWindow = 0;
+    int32 PaidThisWindow = 0;
+
     /** Actors already hit during this swing — prevents multi-hit per attack. */
     UPROPERTY()
     TArray<TObjectPtr<AActor>> AlreadyHitThisSwing;

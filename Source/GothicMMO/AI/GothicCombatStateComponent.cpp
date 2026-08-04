@@ -15,16 +15,31 @@ void UGothicCombatStateComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
+	// First-spawn pawns resolve here. Respawned and joining pawns don't have an
+	// ASC yet at this point — ResolveASC() picks them up on first use.
+	ResolveASC();
+}
+
+UAbilitySystemComponent* UGothicCombatStateComponent::ResolveASC()
+{
+	if (CachedASC)
+	{
+		return CachedASC;
+	}
+
 	if (GetOwner())
 	{
 		CachedASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(GetOwner());
 	}
 
-	if (!CachedASC)
+	if (!CachedASC && !bWarnedNoASC)
 	{
+		bWarnedNoASC = true;
 		UE_LOG(LogTemp, Warning, TEXT("GothicCombatStateComponent: No ASC found on %s"),
-			*GetOwner()->GetName());
+			GetOwner() ? *GetOwner()->GetName() : TEXT("NULL owner"));
 	}
+
+	return CachedASC;
 }
 
 void UGothicCombatStateComponent::NotifyCombatAction()
@@ -50,9 +65,10 @@ void UGothicCombatStateComponent::EnterCombat()
 {
 	bInCombat = true;
 
-	if (CachedASC && InCombatTag.IsValid())
+	UAbilitySystemComponent* ASC = ResolveASC();
+	if (ASC && InCombatTag.IsValid())
 	{
-		CachedASC->AddLooseGameplayTag(InCombatTag);
+		ASC->AddLooseGameplayTag(InCombatTag);
 	}
 }
 
@@ -60,9 +76,10 @@ void UGothicCombatStateComponent::OnExitGraceExpired()
 {
 	bInCombat = false;
 
-	if (CachedASC && InCombatTag.IsValid())
+	UAbilitySystemComponent* ASC = ResolveASC();
+	if (ASC && InCombatTag.IsValid())
 	{
-		CachedASC->RemoveLooseGameplayTag(InCombatTag);
+		ASC->RemoveLooseGameplayTag(InCombatTag);
 	}
 }
 
