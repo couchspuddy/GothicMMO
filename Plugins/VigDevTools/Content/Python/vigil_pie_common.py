@@ -1614,23 +1614,65 @@ def equip_slot_name(entry):
     return "UNKNOWN(%s)" % int(entry.value)
 
 
-def guid_string(guid):
-    """FGuid as 32 hex digits -- FGuid::ToString(EGuidFormats::Digits).
+def guid_string_or_none(guid):
+    """FGuid as 32 hex digits, or None when this build will not give it up.
 
-    Formatted from the A/B/C/D UPROPERTYs (Misc/Guid.h) rather than through
-    UKismetGuidLibrary, so this depends on nothing but the struct's own exported
-    fields. The int32s are signed in Python and masked back to unsigned here.
+    NEVER ATTRIBUTE ACCESS. FGuid's A/B/C/D UPROPERTYs do NOT reflect into
+    Python on this build -- `guid.a` is simply absent, and the harness's own
+    capabilities table records "FGuid A/B/C/D readable": false. The routes that
+    DO work are the generic StructBase ones, the same FHitResult precedent that
+    to_dict()/to_tuple() already covers everywhere else in this file.
+
+    Tried in order, each independently sufficient:
+      1. to_tuple()  -- (A, B, C, D) as ints, the cheapest and most exact
+      2. to_dict()   -- same four values keyed by name, for a build whose
+                        tuple ordering or arity ever differs
+      3. to_string()/export_text() -- textual, accepted ONLY when it parses as a
+                        real GUID (32 hex after stripping braces/dashes), so a
+                        decimal "A=123,B=..." dump can never be mistaken for one
+
+    Returns None rather than raising: a summary of an item is still worth
+    printing without its ID, and the callers that genuinely need the ID phrase
+    their own error. Use `guid_string` when the ID is mandatory.
     """
-    parts = []
-    for field in ("a", "b", "c", "d"):
-        value = getattr(guid, field, None)
-        if value is None:
-            raise ItemNotFound(
-                "FGuid did not expose '%s' on this build; cannot address items "
-                "by instance ID. Fields seen: %s"
-                % (field, sorted(n for n in dir(guid) if not n.startswith("_"))))
-        parts.append("%08X" % (int(value) & 0xFFFFFFFF))
-    return "".join(parts)
+    if guid is None:
+        return None
+
+    values = try_read_or_none(lambda: guid.to_tuple())
+    if not (isinstance(values, (tuple, list)) and len(values) == 4):
+        mapping = try_read_or_none(lambda: guid.to_dict())
+        if isinstance(mapping, dict):
+            values = [mapping.get(k, mapping.get(k.upper()))
+                      for k in ("a", "b", "c", "d")]
+        else:
+            values = None
+
+    if values is not None and all(isinstance(v, int) for v in values):
+        return "".join("%08X" % (int(v) & 0xFFFFFFFF) for v in values)
+
+    for reader in (lambda: guid.to_string(), lambda: guid.export_text()):
+        text = try_read_or_none(reader)
+        if not isinstance(text, str):
+            continue
+        digits = _guid_key(text)
+        # Only a bare 32-hex GUID counts. A struct dump full of decimal field
+        # values also survives _guid_key, and would be silent garbage.
+        if len(digits) == 32 and not any(c in text for c in "=,"):
+            return digits.upper()
+    return None
+
+
+def guid_string(guid):
+    """`guid_string_or_none`, but the ID is mandatory here so absence raises."""
+    text = guid_string_or_none(guid)
+    if text is None:
+        raise ItemNotFound(
+            "Could not read this FGuid on this build by any route "
+            "(to_tuple/to_dict/to_string/export_text); cannot address items by "
+            "instance ID. Address the item by 'definition' instead -- that path "
+            "never touches instance GUIDs. Fields seen: %s"
+            % sorted(n for n in dir(guid) if not n.startswith("_")))
+    return text
 
 
 def _guid_key(text):
@@ -1646,18 +1688,57 @@ def definition_path(item):
     now bare" signal (GothicInventoryComponent.cpp) -- so None is a legitimate
     answer from this function and not a failed read.
     """
-    definition = getattr(item, "definition", None)
+    definition = item_definition(item)
     if definition is None:
         return None
-    return definition.get_path_name()
+    return try_read_or_none(lambda: definition.get_path_name())
+
+
+def item_definition(item):
+    """The UGothicItemDefinition an instance points at, or None.
+
+    Read by attribute first, then out of to_dict() -- the FGuid precedent in
+    `guid_string_or_none` is that a struct field reflecting today is not a
+    promise that it reflects on the next build, and the whole definition-based
+    addressing path hangs off this one read.
+    """
+    definition = getattr(item, "definition", None)
+    if definition is not None:
+        return definition
+    mapping = try_read_or_none(lambda: item.to_dict())
+    if isinstance(mapping, dict):
+        return mapping.get("definition") or mapping.get("Definition")
+    return try_read_or_none(lambda: item.get_editor_property("definition"))
+
+
+def item_instance_id(item):
+    """The LIVE FGuid struct off an instance, or None -- never a rebuilt one.
+
+    Hand this straight to EquipItem: constructing an FGuid in Python is not
+    something to rely on, and there is no reason to.
+    """
+    guid = getattr(item, "instance_id", None)
+    if guid is not None:
+        return guid
+    mapping = try_read_or_none(lambda: item.to_dict())
+    if isinstance(mapping, dict):
+        guid = mapping.get("instance_id") or mapping.get("InstanceID")
+        if guid is not None:
+            return guid
+    return try_read_or_none(lambda: item.get_editor_property("instance_id"))
 
 
 def item_summary(item):
-    """A JSON-safe view of one FGothicItemInstance, addressable by instance_id."""
-    instance_id = getattr(item, "instance_id", None)
+    """A JSON-safe view of one FGothicItemInstance, addressable by instance_id.
+
+    `instance_id` is None when this build will not surrender the FGuid; the
+    summary is still worth having, and `definition_name` still addresses the
+    item. It must never raise -- every "no such item" error in this file prints
+    a list of these, so a summary that throws takes the diagnostics with it.
+    """
     path = definition_path(item)
     return {
-        "instance_id": guid_string(instance_id) if instance_id is not None else None,
+        "instance_id": guid_string_or_none(item_instance_id(item)),
         "definition": path,
         "definition_name": path.rsplit(".", 1)[-1] if path else None,
         "gear_power": try_read(lambda: int(item.gear_power)),
@@ -1728,9 +1809,21 @@ def find_inventory_item(inv, instance_id=None, definition=None):
         if not needle:
             raise ItemNotFound("'%s' contains no hex digits, so it is not a "
                                "GUID." % instance_id)
+        readable = 0
         for item in items:
-            if _guid_key(guid_string(item.instance_id)) == needle:
+            text = guid_string_or_none(item_instance_id(item))
+            if text is None:
+                continue
+            readable += 1
+            if _guid_key(text) == needle:
                 return item
+        if items and readable == 0:
+            raise ItemNotFound(
+                "This build would not surrender ANY instance GUID (tried "
+                "to_tuple/to_dict/to_string/export_text on %d item(s)), so "
+                "instance_id addressing is unavailable here. Address the item "
+                "by 'definition' instead -- that path never reads a GUID: %s"
+                % (len(items), [item_summary(i) for i in items]))
         raise ItemNotFound(
             "No unequipped item with instance ID '%s'. Carrying %d item(s): %s. "
             "(Equipped items are deliberately not searched -- EquipItem only "
@@ -1738,10 +1831,21 @@ def find_inventory_item(inv, instance_id=None, definition=None):
             % (instance_id, len(items), [item_summary(i) for i in items]))
 
     if definition:
+        # DELIBERATELY GUID-FREE. This branch reads nothing but the instance's
+        # Definition reference, so it keeps working on a build where the FGuid
+        # will not reflect at all -- it is the documented fallback that the
+        # instance_id error above points at, and it must never route through
+        # the GUID comparator.
         needle = str(definition).lower()
-        matches = [i for i in items
-                   if (definition_path(i) or "").lower() == needle
-                   or (definition_path(i) or "").rsplit(".", 1)[-1].lower() == needle]
+
+        def _names(item):
+            path = definition_path(item) or ""
+            asset = item_definition(item)
+            return [path.lower(),
+                    path.rsplit(".", 1)[-1].lower(),
+                    (try_read_or_none(lambda: asset.get_name()) or "").lower()]
+
+        matches = [i for i in items if needle in _names(i) and needle]
         if len(matches) == 1:
             return matches[0]
         if not matches:
@@ -1783,11 +1887,19 @@ def inventory_authority(inv):
     return bool(owner.has_authority())
 
 
-def inventory_snapshot(inv):
-    """Everything a verifier needs to address and assert on the inventory."""
+def inventory_snapshot(inv, resolver_route=None):
+    """Everything a verifier needs to address and assert on the inventory.
+
+    `resolver_route` is the `player_state_route` string that found the
+    PlayerState this inventory hangs off. It is reported rather than kept
+    internal because "which route answered" is the first question asked when
+    the inventory is unreachable, and until now the answer existed only inside
+    Python and was invisible from the toolset.
+    """
     items = inventory_items(inv)
     return {
         "component": inv.get_name(),
+        "resolver_route": resolver_route,
         "owner": try_read(lambda: inv.get_owner().get_name()),
         "has_authority": inventory_authority(inv),
         "item_count": len(items),

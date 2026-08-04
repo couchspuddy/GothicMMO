@@ -215,10 +215,16 @@ class VigilPIETools(unreal.ToolsetDefinition):
         _row("EGothicEquipSlot entries (GENERATED names, not declared)",
              lambda: {n: int(e.value)
                       for n, e in sorted(common.equip_slot_table().items())})
-        # FGuid exports A/B/C/D (Misc/Guid.h) and that is how items are
-        # addressed; if this row breaks, instance_id addressing breaks with it.
-        _row("FGuid A/B/C/D readable (how items are addressed)",
+        # FGuid's A/B/C/D UPROPERTYs (Misc/Guid.h) do NOT reflect on this build,
+        # so nothing may address items through them. Both rows are reported: the
+        # first is expected False and is kept as the record of why; the second is
+        # the route the harness actually uses (common.guid_string_or_none).
+        _row("FGuid A/B/C/D readable (expected False -- do NOT address items "
+             "this way)",
              lambda: all(hasattr(unreal.Guid(), f) for f in "abcd"))
+        _row("FGuid readable via to_tuple/to_dict/to_string (how items ARE "
+             "addressed; when False, address items by 'definition')",
+             lambda: common.guid_string_or_none(unreal.Guid()) is not None)
 
         vigil = {}
         for name in (
