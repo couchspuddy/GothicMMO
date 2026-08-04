@@ -290,21 +290,36 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
 
     // Grant ability sets — data driven, replaces old StartupAbilities array.
     //
-    // bAbilitiesGranted lives on the PAWN, and the pawn is precisely what a
-    // respawn replaces — so this block runs again on every new life against an
-    // ASC that is already carrying last life's grants. That is deliberate, not a
-    // leak: UGothicAbilitySet::GiveToAbilitySystem asks the ASC for an existing
-    // spec before granting anything, so nothing duplicates, and re-running it is
-    // what brings back the passives that OnDeath's CancelAllAbilities shut down.
+    // The latch is the ASC that was granted into, not a bool saying a grant
+    // happened. This function runs at least twice per pawn and re-reads
+    // AbilitySystemComponent from the PlayerState at the top of every pass, so a
+    // bool records the wrong fact: it says work was done without saying which
+    // ASC received it. A player joining a listen server is where those two come
+    // apart — their PlayerState resolves while the pawn is already possessed,
+    // the first pass latches, the second pass swaps in the ASC the pawn actually
+    // keeps, and the grant block skips it. The pawn is then authoritative,
+    // possessed, and holding an ASC with zero specs: the exact shape read off
+    // the GASInit telemetry, where the same pawn printed abilities=8 and then
+    // abilities=0 two milliseconds apart.
     //
-    // Note the added ASC check: the flag used to be latched on the strength of
-    // HasAuthority() alone, so a pass that granted NOTHING still closed the door
-    // behind it and no later call could reopen it. Nothing here is
-    // locally-controlled-guarded, and nothing here may become so — a remote
-    // player's pawn is not locally controlled on the server, and gameplay grants
-    // are owed to every pawn the authority owns. HUD work stays local-only; see
-    // BindHUDAttributeDelegates.
-    if (HasAuthority() && !bAbilitiesGranted && AbilitySystemComponent)
+    // Comparing against the ASC closes that: a grant is owed to every ASC this
+    // pawn ever points at, and only skipped for the one it already filled.
+    //
+    // Respawn is unchanged. The pawn is replaced, so this starts null on the new
+    // one and the sets are given again to the surviving PlayerState ASC —
+    // UGothicAbilitySet::GiveToAbilitySystem asks for an existing spec before
+    // granting, so nothing duplicates, and the re-run is what brings back the
+    // passives OnDeath's CancelAllAbilities shut down.
+    //
+    // HasAuthority() and nothing else. Nothing here is locally-controlled-
+    // guarded and nothing here may become so — a remote player's pawn is not
+    // locally controlled on the server, and gameplay grants are owed to every
+    // pawn the authority owns. Clients never reach this block at all, which is
+    // deliberate: GiveAbility is authority-only in GAS and a client attempt
+    // would only add a misleading warning to the log. HUD work stays local-only;
+    // see BindHUDAttributeDelegates.
+    if (HasAuthority() && AbilitySystemComponent &&
+        AbilitiesGrantedIntoASC.Get() != AbilitySystemComponent)
     {
         int32 GrantedSets = 0;
         for (const TObjectPtr<UGothicAbilitySet>& AbilitySet : StartupAbilitySets)
@@ -322,7 +337,7 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         // single ability for the rest of its life.
         if (GrantedSets > 0)
         {
-            bAbilitiesGranted = true;
+            AbilitiesGrantedIntoASC = AbilitySystemComponent;
         }
     }
 
@@ -438,19 +453,34 @@ void AGothicPlayerCharacter::LogGASInitComplete() const
     const int32 AbilityCount =
         AbilitySystemComponent ? AbilitySystemComponent->GetActivatableAbilities().Num() : -1;
 
-    int32 ArmedSlots = 0;
+    // The ability slot map, which is what the eight granted abilities are
+    // registered into. The line used to print the WEAPON slot count in a field
+    // called `slots` immediately after `abilities`, and reading the two together
+    // — "abilities=8|slots=1" — invited exactly the wrong conclusion. Both are
+    // now named for what they count.
+    const int32 AbilitySlots =
+        AbilitySystemComponent ? AbilitySystemComponent->GetRegisteredAbilitySlotCount() : -1;
+
+    int32 ArmedWeaponSlots = 0;
     for (const FGothicWeaponSlot& Slot : WeaponSlots)
     {
         if (Slot.WeaponData)
         {
-            ++ArmedSlots;
+            ++ArmedWeaponSlots;
         }
     }
 
+    // `asc` and `auth` are the fields the two-player read needs. A count alone
+    // cannot distinguish "this pawn was never granted" from "this pawn is
+    // looking at a different ASC than the one that was granted", and telling
+    // those apart is the entire remote-player bug — so the line names the ASC it
+    // counted and says whether the machine printing it could have granted at all.
     UE_LOG(LogVigilCombat, Verbose,
-        TEXT("VigilTimeline|t=%.3f|%s|GASInit|pawn=%s|abilities=%d|slots=%d|localCtrl=%d"),
+        TEXT("VigilTimeline|t=%.3f|%s|GASInit|pawn=%s|abilities=%d|abilitySlots=%d|weaponSlots=%d|asc=%s|auth=%d|localCtrl=%d"),
         GASInitTimelineNow(this), *GetName(), *GetName(),
-        AbilityCount, ArmedSlots, IsLocallyControlled() ? 1 : 0);
+        AbilityCount, AbilitySlots, ArmedWeaponSlots,
+        *GetNameSafe(AbilitySystemComponent ? AbilitySystemComponent->GetOwner() : nullptr),
+        HasAuthority() ? 1 : 0, IsLocallyControlled() ? 1 : 0);
 }
 
 void AGothicPlayerCharacter::BindHUDAttributeDelegates()

@@ -135,6 +135,14 @@ public:
     void AbilityInputTagPressed(const FGameplayTag& InputTag);
     void AbilityInputTagReleased(const FGameplayTag& InputTag);
 
+    /**
+     * How many ability slots currently point at a spec handle. Telemetry only —
+     * the GASInit line used to print a weapon-slot count under the name "slots",
+     * next to an ability count, which read as "8 abilities went into 1 slot".
+     * The two numbers were never about the same thing; this is the one that is.
+     */
+    int32 GetRegisteredAbilitySlotCount() const { return SlotToAbilityMap.Num(); }
+
 protected:
     /** Maps slot enum → ability spec handle for quick input lookup. */
     TMap<EGothicAbilitySlot, FGameplayAbilitySpecHandle> SlotToAbilityMap;
