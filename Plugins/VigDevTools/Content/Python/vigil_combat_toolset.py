@@ -130,6 +130,15 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                 "melee": {"actor": "str"},
                 "reload": {"actor": "str"},
                 "convert_steadfast": {"actor": "str"},
+                "set_steadfast": {
+                    "actor": "str (player)", "value": "float, 0..MaxSteadfast",
+                    "_note": "DEV ONLY, authority world only. The sink the game "
+                             "does not have: forces Steadfast to a chosen value "
+                             "so the 0/1/2-pip bands can be driven. Drains via "
+                             "TryConvertSteadfast(delta, 0.0) -- no ammo is "
+                             "granted -- and raises by writing the attribute "
+                             "data directly. Raises if the readback disagrees.",
+                },
                 "swap_weapon": {
                     "actor": "str", "index": "int",
                     "_note": "Moves ActiveWeaponIndex only. Does NOT touch the "

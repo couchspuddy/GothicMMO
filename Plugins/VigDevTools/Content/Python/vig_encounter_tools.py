@@ -245,10 +245,14 @@ class VigEncounterTools(unreal.ToolsetDefinition):
             # (GothicAttributeSet.h:77-124) and read CurrentValue, itself
             # BlueprintReadOnly (AttributeSet.h:53-54). No FGameplayAttribute
             # construction anywhere.
+            # The PlayerState hop goes through common.player_state: the old
+            # actor.get_player_state() raised AttributeError on every pawn
+            # (non-UFUNCTION template, absent from the bindings) straight into
+            # the `except Exception: continue` below, so the fallback was dead.
             attr_set = None
             for fetch in (
                 lambda: actor.get_attribute_set(),   # GothicCharacterBase.h:71-72
-                lambda: actor.get_player_state().get_attribute_set(),
+                lambda: common.player_state(actor).get_attribute_set(),
             ):
                 try:
                     candidate = fetch()
