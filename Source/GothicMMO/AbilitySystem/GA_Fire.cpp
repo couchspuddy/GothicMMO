@@ -264,6 +264,108 @@ void UGA_Fire::ReportFireNoise(AGothicPlayerCharacter* Char) const
         FName(TEXT("Gunshot")));
 }
 
+namespace
+{
+    /**
+     * How far along the aim direction to restart a trace that began inside the
+     * victim. Larger than the depenetration distances Chaos reports on this
+     * project's rigs, small enough that it cannot skip past a target the player
+     * is standing in.
+     */
+    constexpr float PointBlankReTraceNudge = 25.f;
+
+    /** Impacts closer than this to the trace start are treated as degenerate. */
+    constexpr float PointBlankEpsilon = 1.f;
+
+    /**
+     * True when the trace began inside the thing it hit, so Hit.ImpactPoint
+     * carries no usable geometry.
+     *
+     * Per FHitResult (Engine/HitResult.h): on an initial overlap Distance is 0,
+     * ImpactPoint is set equal to Location "because there is no meaningful
+     * single impact point to report", and Location for a line test is the start.
+     * IsValidBlockingHit() is documented as false in exactly this case. The
+     * shot still HIT -- bBlockingHit is true and the actor is real -- it is only
+     * the impact POSITION that is meaningless.
+     */
+    bool IsDegenerateImpact(const FHitResult& Hit)
+    {
+        return Hit.bStartPenetrating
+            || Hit.Distance <= PointBlankEpsilon
+            || FVector::DistSquared(Hit.ImpactPoint, Hit.TraceStart)
+                 <= (PointBlankEpsilon * PointBlankEpsilon);
+    }
+
+    /**
+     * Recover a point on the line of fire that vital adjudication can honestly
+     * use when the camera trace started inside the victim.
+     *
+     * Why this exists: GA_Fire traces from the CAMERA, so as soon as an enemy
+     * closes to contact the ray originates inside its collision. Measured
+     * against the 4m Lucid the impact degenerates to exactly the trace start,
+     * distToVital reads 256+, and vital is 0 -- point-blank, the range at which
+     * hitting her should be EASIEST, was the one range at which a vital could
+     * not be scored at all.
+     *
+     * Two attempts, in order of how much they claim:
+     *
+     *   (a) Re-trace from slightly along the aim direction. If that lands a
+     *       valid blocking hit on the SAME victim it is a real surface point
+     *       and nothing is being invented.
+     *   (b) Otherwise take the point on the aim ray nearest the vital. A ray
+     *       cast from inside a convex body frequently reports initial overlap
+     *       again rather than an exit surface, so (a) is not guaranteed; this
+     *       falls back to the question the geometry can still answer honestly,
+     *       "did the line of fire pass through the vital sphere", and lets
+     *       IsVitalPointHit adjudicate it on its own terms. PenetrationDepth is
+     *       deliberately unused -- it runs along Normal, not along the ray.
+     *
+     * Returns false when there is no vital component to resolve against, in
+     * which case the caller leaves the shot exactly as it is today.
+     */
+    bool ResolvePointBlankImpact(
+        UWorld* World, const AActor* Shooter, const AActor* Victim,
+        const FVector& Start, const FVector& AimDir, float Range,
+        FVector& OutImpactPoint)
+    {
+        if (!World || !Victim)
+        {
+            return false;
+        }
+
+        FCollisionQueryParams ReParams;
+        ReParams.AddIgnoredActor(Shooter);
+
+        FHitResult ReHit;
+        const FVector ReStart = Start + (AimDir * PointBlankReTraceNudge);
+        const FVector ReEnd   = Start + (AimDir * Range);
+
+        if (World->LineTraceSingleByChannel(ReHit, ReStart, ReEnd, ECC_Weapon, ReParams)
+            && ReHit.IsValidBlockingHit()
+            && ReHit.GetActor() == Victim)
+        {
+            OutImpactPoint = ReHit.ImpactPoint;
+            return true;
+        }
+
+        const UGothicVitalPointComponent* Vital =
+            Victim->FindComponentByClass<UGothicVitalPointComponent>();
+        if (!Vital)
+        {
+            return false;
+        }
+
+        // Closest point on the aim segment to the vital centre. Clamped to the
+        // segment so a vital behind the shooter cannot resolve to a hit.
+        const FVector VitalLoc = Vital->GetCurrentVitalWorldLocation();
+        const float Along = FMath::Clamp(
+            FVector::DotProduct(VitalLoc - Start, AimDir), 0.f, Range);
+
+        OutImpactPoint = Start + (AimDir * Along);
+        return true;
+    }
+}
+
 void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 {
     UCameraComponent* Camera = Char->FindComponentByClass<UCameraComponent>();
@@ -320,6 +422,11 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     // Observation only. Nothing in this block changes what a shot does.
     const float TimelineNow = World->GetTimeSeconds();
 
+    // Set below when the camera trace started inside the victim and the impact
+    // point had to be recovered. Declared here so the telemetry lambda reports
+    // it on every path out.
+    bool bPointBlank = false;
+
     auto EmitFireTimeline =
         [&](const AActor* Victim, const FVector& ImpactPoint, bool bVital, float RawDamage)
     {
@@ -335,7 +442,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
         UE_LOG(LogVigilCombat, Verbose,
             TEXT("VigilTimeline|t=%.3f|%s|Fire|%s|victim=%s|impact=%s|vital=%d|distToVital=%.1f|")
-            TEXT("raw=%.1f|traceStart=%s|aimDir=%s"),
+            TEXT("raw=%.1f|traceStart=%s|aimDir=%s|pointBlank=%d"),
             TimelineNow,
             *GetNameSafe(Char),
             Victim ? TEXT("HIT") : TEXT("MISS"),
@@ -345,7 +452,8 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
             DistToVital,
             RawDamage,
             *Start.ToCompactString(),
-            *AimDir.ToCompactString());
+            *AimDir.ToCompactString(),
+            bPointBlank ? 1 : 0);
     };
 
     if (!bHit || !Hit.GetActor())
@@ -395,6 +503,22 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     float FinalDamage = EffectiveDamage * GearFloor * (1.f + ArchetypeBonusPct / 100.f);
     bool bIsVitalHit = false;
 
+    // The point vital adjudication is measured from. Normally the impact; at
+    // point-blank the impact is the trace start and means nothing, so recover
+    // something on the line of fire that does. Damage itself is untouched by
+    // this -- the shot hit, and it applies exactly as it did before either way.
+    FVector VitalTestPoint = Hit.ImpactPoint;
+    if (IsDegenerateImpact(Hit))
+    {
+        FVector Recovered;
+        if (ResolvePointBlankImpact(World, Char, Hit.GetActor(),
+                                    Start, AimDir, EffectiveRange, Recovered))
+        {
+            VitalTestPoint = Recovered;
+            bPointBlank = true;
+        }
+    }
+
     // Diagnostics only — the pre-vital damage and the two "why was this a vital"
     // flags, kept so the final line below can tie the geometry to the outcome.
     const float PreVitalDamage = FinalDamage;
@@ -409,7 +533,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         const float RadiusBonus = SourceASC->GetNumericAttribute(
             UGothicAttributeSet::GetVitalPointRadiusAttribute());
 
-        bIsVitalHit = bReckoning || VitalPoint->IsVitalPointHit(Hit.ImpactPoint, RadiusBonus);
+        bIsVitalHit = bReckoning || VitalPoint->IsVitalPointHit(VitalTestPoint, RadiusBonus);
 
         bReckoningForced = bReckoning;
 
@@ -418,11 +542,14 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         // reader can tell a genuine geometric vital from a forced one instead of
         // assuming the component silently failed.
         UE_LOG(LogVigilCombat, Verbose,
-            TEXT("VitalResult: target=%s vital=%s via=%s (RadiusBonus=%.1f)"),
+            TEXT("VitalResult: target=%s vital=%s via=%s (RadiusBonus=%.1f, testPoint=%s%s)"),
             *Hit.GetActor()->GetName(),
             bIsVitalHit ? TEXT("YES") : TEXT("NO"),
             bReckoning ? TEXT("RECKONING-FORCED, geometry not evaluated") : TEXT("geometry"),
-            RadiusBonus);
+            RadiusBonus,
+            *VitalTestPoint.ToCompactString(),
+            bPointBlank ? TEXT(" POINT-BLANK, recovered from a degenerate impact")
+                        : TEXT(""));
     }
     else
     {
@@ -459,7 +586,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
     if (!Spec.IsValid())
     {
-        EmitFireTimeline(Hit.GetActor(), Hit.ImpactPoint, bIsVitalHit, /*RawDamage=*/ 0.f);
+        EmitFireTimeline(Hit.GetActor(), VitalTestPoint, bIsVitalHit, /*RawDamage=*/ 0.f);
         return;
     }
 
@@ -499,7 +626,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
     // The landed-and-damaged case, in the correlatable format. raw= is the
     // magnitude that just went into the SetByCaller, after every multiplier.
-    EmitFireTimeline(Hit.GetActor(), Hit.ImpactPoint, bIsVitalHit, FinalDamage);
+    EmitFireTimeline(Hit.GetActor(), VitalTestPoint, bIsVitalHit, FinalDamage);
 
     // Super meter on a LANDED hit. Applied here rather than on activation so a
     // miss builds nothing -- the weapon assets have authored
