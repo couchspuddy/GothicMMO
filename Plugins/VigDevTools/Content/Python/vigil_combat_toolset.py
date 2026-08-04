@@ -167,6 +167,29 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                 "set_combat_target": {"actor": "str (enemy)", "target": "str"},
                 "freeze_vital": {"actor": "str", "index": "int, -1 = freeze in place"},
                 "damage_vital": {"actor": "str", "amount": "float"},
+                "apply_damage": {
+                    "actor": "str (the victim)",
+                    "amount": "float, RAW damage before Defense and evasion",
+                    "instigator": "str, optional -- the attacker's label",
+                    "effect": "str, optional GE class path",
+                    "_note": "Without 'instigator' the victim damages ITSELF: "
+                             "AttackPower contributes 0 (the attacker bonus is "
+                             "read off the context's original instigator ASC) "
+                             "and NotifyDamagedBy never fires, so retaliation "
+                             "cannot be tested. Name an instigator to exercise "
+                             "both -- the spec is then built from the "
+                             "attacker's ASC and applied to the target's, the "
+                             "same shape as "
+                             "UGothicAbilitySystemComponent::ApplyEffectToASC.",
+                },
+                "kill": {
+                    "actor": "str", "margin": "float (optional, default 1000)",
+                    "_note": "Current health plus a margin through the same "
+                             "damage pipeline. Self-damage: no instigator, so "
+                             "an on-kill system that reads the killer sees "
+                             "none. Use apply_damage with an instigator when "
+                             "the killer matters.",
+                },
                 "console": {"command": "str", "force": "bool (optional)"},
                 "mark": {"label": "str"},
                 "move_to": {
