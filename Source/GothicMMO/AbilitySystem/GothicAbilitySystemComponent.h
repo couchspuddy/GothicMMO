@@ -59,7 +59,13 @@ public:
      * @param SourceASC     ASC that will make the outgoing spec.
      * @param SourceAvatar  The pawn/actor that dealt the blow. Becomes both the
      *                      source object and the instigator.
+     *
+     * BlueprintCallable so the dev harness can build the same context: the
+     * combat driver's apply_damage used stock MakeEffectContext and therefore
+     * reproduced, from Python, the exact AttackPower-0 defect this function
+     * exists to fix.
      */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|GAS")
     static FGameplayEffectContextHandle MakeDamageContext(
         UAbilitySystemComponent* SourceASC,
         AActor* SourceAvatar);
@@ -143,6 +149,47 @@ public:
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|Abilities")
     int32 GetRegisteredAbilitySlotCount() const { return SlotToAbilityMap.Num(); }
+
+    /**
+     * True if the ability bound to this slot is LocalPredicted or LocalOnly.
+     *
+     * Exists so a caller can tell the two meanings of TryActivateAbilityBySlot's
+     * `true` apart. UAbilitySystemComponent::TryActivateAbility defaults
+     * bAllowRemoteActivation to true, and on an authoritative ASC whose avatar is
+     * NOT locally controlled it answers a Local* ability by firing
+     * ClientTryActivateAbility at the owning client and returning true
+     * unconditionally (AbilitySystemComponent_Abilities.cpp:1621-1627) — nothing
+     * ran here. A ServerInitiated ability in the same situation genuinely does
+     * run, and also answers true. Only the ability's net policy separates them.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Abilities")
+    bool IsSlotAbilityLocallyPredicted(EGothicAbilitySlot Slot) const;
+
+    /**
+     * DEV/HARNESS ONLY, EXPERIMENTAL AND UNPROBED. Activates a slot on the NEXT
+     * TICK instead of inline.
+     *
+     * The point is to escape FEditorScriptExecutionGuard. Editor Python runs
+     * inside that guard, which sets GAllowActorScriptExecutionInEditor, and
+     * AActor::GetFunctionCallspace then answers Local for every RPC before it
+     * looks at the net role — which is why direct client-world activation
+     * recurses (see TryActivateAbilityBySlot's tripwire) and why the server-world
+     * route's ClientTryActivateAbility executes in process instead of going over
+     * the wire. A zero-second timer fires after the Python call has returned and
+     * the guard has left scope, so callspace resolves normally and a client-world
+     * ASC's LocalPredicted path sends a REAL server RPC.
+     *
+     * The tripwire in TryActivateAbilityBySlot is left in place and is expected
+     * NOT to fire from here: GAllowActorScriptExecutionInEditor is false by the
+     * time a timer callback runs, so the `!IsOwnerActorAuthoritative() &&
+     * GAllowActorScriptExecutionInEditor` conjunction is false. That reasoning is
+     * unverified in PIE — nothing calls this yet, deliberately.
+     *
+     * Fire-and-forget: the result lands a frame later, so there is nothing to
+     * return. Compiled to a no-op outside editor builds.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|GAS|Dev")
+    void DevDeferredTryActivateAbilityBySlot(EGothicAbilitySlot Slot);
 
 protected:
     /**

@@ -6,6 +6,8 @@
 #include "GameplayEffect.h"
 #include "GothicMMO.h"                      // LogVigilCombat
 #include "CoreGlobals.h"                    // GAllowActorScriptExecutionInEditor
+#include "Engine/World.h"
+#include "TimerManager.h"
 
 UGothicAbilitySystemComponent::UGothicAbilitySystemComponent()
 {
@@ -90,6 +92,58 @@ bool UGothicAbilitySystemComponent::TryActivateAbilityBySlot(EGothicAbilitySlot 
     }
 
     return false;
+}
+
+bool UGothicAbilitySystemComponent::IsSlotAbilityLocallyPredicted(EGothicAbilitySlot Slot) const
+{
+    if (const FGameplayAbilitySpecHandle* Handle = SlotToAbilityMap.Find(Slot))
+    {
+        if (const FGameplayAbilitySpec* Spec = FindAbilitySpecFromHandle(*Handle))
+        {
+            if (Spec->Ability)
+            {
+                const EGameplayAbilityNetExecutionPolicy::Type Policy =
+                    Spec->Ability->GetNetExecutionPolicy();
+
+                return Policy == EGameplayAbilityNetExecutionPolicy::LocalPredicted
+                    || Policy == EGameplayAbilityNetExecutionPolicy::LocalOnly;
+            }
+        }
+    }
+
+    return false;
+}
+
+void UGothicAbilitySystemComponent::DevDeferredTryActivateAbilityBySlot(EGothicAbilitySlot Slot)
+{
+#if WITH_EDITOR
+    UWorld* World = GetWorld();
+    if (!World)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("DevDeferredTryActivateAbilityBySlot: no world to schedule on"));
+        return;
+    }
+
+    // Next tick, not now. By the time this runs the caller's
+    // FEditorScriptExecutionGuard has left scope, GAllowActorScriptExecutionInEditor
+    // is false again, and GetFunctionCallspace answers by net role instead of
+    // forcing Local -- so a LocalPredicted activation on a client-world ASC sends a
+    // real server RPC rather than re-entering in process. See the header.
+    World->GetTimerManager().SetTimerForNextTick(
+        FTimerDelegate::CreateWeakLambda(this, [this, Slot]()
+        {
+            const bool bActivated = TryActivateAbilityBySlot(Slot);
+
+            // The caller is a frame gone, so the log line is the only result.
+            UE_LOG(LogVigilCombat, Log,
+                TEXT("DevDeferredTryActivateAbilityBySlot: slot %d activated=%s"),
+                static_cast<int32>(Slot),
+                bActivated ? TEXT("true") : TEXT("false"));
+        }));
+#else
+    (void)Slot;
+#endif
 }
 
 float UGothicAbilitySystemComponent::GetCooldownRemainingForSlot(EGothicAbilitySlot Slot) const
