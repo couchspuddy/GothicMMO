@@ -18,9 +18,9 @@ It is meant to be handed to engine work directly. Numbers here are first-pass an
 
 **Ten armor slots:** Head, Neck, Left Arm, Right Arm, Wrist, Chest, Back, Left Leg, Right Leg, Feet.
 
-**Three weapon slots:** Primary, Secondary, Heavy.
+**Three weapon slots:** Sidearm, Piece, Rig. *(Renamed 2026-08-04 from this document's original "Primary, Secondary, Heavy" — the shipped vocabulary in `EGothicEquipSlot` and WEAPON_ARCHETYPES.md's slot doctrine is Sidearm/Piece/Rig; this document now matches the game.)*
 
-**Weapons are excluded from the armor stat budget entirely.** Weapon identity expresses through its own perks, its weapon class, and Steadfast behavior — not by rolling Resolve. The ten armor slots are the whole stat surface.
+**Weapons are excluded from the armor stat budget entirely.** Weapon identity expresses through its own perks, its weapon class, and Steadfast behavior — not by rolling Resolve. The ten armor slots are the whole stat surface. *(The weapon side of power and variance is now specified in WEAPON_ARCHETYPES.md: damage scales by the weapon's own tier — DECIDED 2026-08-04 — and per-drop rolled perks are PROPOSED as the weapon variance axis, at 0/0/1/2/trait+1 rolls across the five rarities. Draft for review.)*
 
 **Slots are class-agnostic, without exception.** No slot is flavored, gated, or reserved for a class. This is load-bearing rather than incidental: class-agnostic gear is the entire rationale for the pre-imbue trading rule in `ECONOMY_SYSTEM.md` — a four-class Kindle regularly sees drops that are dead weight for the roller and ideal for someone else. A class-locked slot would create a drop category that can never reach the person who wants it.
 
@@ -90,6 +90,124 @@ The T5 jump (480 → 1,000, ~2.1×) is the visible cliff — steeper than any pr
 Within a piece's primary budget, the two identity stats for the class it dropped for share 80% roughly evenly; the off-stat takes 20%. A Warden piece at Tier 3 (13 primary) lands near **5/5/3**.
 
 **Open, flagged and unresolved:** the class docs imply *high/medium/low*, not *high/high/low* — the Hunter is documented as "Endure is the full kit; Repay is only the Covenant/super." Whether 40/40/20 is universal or needs to flex per class can't be answered until Warden and Penitent get the same treatment.
+
+---
+
+## Gear Score → Attack Power & Defense
+
+**DRAFT FOR REVIEW 2026-08-04.** *The decision is settled — Attack Power and
+Defense scale with total gear score, and damage multiplies off those stats to
+determine total output and incoming damage. Every number and formula below is a
+first-pass proposal for redline.*
+
+### Gear Score — Definition
+
+**Gear Score is the SUM of `GearTier` across the ten armor slots.** Range 0
+(fresh character — all Salvage, empty, or mundane-unraised) to 50 (ten Tier-5
+pieces). Salvage and empty slots count 0. Weapons are excluded, consistent with
+their exclusion from the armor stat budget — weapon tier already pays out
+through the weapon's own damage (WEAPON_ARCHETYPES.md, DECIDED 2026-08-04).
+
+**Sum, not average, deliberately.** The average-vs-sum trap just bit the weapon
+formula: the interim implementation scaled weapon damage by *armor-average*
+Gear Power, which diluted every single armor upgrade to a tenth of its face
+value and let ten slots vote on one weapon's output. A sum makes each tier
+point on each piece a visible, guaranteed +1 — a player who upgrades one piece
+sees the number move by exactly what the piece is worth, every time. It is also
+the tooltip-legible one: "Gear Score 0–50, one point per armor tier."
+
+### The Stats
+
+Base values are the shipped defaults: Attack Power 15, Defense 8. They grow
+linearly with Gear Score — one line each, readable in a tooltip:
+
+```
+AttackPower = 15 + 1.0 × GearScore        (15 at fresh → 65 at cap)
+Defense     =  8 + 0.5 × GearScore        ( 8 at fresh → 33 at cap)
+```
+
+### Application — Damage Multiplies Off the Stats
+
+```
+CoreDamage = max(1, Raw + BaseAP_attacker − BaseDef_defender)
+
+Outgoing   = CoreDamage × (AttackPower / BaseAP)      — attacker's ratio
+Incoming   = CoreDamage × (BaseDef / Defense)         — defender's ratio
+```
+
+`Raw` is the weapon/ability damage after its own multipliers (weapon tier,
+archetype bonus, vital ×2.5 — all upstream, unchanged). `BaseAP`/`BaseDef` are
+the *authored per-actor base values*: player 15/8, Draugr 10/3, Feral Retained
+and Boss 20/5. The additive step is **retained but frozen at base values** as a
+calibration constant; gear enters only through the two ratios.
+
+**What this replaces:** the live additive `max(1, Raw + AttackPower − Defense)`
+in the attribute set, where AP and Defense were themselves the scaling stats.
+Additive AP/Def cannot carry a 50-point gear curve — a flat +50 means nothing
+to a Breacher and everything to a Carbine, and flat Defense eventually zeroes
+whole enemy tiers. Ratios scale every archetype identically and never zero
+anything.
+
+**Degeneracy requirement, satisfied by construction:** at Gear Score 0 both
+ratios are exactly 1.0, so a fresh character deals and takes *precisely*
+today's shipped numbers. The tables below open with that row as proof.
+
+**Enemy-side stats slot into the same formulas.** An enemy's outgoing damage is
+its `CoreDamage × (EnemyAP / EnemyBaseAP)` — currently 1.0 everywhere, since no
+enemy has a gear concept. The formula gives enemy designers the same single
+lever players have.
+
+### Milestones
+
+| Milestone | Gear Score | AP | Def | Outgoing × | Incoming × |
+|---|---|---|---|---|---|
+| Fresh character | 0 | 15 | 8 | ×1.00 | ×1.00 |
+| Full Tier-2 armor | 20 | 35 | 18 | ×2.33 | ×0.44 |
+| Full Tier-5 armor | 50 | 65 | 33 | ×4.33 | ×0.24 |
+
+### Worked TTK — Tier-Matched Revolver, Body Shots
+
+Revolver (base 22, 0.45s between shots), weapon tier matched to the armor
+milestone, idealized chains — no reloads, no misses (measured field DPS always
+runs lower). Enemy stat lines: Draugr 80 HP / AP 10 / Def 3; Feral Retained
+800 / 20 / 5; Boss 3000 / 20 / 5.
+
+| Milestone (armor + weapon) | vs Draugr | vs Feral Retained | vs Boss |
+|---|---|---|---|
+| GS 0 + Tier-1 Revolver (22) | 34/shot — 3 shots, 0.9s | 32/shot — 25 shots, 10.8s | 32/shot — 94 shots, 41.9s |
+| GS 20 + Tier-2 Revolver (44) | 131/shot — 1 shot | 126/shot — 7 shots, 2.7s | 126/shot — 24 shots, 10.4s |
+| GS 50 + Tier-5 Revolver (110) | 529/shot — 1 shot | 520/shot — 2 shots, 0.45s | 520/shot — 6 shots, 2.25s |
+
+The GS 0 row is today's live numbers exactly — that is the degeneracy proof.
+
+Incoming, same milestones, against the Boss's two attacks (Claw base 15,
+Charge base 45, both at enemy AP 20 vs player BaseDef 8):
+
+| Milestone | Claw per hit | Charge per hit |
+|---|---|---|
+| GS 0 | 27 (today's live number) | 57 (today's live number) |
+| GS 20 | 12 | 25 |
+| GS 50 | 7 | 14 |
+
+**The endgame rows are a feature, not a bug, of publishing this table:** the
+Boss dying in 2.25 seconds of Revolver fire says current enemies are Tier-1
+content and the enemy side of the curve must exist before Tier 3+ gear does.
+That is the point of writing the curve down now.
+
+### Open Sub-Questions — Flagged, Not Decided
+
+- **Enemy tier scaling.** Do enemy AP/Def/HP scale by a content-tier concept
+  mirroring gear tiers? The formulas accept it (`EnemyAP / EnemyBaseAP`), but
+  the enemy curve is undesigned. Required before any Tier-3+ content ships.
+- **Defense growth rate.** 0.5/point is proposed so damage-taken shrinks slower
+  than damage-dealt grows (offense should lead the fantasy). Redline knob.
+- **Pure multiplicative alternative.** Dropping the frozen additive core
+  entirely (`Outgoing = Raw × AP-ratio × Def-ratio`) is cleaner arithmetic but
+  breaks the fresh-character degeneracy — every shipped number would move.
+  Rejected here for that reason; a redline may reopen it.
+- **Interaction with armor's rolled ± variance.** Secondary lines are
+  unchanged by this spec; Gear Score reads tier only, never rolls, consistent
+  with "Gear Power sits outside this pool."
 
 ---
 

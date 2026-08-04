@@ -22,6 +22,63 @@ Earlier discussion considered raising the Resonant Level cap with each expansion
 
 ---
 
+## Strain Costs — First Numbers
+
+**DRAFT FOR REVIEW 2026-08-04.** *Every number below is a first-pass proposal
+for redline. The sunset/decay curve remains an Open Item; these are the static
+base costs the curve will later act on.*
+
+**What this replaces.** As implemented today, Strain is a flat `BaseStrainCost`
+per item definition: the highest authored cost is 40 and a full wearable
+loadout totals 50 against the 100 cap, so the cap structurally cannot bite, and
+stars have no effect on cost. That is a placeholder, not the design. The design
+(ITEMIZATION_AND_LOOT.md) is per-slot Strain that scales with imbuement depth —
+this section gives it numbers.
+
+### The Schedule
+
+| Rarity | Strain on bind | Per star imbued | At 5-star ceiling |
+|---|---|---|---|
+| Salvage / Kept / Remembered | **0** — never, at any investment | — | 0 |
+| Resonant | 8 | +4 | **28** |
+| Pure | 15 | +6 | **45** |
+
+Strain is paid the moment the Prior Flame engages: binding costs the base, each
+star adds its increment. Mundane gear never touches Selah and never costs
+Strain — the day-one ten-slot loadout is free, exactly as itemization requires.
+
+### Why These Numbers — Each Target Checked
+
+- **"Pushing one piece to its full ceiling can cost more Strain than lightly
+  imbuing two."** A maxed Resonant (28) outweighs two fresh Resonant binds (16)
+  and two 1-star pieces (24). The itemization sentence is now arithmetic.
+- **The cap genuinely bites at endgame.** Two maxed Pure pieces cost 90; one
+  more fresh Resonant bind lands at 98. Three maxed Pure (135) is arithmetically
+  impossible. "Two maxed Pure and change" is the saturation point.
+- **Wide-and-shallow is capped too.** Ten fresh Resonant binds cost 80 —
+  wearable, barely. Ten 1-star Resonants cost 120 — impossible. The
+  every-slot-bound build tops out around one star of average depth, which is
+  the "which slots do I commit to?" question doing its job.
+- **The trait-versus-stats decision has real prices.** A lightly imbued Pure
+  (15–21) undercuts a maxed Resonant (28): wearing the build-defining trait
+  cheap versus the stat-stick deep is a genuine fork, not a dominated choice.
+
+### Worked Full Loadout
+
+A committed endgame spread: Pure chest at ceiling (45) + Resonant head at
+ceiling (28) + a Resonant left arm at 2 stars (16) = **89 of 100**. The remaining 11
+buys one more fresh Resonant bind (8) and nothing else — or is held in reserve
+against the decay curve, which will eventually inflate every number on this
+page. Seven of the ten slots in this loadout are mundane or lightly-touched,
+and that is the intended shape: deep commitment to a few pieces, not shallow
+commitment to everything.
+
+**Still open, unchanged:** the sunset/decay rate, the reintroduction
+convergence rate, and whether the cap differs by class. This schedule is the
+static input those curves consume.
+
+---
+
 ## The Sunset Mechanism
 
 **How it works:** Legendary and Pilgrimage-tier items have a strain cost that rises over time (tied to content cycles, not raw calendar time — see Open Items). When an item's strain cost exceeds the fixed Resonance cap, it becomes **unequippable.** Not deleted, not devalued in any other way — simply too heavy to currently carry.
@@ -90,7 +147,7 @@ A previously-sunset legendary can become relevant again not just through its own
 
 ## Open Items for Future Development
 
-- Exact strain-cost values and decay-rate curve per content tier (requires playtesting once multiple content cycles exist)
+- ~~Exact strain-cost values~~ and decay-rate curve per content tier — **base costs drafted 2026-08-04** (see Strain Costs — First Numbers, draft for review); the decay-rate curve remains open (requires playtesting once multiple content cycles exist)
 - Exact convergence rate for reintroduced items (how quickly a reintroduced copy catches up to current-tier decay)
 - Whether rotational scarcity (Model B logic) should be formally adopted for **cosmetics and non-combat flourishes** as a separate, parallel system to this one (tentatively yes, not yet designed)
 - Permanent vs. state-based diegetic visual treatment for reintroduced items — deferred until asset-driven UI work begins
