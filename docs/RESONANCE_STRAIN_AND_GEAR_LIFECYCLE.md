@@ -24,6 +24,12 @@ Earlier discussion considered raising the Resonant Level cap with each expansion
 
 ## Strain Costs — First Numbers
 
+**DEFERRED 2026-08-04 (user decision): all authored item definitions carry
+`BaseStrainCost = 0` in data until a dedicated strain-and-items balance pass.**
+*The schedules below (armor and weapon) survive as the reference draft that
+pass will start from — they are not live numbers. The cap stays 100 and the
+equip-time gate stays in code; with all costs zero it simply never engages.*
+
 **DRAFT FOR REVIEW 2026-08-04.** *Every number below is a first-pass proposal
 for redline. The sunset/decay curve remains an Open Item; these are the static
 base costs the curve will later act on.*
