@@ -446,23 +446,31 @@ struct FGothicWeaponSlot
     bool HasPerk(const FGameplayTag& Perk) const { return Perks.Contains(Perk); }
 
     /**
-     * PILOT EFFECT — Deep Reserves (+50% max reserve ammo).
+     * Deep Reserves (+50% max reserve ammo).
      *
      * Every read of MaxReserveAmmo goes through here rather than the asset, so
      * the ceiling, the HUD's max, and the Steadfast refill's headroom all agree.
-     * Part 2 replaces the hardcoded 1.5 with the catalog entry's Magnitude.
      */
     int32 GetEffectiveMaxReserve() const;
 
     /** Starting reserve with the same Deep Reserves scaling, so a fresh equip is not instantly below its own ceiling. */
     int32 GetEffectiveStartingReserve() const;
 
+    /**
+     * Extended Magazine (+25% magazine capacity, rounded up).
+     *
+     * Same treatment GetEffectiveMaxReserve got, and for the same reason: the
+     * initial fill, the reload's headroom, and the HUD's denominator must all
+     * read one number or the magazine can sit above a cap that says it cannot.
+     */
+    int32 GetEffectiveMagazineCapacity() const;
+
     /** Initialize ammo from the weapon data's defaults. Ammo-less weapons stay at zero. */
     void InitFromData()
     {
         if (WeaponData && WeaponData->bUsesAmmo)
         {
-            CurrentMagazine = WeaponData->MagazineCapacity;
+            CurrentMagazine = GetEffectiveMagazineCapacity();
             CurrentReserve = GetEffectiveStartingReserve();
         }
         else

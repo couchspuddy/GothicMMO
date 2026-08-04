@@ -38,6 +38,18 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|Steadfast")
     float TryConvertSteadfast(float SteadfastCost, float AmmoGranted);
 
+    /**
+     * Sets Steadfast to its ceiling. Added for the Spent Well weapon perk
+     * ("Covenant activation instantly refills Steadfast to full"), and kept
+     * general — nothing about it is perk-specific.
+     *
+     * Returns false when there is no attribute set yet or MaxSteadfast is still
+     * zero, i.e. the ASC is not initialized. Refusing there rather than writing
+     * zero keeps a not-yet-ready ASC from reading as a completed refill.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Steadfast")
+    bool RefillToFull();
+
     UFUNCTION(BlueprintPure, Category = "Gothic|Steadfast")
     float GetCurrentSteadfast() const;
 

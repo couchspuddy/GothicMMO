@@ -324,6 +324,38 @@ public:
     bool HasWeaponPerk(FGameplayTag Perk) const;
 
     /**
+     * Seconds the pawn has been holding still, or 0 while it is moving.
+     *
+     * Steady Read asks for "no movement input in the last 0.5s"; this measures
+     * VELOCITY instead, which is the honest proxy — input can be held against a
+     * wall, and a player being knocked around has given no input at all. Tracked
+     * in Tick off the movement component's horizontal speed.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    float GetStationaryDuration() const;
+
+    /**
+     * True while the pawn is moving under its own power at a real pace — the
+     * "sprinting/strafing" state Moving Target pays out on. Deliberately a speed
+     * test rather than a sprint-flag test: the project has no sprint tag, and
+     * strafing is in the perk's own wording, so any committed ground movement
+     * counts.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    bool IsMovingUnderOwnPower() const;
+
+    /**
+     * Puts rounds back into the active magazine without touching the reserve —
+     * Marksman's Due's refund. Clamped to the effective magazine cap, so a full
+     * magazine silently absorbs nothing rather than overfilling.
+     *
+     * Returns the number actually loaded (0 when the weapon carries no ammo or
+     * the magazine is already full). Pushes the HUD when it grants anything.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
+    int32 AddRoundsToMagazine(int32 Rounds = 1);
+
+    /**
      * Overall Gear Power (average across equipped gear). No longer touches
      * damage — weapon damage now reads the weapon's own tier, and armor tier
      * expresses through Gear Score → Attack Power. Kept as the activity-gating
@@ -917,6 +949,23 @@ private:
     /** See GetConsecutiveHits. Transient — a streak should not survive a respawn. */
     UPROPERTY(Transient)
     int32 ConsecutiveWeaponHits = 0;
+
+    /**
+     * World time of the last frame this pawn was moving, for
+     * GetStationaryDuration (Steady Read). Negative until the first Tick so a
+     * pawn that has never moved still reads as stationary rather than as having
+     * stood still since world time zero.
+     */
+    UPROPERTY(Transient)
+    float LastMovingWorldTime = -1.f;
+
+    /**
+     * Horizontal speed (cm/s) at or above which the pawn counts as moving, for
+     * both Steady Read and Moving Target. Well above the residual drift a
+     * standing character reports on uneven ground, well below a walk.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|Weapons", meta = (ClampMin = "0.0"))
+    float PerkMovementSpeedThreshold = 20.f;
 
     /** Resolve the granted Loved-and-the-Lost passive instance, or null. */
     const UGA_TheLovedAndTheLost* FindLovedAndLost() const;
