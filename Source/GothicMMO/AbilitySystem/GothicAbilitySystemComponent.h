@@ -141,9 +141,28 @@ public:
      * next to an ability count, which read as "8 abilities went into 1 slot".
      * The two numbers were never about the same thing; this is the one that is.
      */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Abilities")
     int32 GetRegisteredAbilitySlotCount() const { return SlotToAbilityMap.Num(); }
 
 protected:
+    /**
+     * Rebuilds SlotToAbilityMap from the replicated ability list.
+     *
+     * SlotToAbilityMap is only ever written by GrantStartupAbilities, which
+     * early-returns without authority, so on a client the map stayed empty
+     * forever: TryActivateAbilityBySlot fell straight through to its silent
+     * `return false`, and the HUD's cooldown overlay — which polls
+     * GetCooldownRemainingForSlot / GetCooldownTotalForSlot through the same map
+     * — read nothing on every non-host player. The specs themselves DO replicate
+     * (this ASC is replicated, Full mode), and each one carries its ability CDO,
+     * so the slot is recoverable client-side from GetAbilitySlot().
+     *
+     * Rebuilt from scratch rather than merged, so a revoked ability drops out of
+     * the map on the client the same way it does on the server.
+     */
+    UFUNCTION()
+    virtual void OnRep_ActivateAbilities() override;
+
     /** Maps slot enum → ability spec handle for quick input lookup. */
     TMap<EGothicAbilitySlot, FGameplayAbilitySpecHandle> SlotToAbilityMap;
 

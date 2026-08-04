@@ -39,6 +39,26 @@ void UGothicAbilitySystemComponent::GrantStartupAbilities(
 
 }
 
+void UGothicAbilitySystemComponent::OnRep_ActivateAbilities()
+{
+    Super::OnRep_ActivateAbilities();
+
+    // The client half of GrantStartupAbilities. See the header for why the map
+    // is empty here in the first place.
+    SlotToAbilityMap.Empty();
+
+    for (const FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
+    {
+        const UGothicGameplayAbility* AbilityCDO = Cast<UGothicGameplayAbility>(Spec.Ability);
+        if (!AbilityCDO)
+        {
+            continue;
+        }
+
+        SlotToAbilityMap.Add(AbilityCDO->GetAbilitySlot(), Spec.Handle);
+    }
+}
+
 bool UGothicAbilitySystemComponent::TryActivateAbilityBySlot(EGothicAbilitySlot Slot)
 {
 
