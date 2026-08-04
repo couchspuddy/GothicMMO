@@ -2,6 +2,8 @@
 **Vigil — Resource & Loot Design Document**
 *Status: Locked — Core Structure. **Amended July 16, 2026** — see ITEMIZATION_AND_LOOT.md, which supersedes this document on four points: Pilgrimage item variance, the scope of the "Selah cannot buy best-in-slot" rule, Pure/Unique drop sourcing, and rarity naming. Amended passages below are marked inline. Everything else here stands.*
 
+*Draft addenda, August 4, 2026 (**DRAFT FOR REVIEW 2026-08-04** — numbers proposed, not locked): weapon damage now scales by the weapon's own tier and rolled weapon perks are proposed as the weapon variance axis (WEAPON_ARCHETYPES.md); Attack Power and Defense scale with a summed armor Gear Score and damage multiplies off them (ITEMIZATION_AND_LOOT.md); first-pass per-rarity Strain costs give the 100 cap teeth (RESONANCE_STRAIN_AND_GEAR_LIFECYCLE.md). None of it changes this document's axes — gear quality remains the ceiling, Selah the completion, Strain the capacity — those drafts put numbers under the second and third axis.*
+
 ---
 
 ## Overview
@@ -143,7 +145,7 @@ This economy structure was built to satisfy several existing Vigil design tenets
 
 - ~~Exact loot pool quality bands per activity tier~~ — **CLOSED July 16, 2026.** Drop eligibility is now gated by *enemy tier* rather than activity tier: Thrall → Salvage/Kept, Retained → Kept/Remembered, Lucid → Remembered/Resonant. See ITEMIZATION_AND_LOOT.md.
 - Full Pilgrimage mission content design (semi-random structure, specific lore-piece implementation). **Now higher priority than when filed** — the Pilgrimage is the sole source of top-tier gear, not a side narrative, so this is endgame activity design.
-- Resonant Level progression curve and its relationship to Resonance Strain thresholds
+- Resonant Level progression curve and its relationship to Resonance Strain thresholds — *partially advanced 2026-08-04: first-pass per-rarity Strain costs are drafted for review in RESONANCE_STRAIN_AND_GEAR_LIFECYCLE.md; the Resonant Level access curve itself remains open*
 - Final decision on lottery odds visibility
 - Whether Selah gifting (non-marketplace, direct player-to-player) should be reconsidered — currently locked as fully non-tradeable
 - **Hollow reward currency** — the Hollow are pre-human and drop no gear. What they *do* drop is undesigned.

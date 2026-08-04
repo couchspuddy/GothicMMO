@@ -22,6 +22,104 @@ Earlier discussion considered raising the Resonant Level cap with each expansion
 
 ---
 
+## Strain Costs — First Numbers
+
+**DRAFT FOR REVIEW 2026-08-04.** *Every number below is a first-pass proposal
+for redline. The sunset/decay curve remains an Open Item; these are the static
+base costs the curve will later act on.*
+
+**What this replaces.** As implemented today, Strain is a flat `BaseStrainCost`
+per item definition: the highest authored cost is 40 and a full wearable
+loadout totals 50 against the 100 cap, so the cap structurally cannot bite, and
+stars have no effect on cost. That is a placeholder, not the design. The design
+(ITEMIZATION_AND_LOOT.md) is per-slot Strain that scales with imbuement depth —
+this section gives it numbers.
+
+### The Schedule
+
+| Rarity | Strain on bind | Per star imbued | At 5-star ceiling |
+|---|---|---|---|
+| Salvage / Kept / Remembered | **0** — never, at any investment | — | 0 |
+| Resonant | 8 | +4 | **28** |
+| Pure | 15 | +6 | **45** |
+
+Strain is paid the moment the Prior Flame engages: binding costs the base, each
+star adds its increment. Mundane gear never touches Selah and never costs
+Strain — the day-one ten-slot loadout is free, exactly as itemization requires.
+
+### Why These Numbers — Each Target Checked
+
+- **"Pushing one piece to its full ceiling can cost more Strain than lightly
+  imbuing two."** A maxed Resonant (28) outweighs two fresh Resonant binds (16)
+  and two 1-star pieces (24). The itemization sentence is now arithmetic.
+- **The cap genuinely bites at endgame.** Two maxed Pure pieces cost 90; one
+  more fresh Resonant bind lands at 98. Three maxed Pure (135) is arithmetically
+  impossible. "Two maxed Pure and change" is the saturation point.
+- **Wide-and-shallow is capped too.** Ten fresh Resonant binds cost 80 —
+  wearable, barely. Ten 1-star Resonants cost 120 — impossible. The
+  every-slot-bound build tops out around one star of average depth, which is
+  the "which slots do I commit to?" question doing its job.
+- **The trait-versus-stats decision has real prices.** A lightly imbued Pure
+  (15–21) undercuts a maxed Resonant (28): wearing the build-defining trait
+  cheap versus the stat-stick deep is a genuine fork, not a dominated choice.
+
+### Worked Full Loadout
+
+A committed endgame spread: Pure chest at ceiling (45) + Resonant head at
+ceiling (28) + a Resonant left arm at 2 stars (16) = **89 of 100**. The remaining 11
+buys one more fresh Resonant bind (8) and nothing else — or is held in reserve
+against the decay curve, which will eventually inflate every number on this
+page. Seven of the ten slots in this loadout are mundane or lightly-touched,
+and that is the intended shape: deep commitment to a few pieces, not shallow
+commitment to everything.
+
+### Weapon Strain — First Numbers
+
+**DRAFT FOR REVIEW 2026-08-04.** *Confirmed 2026-08-04: weapons cost Strain at
+Resonant/Pure rarity, drawn from the same fixed 100-point pool as armor (see
+`WEAPON_PERK_TABLES.md`). The schedule above is therefore **armor-only**; this
+subsection is the weapon-side pass it was missing. Every number is a proposal
+for redline; exact coefficients remain deferred per the Live Balance note.*
+
+Weapons carry the same 5-star ceiling as armor — no document says otherwise —
+and mundane-rarity weapons (Salvage/Kept/Remembered) cost zero, exactly like
+mundane armor. The weapon schedule runs lighter than armor's because a player
+wears ten armor slots against three weapon slots: a weapon at armor prices
+would be proportionally the most expensive thing on the body.
+
+| Rarity (weapon) | Strain on bind | Per star imbued | At 5-star ceiling |
+|---|---|---|---|
+| Salvage / Kept / Remembered | **0** | — | 0 |
+| Resonant | 6 | +3 | **21** |
+| Pure | 12 | +5 | **37** |
+
+### Worked Loadouts — Weapons and Armor Competing for One Pool
+
+- **Deep armor forecloses the weapon.** Two maxed Pure armor pieces (90) leave
+  10 points: a Resonant weapon can bind (96) and take exactly one star (99)
+  before busting the cap, and a Pure weapon (12) cannot bind at all. Any real
+  weapon commitment on top of the deepest armor build busts 100.
+- **Mixed commitments land in the 90s**, which is the intended tension band:
+  - Maxed Pure weapon (37) + maxed Pure armor (45) + a 1-star Resonant armor
+    piece (12) = **94**
+  - Maxed Pure weapon (37) + two maxed Resonant armor pieces (28 + 28) = **93**
+  - Maxed Resonant weapon (21) + maxed Pure armor (45) + maxed Resonant armor
+    (28) = **94**
+- The weapon-side "ceiling vs. spread" check still holds: a maxed Resonant
+  weapon (21) costs more than two fresh weapon binds (12) or two 1-star weapon
+  binds (18).
+
+**Tension note for the redline:** under the armor schedule above (itself under
+review), the two-maxed-Pure-armor build locks weapons out entirely rather than
+squeezing them — if that reads as impossible rather than tight, the give should
+come from the armor numbers, which are not adjusted here.
+
+**Still open, unchanged:** the sunset/decay rate, the reintroduction
+convergence rate, and whether the cap differs by class. This schedule is the
+static input those curves consume.
+
+---
+
 ## The Sunset Mechanism
 
 **How it works:** Legendary and Pilgrimage-tier items have a strain cost that rises over time (tied to content cycles, not raw calendar time — see Open Items). When an item's strain cost exceeds the fixed Resonance cap, it becomes **unequippable.** Not deleted, not devalued in any other way — simply too heavy to currently carry.
@@ -90,7 +188,7 @@ A previously-sunset legendary can become relevant again not just through its own
 
 ## Open Items for Future Development
 
-- Exact strain-cost values and decay-rate curve per content tier (requires playtesting once multiple content cycles exist)
+- ~~Exact strain-cost values~~ and decay-rate curve per content tier — **armor base costs drafted 2026-08-04** (see Strain Costs — First Numbers) and **weapon-side base costs drafted 2026-08-04** (see Weapon Strain — First Numbers), both draft for review with exact coefficients still deferred per the Live Balance note; the decay-rate curve remains open (requires playtesting once multiple content cycles exist)
 - Exact convergence rate for reintroduced items (how quickly a reintroduced copy catches up to current-tier decay)
 - Whether rotational scarcity (Model B logic) should be formally adopted for **cosmetics and non-combat flourishes** as a separate, parallel system to this one (tentatively yes, not yet designed)
 - Permanent vs. state-based diegetic visual treatment for reintroduced items — deferred until asset-driven UI work begins

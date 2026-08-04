@@ -324,35 +324,113 @@ looks wrong until an asset exists.
 
 ---
 
-## Open Question — Weapon Rarity Does Nothing
+## DECIDED (2026-08-04) — Weapon Damage Scales by the Weapon's Own Tier
 
-Worth flagging because it undercuts the loot chase and is not addressed by any
-number above.
+**DRAFT FOR REVIEW 2026-08-04.** *The decision is settled; every number below is
+a first-pass proposal for redline.*
 
-A weapon's damage comes entirely from its `UGothicWeaponData`. Rarity, gear tier,
+**Option 1 wins, applied per-instance.** A weapon's damage scales by its own
+instance's Gear Power, not by anything the wearer has on:
+
+```
+FinalWeaponDamage = WeaponData.Damage
+                  × (WeaponInstance.GearPower / 100)
+                  × (1 + ArchetypeBonusPct / 100)
+```
+
+**The armor-average GearFloor is removed from the weapon formula.** Since this
+document's first pass, an interim implementation scaled weapon damage by the
+*armor-average* Gear Power — so the diagnosis preserved below became half-stale:
+weapon damage did start reading gear, but the **wrong** gear. Ten armor slots
+voted on how hard a Revolver hits while the Revolver's own rarity still did
+nothing, and the average diluted any single armor upgrade to a tenth of its
+face value. Both problems end here. Armor tier now expresses through Gear Score
+→ Attack Power (see the Gear Score draft in `ITEMIZATION_AND_LOOT.md`); weapon
+tier expresses through the weapon itself. Each axis pays off on the object the
+player actually farmed — which is the entire point of a loot chase.
+
+Why option 1 over its rivals:
+
+- **A pure multiplier preserves archetype identity.** Relative DPS ordering is
+  unchanged at every tier; the Derringer's pitch is the Derringer's pitch at
+  Tier 1 and Tier 5. Balance work done once holds everywhere.
+- **Option 2 (a rolled damage secondary) dies on an existing ruling** —
+  itemization explicitly rejected flat damage from the rollable pool, and a
+  weapon-side damage roll is the same tax with a different collector. Weapon
+  per-drop variance is instead carried by rolled *perks* (see the proposal
+  below), which pass the "who does this help" test that damage never can.
+- **Option 3 (accept it) forfeits the weapon-side loot chase** at the exact
+  moment the rarity ladder makes weapons droppable at five rarities.
+
+Since `GetGearPower() = GearTier × 100` with no per-drop variance (deliberate),
+the multiplier **is** the tier: ×1 at Tier 1, ×2 at Tier 2, ×3 at Tier 3, ×5 at
+Tier 5. **Salvage weapons floor at ×1.0** — Salvage has no tier and no upgrade
+path, so a Salvage weapon fires at book value, identical to Tier 1. That keeps
+the Calibration Reference at the top of this document true as written: every
+authored `Damage` value is the Tier-1/Salvage number.
+
+### Worked Damage Table — Per Shot, `ArchetypeBonusPct = 0`
+
+| Archetype | Base | Tier 1 (×1) | Tier 2 (×2) | Tier 3 (×3) | Tier 5 (×5) |
+|---|---|---|---|---|---|
+| Revolver | 22 | 22 | 44 | 66 | 110 |
+| Repeating Pistol | 11 | 11 | 22 | 33 | 55 |
+| Derringer | 45 | 45 | 90 | 135 | 225 |
+| Lever-Action Repeater | 26 | 26 | 52 | 78 | 130 |
+| Bolt-Action Rifle | 60 | 60 | 120 | 180 | 300 |
+| Sawed-Off (Scattergun) | 70 | 70 | 140 | 210 | 350 |
+| Carbine | 18 | 18 | 36 | 54 | 90 |
+| Gatling Rig | 12 | 12 | 24 | 36 | 60 |
+| Bomb Thrower (Censer Launcher) | 90 | 90 | 180 | 270 | 450 |
+| Breacher | 110 | 110 | 220 | 330 | 550 |
+| Heavy Melee | 55 | 55 | 110 | 165 | 275 |
+| Oversurge Repeater* | 4 | 4 | 8 | 12 | 20 |
+
+*\*The Oversurge Repeater postdates this document's first pass (12 weapons now,
+not 11); it is listed here for the tier table only. Its identity lives in its
+hooks — 12% stun chance and a streak damage multiplier — which the tier
+multiplier scales alongside the base 4.*
+
+Tier 4 stays a skipped step for weapons exactly as it is for armor: no rarity's
+ceiling lands there, and the ×3 → ×5 jump is the same deliberate cliff.
+
+**Enemy-side counterpart is not designed here.** A Tier-5 Breacher hits for 550
+against enemy pools authored for the Tier-1 chart; current enemies are
+effectively Tier-1 content. The enemy stat/HP tiering that must grow opposite
+this curve is flagged as an open sub-question in the Gear Score draft
+(`ITEMIZATION_AND_LOOT.md`).
+
+### The Original Question, Preserved for the Record
+
+*Superseded 2026-08-04 by the decision above; kept because the diagnosis is the
+rationale.*
+
+A weapon's damage came entirely from its `UGothicWeaponData`. Rarity, gear tier,
 star ceiling, and rolled stats all live on the `UGothicItemDefinition` and its
-`FGothicItemInstance`. Nothing in `PerformFireTrace` reads them.
+`FGothicItemInstance`; at the time of writing nothing in `PerformFireTrace` read
+them *(later interim state: it read the armor-average Gear Power — now also
+superseded)*.
 
 The consequence: **a Salvage Revolver and a Pure Revolver hit for exactly 22.**
 Two players with the same archetype have identical weapons regardless of what
 either of them farmed. For armor this is fine — armor's whole contribution is
 its rolled stats. For weapons it means the drop chase has no weapon-side payoff.
 
-Three ways out, not yet decided:
+Three ways out were on the table: **(1) scale damage by the instance's Gear
+Power — CHOSEN**; (2) let weapons roll a damage secondary — rejected, see above;
+(3) accept it — rejected, see above.
 
-1. **Scale damage by the instance's Gear Power** in `PerformFireTrace` — one
-   multiplier, keeps every archetype's identity, makes tier the axis. Cheapest.
-2. **Let weapons roll a damage secondary** from `SecondaryStatPool`, so variance
-   is per-drop rather than per-tier. Fits the itemization doctrine's
-   "variance belongs wherever repetition is desired" better, but needs the
-   secondary stat pipeline to reach the fire trace.
-3. **Accept it** — weapons are archetype-only, and the loot chase lives entirely
-   in the ten armor slots. Defensible, and it keeps weapon balance tractable, but
-   it should be a stated decision rather than an accident of implementation.
+---
 
-This should be settled before the eleven archetypes are authored, because option
-2 changes what `SecondaryStatPool` needs to contain on every weapon item
-definition.
+## PROPOSAL — Rolled Weapon Perks (Not Yet Decided)
+
+**SUPERSEDED 2026-08-04 by `WEAPON_PERK_TABLES.md`** *(user curation pass:
+bucket structure, exclusions, per-weapon tables)*. The 14-perk catalog that
+briefly lived here was the input to that pass; everything that survived it —
+plus the 3-roll bucket structure, the categorical/threshold exclusion rules,
+the per-weapon curation table, and the Practiced Motion cut — now lives there.
+Weapon Strain participation is confirmed; the weapon-side draft numbers are in
+`RESONANCE_STRAIN_AND_GEAR_LIFECYCLE.md`.
 
 ---
 
