@@ -162,6 +162,19 @@ def _activate(pawn, slot_name, result_key):
     So the authority check happens BEFORE the ASC is touched. C++ carries the same
     tripwire (GothicAbilitySystemComponent::TryActivateAbilityBySlot), but the
     harness must not rely on it: an older binary would still recurse.
+
+    REMOTE LOCALPREDICTED -- why a `true` here is not always an activation
+    ---------------------------------------------------------------------
+    Driving the SERVER world's pawn for a second player passes the authority check
+    and then reports a `true` that means nothing ran. GAS's TryActivateAbility
+    defaults bAllowRemoteActivation to true, and for a LocalOnly/LocalPredicted
+    ability whose avatar is not locally controlled it calls
+    ClientTryActivateAbility and returns true without activating
+    (AbilitySystemComponent_Abilities.cpp:1621-1627). A ServerInitiated ability --
+    which is the GothicGameplayAbility default, so most slots -- genuinely does
+    run in that same situation and also answers true, so the bool alone cannot
+    tell them apart. IsSlotAbilityLocallyPredicted does, and the false reported
+    below is the honest answer for the LocalPredicted case (GA_Fire, PRIMARY_FIRE).
     """
     asc = pawn.get_gothic_asc()
     if asc is None:
@@ -186,7 +199,48 @@ def _activate(pawn, slot_name, result_key):
                 "than reusing a client label." % pawn.get_name(),
         }
 
-    activated = bool(asc.try_activate_ability_by_slot(common.ability_slot(slot_name)))
+    slot_enum = common.ability_slot(slot_name)
+
+    # Read local control BEFORE activating: it decides whether a `true` below is
+    # a real activation or the engine's remote-activation stub. See REMOTE
+    # LOCALPREDICTED in the docstring.
+    locally_controlled = common.try_read(lambda: bool(pawn.is_locally_controlled()))
+
+    activated = bool(asc.try_activate_ability_by_slot(slot_enum))
+
+    if activated and locally_controlled is False:
+        # is_slot_ability_locally_predicted separates the two meanings of true.
+        # try_read, not a direct call: an older binary does not have it, and the
+        # honest answer there is to leave the raw result alone.
+        local_predicted = common.try_read(
+            lambda: bool(asc.is_slot_ability_locally_predicted(slot_enum)))
+
+        if local_predicted is True:
+            return {
+                result_key: False,
+                "slot": slot_name,
+                "actor": pawn.get_name(),
+                "gas_returned": True,
+                "refused": "local-predicted-on-remote-pawn",
+                "failure_means":
+                    "NOTHING RAN, despite GAS answering true. %s is authoritative "
+                    "here but is NOT locally controlled, and the ability in this "
+                    "slot is LocalPredicted. TryActivateAbility defaults "
+                    "bAllowRemoteActivation to true, so for a Local* ability on a "
+                    "remote pawn it fires ClientTryActivateAbility at the owning "
+                    "client and returns true UNCONDITIONALLY, without activating "
+                    "anything (AbilitySystemComponent_Abilities.cpp:1621-1627). "
+                    "Under the editor script guard that RPC does not even leave "
+                    "the process -- callspace is forced Local, so it re-enters "
+                    "this same ASC, still not locally controlled, and fails with "
+                    "\"Can't activate LocalOnly or LocalPredicted ability ... when "
+                    "not local.\" in the log. THERE IS CURRENTLY NO EDITOR-PYTHON "
+                    "ROUTE FOR SECOND-PLAYER ABILITY ACTIVATION: the client world "
+                    "is refused above (it would recurse), and the server world is "
+                    "refused by GAS design here. Do not read a P2 fire/ability "
+                    "step as evidence of anything." % pawn.get_name(),
+            }
+
     payload = {result_key: activated}
 
     if not activated:
@@ -534,30 +588,35 @@ def _apply_damage(target, amount, effect_path, instigator=None):
     kept as the default so existing scenarios do not change meaning, but it has
     two consequences worth knowing before reading any result produced by it:
 
-      * AttackPower contributes NOTHING. PostGameplayEffectExecute reads the
-        bonus off Context.GetOriginalInstigatorAbilitySystemComponent()
-        (GothicAttributeSet.cpp:170, :218-220), which here is the victim, so the
-        damage is max(1, Raw - Defense) and no attacker's AttackPower is ever
-        exercised. This is the exact mechanism behind the "apply_damage carries
-        no instigator" gotcha.
+      * The VICTIM'S OWN AttackPower is what gets added. PostGameplayEffectExecute
+        reads the bonus off Context.GetOriginalInstigatorAbilitySystemComponent()
+        (GothicAttributeSet.cpp:170, :218-222), and now that the context is built
+        through MakeDamageContext that resolves to the victim's own ASC, so the
+        health change is max(1, Raw + victim AttackPower - victim Defense). No
+        ATTACKER's AttackPower is exercised, which is the real point.
       * NotifyDamagedBy never fires with a real attacker
         (GothicAttributeSet.cpp:246-268 skips it for self-damage), so
         retaliation cannot be tested by harness damage at all.
 
     Passing `instigator` fixes both by mirroring the project's blessed route,
-    UGothicAbilitySystemComponent::ApplyEffectToASC
-    (GothicAbilitySystemComponent.cpp:236-260): make the spec off the SOURCE's
-    ASC and apply it to the target's.
+    UGothicAbilitySystemComponent::ApplyEffectToASC: make the spec off the
+    SOURCE's ASC and apply it to the target's.
 
-    The C++ builds its context through MakeDamageContext, which re-points the
-    instigator at the avatar (:213-234). That call is a plain static with no
-    UFUNCTION macro (GothicAbilitySystemComponent.h:63-65), so it does not exist
-    in Python -- but it does not need to. UAbilitySystemComponent::MakeEffectContext
-    already instigates with the ASC's OWNER, and the attribute set resolves the
-    attacker back through GetOriginalInstigatorAbilitySystemComponent rather
-    than off the actor. For a player that owner is AGothicPlayerState, which
-    implements IAbilitySystemInterface (GothicPlayerState.h:22), so it resolves
-    to the same ASC and the same GetAvatarActor() pawn the C++ route names.
+    The context is now built through UGothicAbilitySystemComponent::MakeDamageContext
+    (GothicAbilitySystemComponent.cpp:255-276), the same static every C++ damage
+    site uses, exposed to Python as a BlueprintCallable static.
+
+    THE PREVIOUS NOTE HERE WAS WRONG and this path silently carried AttackPower 0
+    for as long as it stood. It claimed stock make_effect_context() was equivalent
+    because the ASC's owner is the PlayerState, which implements
+    IAbilitySystemInterface. The owner is the CONTROLLER: AGothicCharacterBase
+    passes GetOwner() to InitializeGAS (GothicCharacterBase.cpp:100) for players
+    and enemies alike. A Controller has no ASC and implements no
+    IAbilitySystemInterface, so GetOriginalInstigatorAbilitySystemComponent()
+    came back null and the AttackBonus term at GothicAttributeSet.cpp:222 --
+    max(1, Raw + AttackBonus - Defense) -- was 0 no matter who was named.
+    MakeDamageContext re-points the instigator at the AVATAR, which does resolve
+    to an ASC, which is what makes AttackPower real here.
     """
     target_asc = target.get_gothic_asc()
     if target_asc is None:
@@ -583,7 +642,13 @@ def _apply_damage(target, amount, effect_path, instigator=None):
     #   so Python sees unreal.AbilitySystemLibrary.
     #   The spec apply lives on the ASC itself as BP_ApplyGameplayEffectSpecToTarget,
     #   exposed via ScriptName as apply_gameplay_effect_spec_to_target.
-    context = source_asc.make_effect_context()
+    #
+    # MakeDamageContext is a static, so it is a classmethod in Python. The avatar
+    # it takes is the PAWN that dealt the blow -- the target itself in the
+    # no-instigator self-damage shape -- never the ASC's owner.
+    source_avatar = instigator if instigator is not None else target
+    context = unreal.GothicAbilitySystemComponent.make_damage_context(
+        source_asc, source_avatar)
     spec = source_asc.make_outgoing_spec(effect_class, 1.0, context)
     spec = unreal.AbilitySystemLibrary.assign_tag_set_by_caller_magnitude(
         spec, _setbycaller_tag(effect_class), float(amount))
@@ -622,13 +687,19 @@ def _a_apply_damage(world, step):
         "health_before": before,
         "health_after": after,
         "alive": common.try_read(lambda: bool(target.is_alive())),
-        "note": ("raw damage; Defense and evasion still apply. "
-                 + ("Instigated: the attacker's AttackPower is added and "
-                    "NotifyDamagedBy fires, so retaliation is in play."
+        "note": ("`raw_amount` is the SetByCaller magnitude, NOT the health "
+                 "delta: the health change is max(1, raw + attacker AttackPower "
+                 "- target Defense), and evasion can drop it entirely. "
+                 + ("Instigated: the context is built through MakeDamageContext, "
+                    "so the instigator resolves to the attacker's AVATAR ASC and "
+                    "its AttackPower really is added -- expect health_before - "
+                    "health_after to EXCEED raw_amount whenever AttackPower beats "
+                    "Defense. NotifyDamagedBy fires, so retaliation is in play."
                     if instigator is not None else
-                    "SELF-DAMAGE -- no instigator, so AttackPower contributes 0 "
-                    "and NotifyDamagedBy never fires. Add an 'instigator' field "
-                    "to exercise either.")),
+                    "SELF-DAMAGE -- no instigator, so the victim is named as its "
+                    "own attacker: its own AttackPower is what gets added, and "
+                    "NotifyDamagedBy never fires. Add an 'instigator' field to "
+                    "test a real attacker or retaliation.")),
     }
 
 

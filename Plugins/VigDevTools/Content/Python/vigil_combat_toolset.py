@@ -433,7 +433,35 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
             })
         slot_enum = common.ability_slot(slot)
         common.audit("force_ability\t%s\t%s" % (pawn.get_name(), slot))
+        locally_controlled = common.try_read(
+            lambda: bool(pawn.is_locally_controlled()))
         activated = bool(asc.try_activate_ability_by_slot(slot_enum))
+
+        if activated and locally_controlled is False:
+            local_predicted = common.try_read(
+                lambda: bool(asc.is_slot_ability_locally_predicted(slot_enum)))
+            if local_predicted is True:
+                # GAS answered true without activating anything -- see _activate
+                # in vigil_combat_driver for the full mechanism.
+                return common.as_json({
+                    "actor": pawn.get_name(),
+                    "slot": slot.upper(),
+                    "activated": False,
+                    "gas_returned": True,
+                    "refused": "local-predicted-on-remote-pawn",
+                    "reason": "NOTHING RAN. This pawn is authoritative but not "
+                              "locally controlled, and the slot holds a "
+                              "LocalPredicted ability. TryActivateAbility fires "
+                              "ClientTryActivateAbility and returns true "
+                              "unconditionally in that case "
+                              "(AbilitySystemComponent_Abilities.cpp:1621-1627), "
+                              "and under the editor script guard the RPC never "
+                              "leaves the process. There is no editor-Python route "
+                              "for second-player ability activation today: the "
+                              "client world would recurse, the server world is "
+                              "refused by GAS design.",
+                })
+
         return common.as_json({
             "actor": pawn.get_name(),
             "slot": slot.upper(),

@@ -680,9 +680,12 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
     SourceASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
 
-    // One line tying the geometry above to the number the target actually takes.
+    // One line tying the geometry above to the number that went out on the wire.
+    // sent=, not applied=: this is the SetByCaller magnitude, before the attribute
+    // set adds AttackPower and subtracts Defense (GothicAttributeSet.cpp:222). It
+    // is NOT the health delta, and reading it as one has cost a false anomaly.
     UE_LOG(LogVigilCombat, Verbose,
-        TEXT("Damage: target=%s applied=%.1f (pre-vital=%.1f vital=%s reckoning=%s read=%s oversurge=%s)"),
+        TEXT("Damage: target=%s sent=%.1f (pre-vital=%.1f vital=%s reckoning=%s read=%s oversurge=%s)"),
         *Hit.GetActor()->GetName(),
         FinalDamage,
         PreVitalDamage,
