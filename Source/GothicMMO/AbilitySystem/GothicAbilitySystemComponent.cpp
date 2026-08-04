@@ -4,6 +4,8 @@
 #include "AbilitySystem/GothicGameplayAbility.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffect.h"
+#include "GothicMMO.h"                      // LogVigilCombat
+#include "CoreGlobals.h"                    // GAllowActorScriptExecutionInEditor
 
 UGothicAbilitySystemComponent::UGothicAbilitySystemComponent()
 {
@@ -61,6 +63,26 @@ void UGothicAbilitySystemComponent::OnRep_ActivateAbilities()
 
 bool UGothicAbilitySystemComponent::TryActivateAbilityBySlot(EGothicAbilitySlot Slot)
 {
+    // Editor-script tripwire. Editor Python runs inside FEditorScriptExecutionGuard,
+    // which sets GAllowActorScriptExecutionInEditor, and AActor::GetFunctionCallspace
+    // returns Local for EVERY RPC while that flag is true -- before any net-role test.
+    // So a LocalPredicted activation driven from a script against a non-authoritative
+    // ASC calls ServerTryActivateAbility, that RPC executes IN PROCESS, re-enters
+    // InternalTryActivateAbility still non-authoritative, and recurses unboundedly
+    // inside one frame: a dependent prediction key per lap, ~200MB/min of log, then a
+    // stack overflow that takes the editor with it.
+    //
+    // Only the harness can reach this. In a real client the flag is false and the RPC
+    // routes over the wire as normal, so this refusal cannot fire in shipped play.
+    // Drive the SERVER world's pawn for this player instead.
+    if (!IsOwnerActorAuthoritative() && GAllowActorScriptExecutionInEditor)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("TryActivateAbilityBySlot: refused non-authoritative activation from "
+                 "an editor-script context (would recurse; activate via the server-world "
+                 "pawn instead)"));
+        return false;
+    }
 
     if (const FGameplayAbilitySpecHandle* Handle = SlotToAbilityMap.Find(Slot))
     {
