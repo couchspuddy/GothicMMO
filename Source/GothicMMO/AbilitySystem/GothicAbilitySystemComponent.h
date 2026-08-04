@@ -160,7 +160,6 @@ protected:
      * Rebuilt from scratch rather than merged, so a revoked ability drops out of
      * the map on the client the same way it does on the server.
      */
-    UFUNCTION()
     virtual void OnRep_ActivateAbilities() override;
 
     /** Maps slot enum → ability spec handle for quick input lookup. */
