@@ -340,6 +340,21 @@ void UGothicBTService_CombatSync::TickNode(UBehaviorTreeComponent& OwnerComp,
                     UE_LOG(LogTemp, Verbose,
                         TEXT("CombatSync[%s]: TargetActor key was empty while the pawn held combat target %s — synced"),
                         *GetNameSafe(Pawn), *PawnTarget->GetName());
+
+                    // Also in TargetAcquire's format, because as far as the BT is
+                    // concerned this IS the acquisition — everything downstream of
+                    // the key starts here. It does not pass through
+                    // AGothicEnemyBase::SetCombatTarget (the pawn already holds the
+                    // latch; rerouting it would re-run the choke point against its
+                    // own output), so the line has to be written here or the route
+                    // stays invisible. Naturally edge-triggered: the branch only
+                    // runs while the key is empty, and this fills it.
+                    const UWorld* World = Pawn->GetWorld();
+                    UE_LOG(LogVigilCombat, Verbose,
+                        TEXT("VigilTimeline|t=%.3f|%s|TargetAcquire|target=%s|via=%s|distance=%.1f"),
+                        World ? World->GetTimeSeconds() : 0.f, *GetNameSafe(Pawn),
+                        *GetNameSafe(PawnTarget), TEXT("combat-sync"),
+                        FVector::Dist2D(Pawn->GetActorLocation(), PawnTarget->GetActorLocation()));
                 }
             }
         }

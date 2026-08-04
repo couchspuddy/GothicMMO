@@ -97,6 +97,21 @@ void AGothicEnemyAIController::OnPossess(APawn* InPawn)
         UE_LOG(LogTemp, Verbose,
             TEXT("GothicEnemyAIController[%s]: flushing target %s cached before the Blackboard existed"),
             *GetName(), *Pending->GetName());
+
+        // In the timeline too, and in TargetAcquire's format. This route reaches
+        // the Blackboard without passing through AGothicEnemyBase::SetCombatTarget
+        // — the pawn-side latch was written before possession, so the choke point's
+        // line was emitted then (or, if aggro predates the pawn's controller
+        // entirely, never). Naturally edge-triggered: the pending target is a
+        // one-shot, reset immediately above.
+        const UWorld* World = GetWorld();
+        const APawn* FlushPawn = GetPawn();
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|TargetAcquire|target=%s|via=%s|distance=%.1f"),
+            World ? World->GetTimeSeconds() : 0.f, *GetNameSafe(FlushPawn),
+            *GetNameSafe(Pending), TEXT("possess-flush"),
+            FlushPawn ? FVector::Dist2D(FlushPawn->GetActorLocation(), Pending->GetActorLocation()) : -1.f);
+
         SetBlackboardTarget(Pending);
     }
 
@@ -622,6 +637,15 @@ AActor* AGothicEnemyAIController::FindBestPerceivedTarget() const
         }
 
         const float Distance = FVector::Dist2D(PawnLocation, Candidate->GetActorLocation());
+
+        // Distance was a sort key and nothing else, which made "still perceived"
+        // the whole test — and perception can hold a stimulus far past the range
+        // any of it was earned at. See ReacquireRange in the header.
+        if (Distance > ReacquireRange)
+        {
+            continue;
+        }
+
         if (Distance < BestDistance)
         {
             BestDistance = Distance;
@@ -661,17 +685,11 @@ bool AGothicEnemyAIController::ReacquireFromPerception(const TCHAR* Via)
         return false;
     }
 
-    Enemy->SetCombatTarget(Best);
-
-    // Edge-triggered by construction: the guard above means this line can only be
-    // reached from a targetless state, so a target held across many rescans prints
-    // once, when it is latched. No latch member needed.
-    const UWorld* World = GetWorld();
-    UE_LOG(LogVigilCombat, Verbose,
-        TEXT("VigilTimeline|t=%.3f|%s|TargetAcquire|target=%s|via=%s|distance=%.1f"),
-        World ? World->GetTimeSeconds() : 0.f, *GetNameSafe(Enemy),
-        *GetNameSafe(Best), Via,
-        FVector::Dist2D(Enemy->GetActorLocation(), Best->GetActorLocation()));
+    // The via string travels with the call now. The TargetAcquire line used to be
+    // written here, which is why this was the only acquisition route with any
+    // presence in the timeline; it lives at the choke point in SetCombatTarget so
+    // every route gets the same treatment.
+    Enemy->SetCombatTarget(Best, Via);
 
     return true;
 }
@@ -805,7 +823,7 @@ void AGothicEnemyAIController::BreakLeash()
     // is the attempt that matters, so a failure here warns.
     EnsurePatrolOriginProjected(/*bWarnOnFailure=*/true);
 
-    UE_LOG(LogTemp, Log, TEXT("GothicEnemyAIController[%s]: leash broken — disengaging and returning to anchor %s"),
+    UE_LOG(LogVigilCombat, Log, TEXT("GothicEnemyAIController[%s]: leash broken — disengaging and returning to anchor %s"),
         *GetNameSafe(GetPawn()), *PatrolOrigin.ToCompactString());
 
     // Set the suppression flag BEFORE clearing, so nothing that reacts to the
@@ -873,7 +891,7 @@ void AGothicEnemyAIController::TickLeashReturn()
 
     if (bTimedOut && !bHome)
     {
-        UE_LOG(LogTemp, Warning,
+        UE_LOG(LogVigilCombat, Warning,
             TEXT("GothicEnemyAIController[%s]: leash return timed out after %.1fs at %.0fuu from anchor — "
                  "resetting anyway (check navmesh coverage between the arena and the anchor)"),
             *GetNameSafe(OwnerPawn), Elapsed,

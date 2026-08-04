@@ -346,6 +346,28 @@ protected:
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|AI")
     float LeashRange = 3000.f;
 
+    /**
+     * How far a perception rescan may reach (cm, horizontal).
+     *
+     * FindBestPerceivedTarget asks for every CURRENTLY perceived actor and used
+     * distance only to sort them, so any stimulus the perception component still
+     * holds was a valid re-acquisition regardless of range. With hearing stimuli
+     * that never aged out, that meant an enemy who had once heard a shot pulling
+     * the player back in from 7010uu, every 6s, each time starting an Approach the
+     * leash then cancelled.
+     *
+     * 2000 = the sight config's LoseSightRadius: the rescan can reach exactly as
+     * far as sight can hold. Do NOT tune it lower — the in-arena cases (a boss
+     * re-acquiring across her own room) live inside this radius, and shortening it
+     * regresses them.
+     *
+     * EDITANYWHERE for the same reason as LeashRange above: a placed enemy freezes
+     * its overrides at placement, so an EditDefaultsOnly value could never be
+     * repaired on an actor already standing in the level.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|AI")
+    float ReacquireRange = 2000.f;
+
     // ── Leash / disengage ────────────────────────────────────────────────────
 
     /**

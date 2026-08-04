@@ -52,6 +52,15 @@ AGothicEnemyBase::AGothicEnemyBase()
 
     UAISenseConfig_Hearing* HearingConfig = CreateDefaultSubobject<UAISenseConfig_Hearing>(TEXT("HearingConfig"));
     HearingConfig->HearingRange = 800.f;
+    // MaxAge is NOT optional here. The engine turns a MaxAge of 0 into
+    // NeverHappenedAge (FLT_MAX), so a hearing stimulus left unconfigured never
+    // expires: one gunshot within 800uu made the enemy permanently "currently
+    // perceiving" the shooter. Measured cost — the leash tick's rescan re-acquired
+    // the player every 6s forever, at any distance (7010uu), and
+    // ForgetTargetIfStillUnseen could never fire because it bails on any
+    // successfully-sensed stimulus. 5s matches the sight config above and is the
+    // intended window: heard a shot nearby, go and look.
+    HearingConfig->SetMaxAge(5.f);
     PerceptionComponent->ConfigureSense(*HearingConfig);
 
     PerceptionComponent->SetDominantSense(SightConfig->GetSenseImplementation());
@@ -268,7 +277,7 @@ void AGothicEnemyBase::OnPerceptionUpdated(const TArray<AActor*>& UpdatedActors)
                 // downed pawn keeps refreshing stimuli, so acquiring here without
                 // the test handed the body back to the enemy that had just
                 // dropped it, once per stimulus, forever.
-                SetCombatTarget(Actor);
+                SetCombatTarget(Actor, TEXT("perception"));
                 break;
             }
 
@@ -373,6 +382,11 @@ void AGothicEnemyBase::SetPackID(FName NewPackID)
 
 void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget)
 {
+    SetCombatTarget(NewTarget, TEXT("unspecified"));
+}
+
+void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget, const TCHAR* Via)
+{
     AGothicEnemyAIController* AIC = Cast<AGothicEnemyAIController>(GetController());
 
     // Refuse aggro while leashing home, and refuse it BEFORE the latch is set —
@@ -444,6 +458,20 @@ void AGothicEnemyBase::SetCombatTarget(AActor* NewTarget)
     if (LastAcquireRejectTarget.Get() == NewTarget)
     {
         LastAcquireRejectTarget = nullptr;
+    }
+
+    // Edge-triggered on the target, not on the call: perception re-latches the
+    // same actor at stimulus rate, and a line per stimulus is the noise that made
+    // the acquisition story unreadable in the first place. A held target prints
+    // once, when it is latched, and again only if it actually changes.
+    if (NewTarget && NewTarget != CombatTarget)
+    {
+        const UWorld* World = GetWorld();
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|TargetAcquire|target=%s|via=%s|distance=%.1f"),
+            World ? World->GetTimeSeconds() : 0.f, *GetNameSafe(this),
+            *GetNameSafe(NewTarget), Via,
+            FVector::Dist2D(GetActorLocation(), NewTarget->GetActorLocation()));
     }
 
     CombatTarget = NewTarget;
@@ -545,7 +573,7 @@ void AGothicEnemyBase::NotifyDamagedBy(AActor* DamageInstigator)
     // Through SetCombatTarget, never around it: that is the choke point that
     // consults IsAcceptingCombatTargets, and bypassing it here would break the
     // leash's no-re-aggro-during-return property for every damage source at once.
-    SetCombatTarget(DamageInstigator);
+    SetCombatTarget(DamageInstigator, TEXT("retaliation"));
 }
 
 void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
