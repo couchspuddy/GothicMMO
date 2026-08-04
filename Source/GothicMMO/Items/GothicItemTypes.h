@@ -6,6 +6,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameplayTagContainer.h"
 #include "UObject/ObjectPtr.h"
 #include "GothicItemTypes.generated.h"
 
@@ -187,7 +188,26 @@ struct FGothicItemInstance
     UPROPERTY(BlueprintReadOnly, Category = "Item")
     int32 GearPower = 0;
 
+    /**
+     * Rolled weapon perks — Perk.Weapon.<Bucket>.<Name> tags, three of them on a
+     * Resonant or Pure weapon (one per bucket), empty on everything else.
+     *
+     * On the INSTANCE, not on the shared UGothicWeaponData asset. That is the
+     * whole point: the per-weapon hooks this system generalises (Oversurge's
+     * streak and stun fields included) live on the shared asset today, so two
+     * drops of the same archetype cannot differ. These can.
+     *
+     * Tags rather than an enum or a struct array because they serialise with the
+     * instance for free, cost one array compare to test, and let a future perk
+     * be added without renumbering anything already in a save file.
+     */
+    UPROPERTY(BlueprintReadOnly, Category = "Item")
+    TArray<FGameplayTag> WeaponPerks;
+
     bool IsValid() const { return Definition != nullptr && InstanceID.IsValid(); }
+
+    /** True if this copy rolled the given perk. */
+    bool HasPerk(const FGameplayTag& Perk) const { return WeaponPerks.Contains(Perk); }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -1277,7 +1277,9 @@ void AGothicPlayerCharacter::PushAmmoToHUD() const
         Slot.CurrentMagazine,
         Slot.WeaponData->MagazineCapacity,
         Slot.CurrentReserve,
-        Slot.WeaponData->MaxReserveAmmo);
+        // Effective, not authored — the HUD's max has to move with Deep Reserves
+        // or the bar reads over 100% the moment the perk pays out.
+        Slot.GetEffectiveMaxReserve());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1326,7 +1328,8 @@ bool AGothicPlayerCharacter::ConvertSteadfastToReserve()
         return false;
     }
 
-    const int32 ReserveSpace = Slot.WeaponData->MaxReserveAmmo - Slot.CurrentReserve;
+    // Effective ceiling — Deep Reserves buys headroom for Steadfast to fill.
+    const int32 ReserveSpace = Slot.GetEffectiveMaxReserve() - Slot.CurrentReserve;
     if (ReserveSpace <= 0)
     {
         return false;
@@ -1489,6 +1492,22 @@ float AGothicPlayerCharacter::GetActiveWeaponTierMultiplier() const
     }
 
     return static_cast<float>(SlotGearPower) / WeaponTierBaselineGearPower;
+}
+
+const TArray<FGameplayTag>& AGothicPlayerCharacter::GetActiveWeaponPerks() const
+{
+    if (!WeaponSlots.IsValidIndex(ActiveWeaponIndex))
+    {
+        static const TArray<FGameplayTag> Empty;
+        return Empty;
+    }
+
+    return WeaponSlots[ActiveWeaponIndex].Perks;
+}
+
+bool AGothicPlayerCharacter::HasWeaponPerk(FGameplayTag Perk) const
+{
+    return GetActiveWeaponPerks().Contains(Perk);
 }
 
 int32 AGothicPlayerCharacter::GetAggregateGearPower() const
@@ -1897,6 +1916,17 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
         // property of the definition, identical for every copy rolled from it.
         // Per-copy variation lives in the rolled secondaries, not here.
         WeaponSlots[WeaponIndex].GearPower = Item.GearPower;
+
+        // Instance retention — the perk seam. Unlike GearPower above, THIS is
+        // what makes two copies of the same archetype differ: the perks were
+        // rolled per drop and would otherwise be discarded at this boundary,
+        // leaving the fire path with only the shared asset to read.
+        //
+        // Set before InitFromData, which asks the slot for its effective reserve
+        // and so must already be able to see Deep Reserves.
+        WeaponSlots[WeaponIndex].EquippedInstanceID = Item.InstanceID;
+        WeaponSlots[WeaponIndex].Perks = Item.WeaponPerks;
+
         WeaponSlots[WeaponIndex].InitFromData();
     }
     else
@@ -1906,6 +1936,8 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
         WeaponSlots[WeaponIndex].CurrentMagazine = 0;
         WeaponSlots[WeaponIndex].CurrentReserve = 0;
         WeaponSlots[WeaponIndex].GearPower = 0;
+        WeaponSlots[WeaponIndex].EquippedInstanceID.Invalidate();
+        WeaponSlots[WeaponIndex].Perks.Reset();
     }
 
     // Equipping into the active slot swaps the weapon out from under any in-progress

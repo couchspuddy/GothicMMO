@@ -8,11 +8,13 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
+#include "GameplayTagContainer.h"
 #include "Items/GothicItemTypes.h"
 #include "UI/GothicHUDTypes.h"
 #include "GothicWeaponData.generated.h"
 
 class UGameplayEffect;
+class UGothicWeaponPerkCatalog;
 class UNiagaraSystem;
 class UStaticMesh;
 
@@ -110,6 +112,24 @@ public:
     /** Multiplier applied on a confirmed vital hit. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Damage")
     float VitalDamageMultiplier = 2.f;
+
+    /**
+     * False for weapons that cannot register a vital hit at all — currently only
+     * the Bomb Thrower / Censer Launcher, per WEAPON_ARCHETYPES.md: "an explosion
+     * does not find a vital point."
+     *
+     * Explicit rather than inferred from VitalDamageMultiplier == 1.0. The
+     * multiplier being 1.0 says a vital hit is worth nothing extra, which is a
+     * balance statement; this flag says a vital hit cannot HAPPEN, which is a
+     * capability statement. They coincide on today's twelve assets and would
+     * stop coinciding the first time someone tuned a weapon's vital payoff to
+     * parity. The perk roll needs the capability answer, so it asks for it.
+     *
+     * Set false on DA_Weapon_BombThrower when authoring — the default is true so
+     * every other existing asset stays correct without an edit.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Damage")
+    bool bCanScoreVitalHits = true;
 
     /** The GameplayEffect that deals the damage. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Damage")
@@ -323,6 +343,37 @@ public:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback", meta = (ClampMin = "0.0"))
     float SuperGainOnHit = 5.f;
+
+    // ── Perks ────────────────────────────────────────────────────────────
+
+    /**
+     * The perk catalog this weapon rolls from (DA_WeaponPerkCatalog — one asset
+     * for the whole project). Null means this weapon rolls no perks at all,
+     * which is the correct behaviour until the asset is authored: an unset
+     * catalog degrades to today's perkless drops rather than to a crash.
+     *
+     * Lives here rather than on a global setting because the per-weapon
+     * exclusion list below already makes every weapon asset a stop on the
+     * authoring pass, so the reference costs no extra editor work.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Perks")
+    TObjectPtr<UGothicWeaponPerkCatalog> PerkCatalog;
+
+    /**
+     * Exclusion layer 3 — the hand-curated per-weapon list from
+     * WEAPON_PERK_TABLES.md's "Per-Weapon Curation" table. These are design
+     * judgment calls that no flag can derive: True Bore is excluded on the
+     * Gatling because degrading accuracy is the point of holding the trigger,
+     * not because the weapon lacks a capability.
+     *
+     * Layers 1 and 2 (capability flags, magazine threshold) are applied
+     * automatically and must NOT be duplicated here — listing Steady Read on the
+     * Bomb Thrower is harmless but redundant, and hides the fact that a future
+     * vital-less weapon gets that exclusion for free.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Perks",
+              meta = (Categories = "Perk.Weapon"))
+    TArray<FGameplayTag> ExcludedPerks;
 };
 
 /**
@@ -365,13 +416,54 @@ struct FGothicWeaponSlot
     UPROPERTY(BlueprintReadOnly, Category = "Weapon")
     int32 GearPower = 0;
 
+    /**
+     * Which rolled copy is in this slot. Invalid when the slot was filled from
+     * the Blueprint default loadout rather than from inventory.
+     *
+     * This is the seam WEAPON_PERK_TABLES.md's implementation note asks for. The
+     * slot used to keep the shared UGothicWeaponData asset and nothing else, so
+     * two drops of the same archetype could never differ — the instance was
+     * dropped at the equip boundary. The ID is kept alongside the perks so a
+     * consumer can tell "this is a different copy of the same gun" apart from
+     * "this is the same copy", which the perk list alone cannot answer.
+     */
+    UPROPERTY(BlueprintReadOnly, Category = "Weapon")
+    FGuid EquippedInstanceID;
+
+    /**
+     * Perks rolled onto the equipped copy, copied from FGothicItemInstance at
+     * equip time. Copied rather than referenced because the fire path reads this
+     * every shot and must not chase a pointer into inventory storage that a
+     * reorder could move.
+     *
+     * Empty for mundane drops, ammo-less default loadouts, and every weapon
+     * until DA_WeaponPerkCatalog is authored.
+     */
+    UPROPERTY(BlueprintReadOnly, Category = "Weapon")
+    TArray<FGameplayTag> Perks;
+
+    /** True if the equipped copy rolled this perk. The one call every effect goes through. */
+    bool HasPerk(const FGameplayTag& Perk) const { return Perks.Contains(Perk); }
+
+    /**
+     * PILOT EFFECT — Deep Reserves (+50% max reserve ammo).
+     *
+     * Every read of MaxReserveAmmo goes through here rather than the asset, so
+     * the ceiling, the HUD's max, and the Steadfast refill's headroom all agree.
+     * Part 2 replaces the hardcoded 1.5 with the catalog entry's Magnitude.
+     */
+    int32 GetEffectiveMaxReserve() const;
+
+    /** Starting reserve with the same Deep Reserves scaling, so a fresh equip is not instantly below its own ceiling. */
+    int32 GetEffectiveStartingReserve() const;
+
     /** Initialize ammo from the weapon data's defaults. Ammo-less weapons stay at zero. */
     void InitFromData()
     {
         if (WeaponData && WeaponData->bUsesAmmo)
         {
             CurrentMagazine = WeaponData->MagazineCapacity;
-            CurrentReserve = WeaponData->StartingReserveAmmo;
+            CurrentReserve = GetEffectiveStartingReserve();
         }
         else
         {

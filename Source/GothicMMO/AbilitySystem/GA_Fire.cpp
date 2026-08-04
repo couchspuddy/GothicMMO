@@ -718,8 +718,17 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
         if (SuperSpec.IsValid())
         {
+            // PILOT EFFECT — Kindling, "SuperGainOnHit +60% (5 -> 8)"
+            // (WEAPON_PERK_TABLES.md, Verb Bucket A). One of two effects wired in
+            // the seam PR purely to prove the equipped copy's perks reach the fire
+            // path; the other sixteen land in part 2, reading their magnitudes
+            // from the perk catalog instead of a constant here.
+            const float SuperGain = Char->HasWeaponPerk(GothicTags::Perk_Weapon_VerbA_Kindling)
+                ? WeaponData->SuperGainOnHit * 1.6f
+                : WeaponData->SuperGainOnHit;
+
             SuperSpec.Data->SetSetByCallerMagnitude(
-                GothicTags::Data_SuperMeter, WeaponData->SuperGainOnHit);
+                GothicTags::Data_SuperMeter, SuperGain);
 
             // To SELF: the meter belongs to the shooter, not the thing shot.
             SourceASC->ApplyGameplayEffectSpecToSelf(*SuperSpec.Data.Get());

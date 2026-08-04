@@ -39,4 +39,39 @@ namespace GothicTags
 
 	// ── Events ───────────────────────────────────────────────────────────────
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Kill_Confirmed);
+
+	// ── Weapon perks (WEAPON_PERK_TABLES.md) ─────────────────────────────────
+	// Rolled at drop onto FGothicItemInstance::WeaponPerks, three per Resonant or
+	// Pure weapon — one from each bucket. The bucket parents are declared so a
+	// container query can ask "does this weapon carry any Verb-A perk" without
+	// enumerating leaves, and so the catalog asset's bucket field and the tag
+	// name agree by construction.
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_FineTune);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbA);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbB);
+
+	// Fine-Tune bucket — numeric-only, one rolled per Resonant/Pure weapon.
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_FineTune_DeadHand);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_FineTune_TrueBore);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_FineTune_QuickHands);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_FineTune_DeepReserves);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_FineTune_ExtendedMagazine);
+
+	// Verb Bucket A — in-fight behaviour.
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbA_Jolt);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbA_Drumbeat);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbA_SteadyRead);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbA_MovingTarget);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbA_MarksmansDue);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbA_Kindling);
+
+	// Verb Bucket B — economy and utility.
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbB_WellTended);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbB_CharitableToll);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbB_FrugalHand);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbB_Overcharge);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbB_SpentWell);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbB_MuffledWork);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Perk_Weapon_VerbB_DreadReport);
 }
