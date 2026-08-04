@@ -97,11 +97,34 @@ def _aim_origin(pawn):
     return pawn.get_actor_location()
 
 
+def _step_world(world, step):
+    """The world a step addresses: its optional "world" field, else the run's.
+
+    Every scenario runs against the SERVER world and that stays the default, so
+    a step with no "world" field behaves exactly as it always has.
+
+    "world": "client" exists for ONE reason: LocalPredicted abilities -- GA_Fire
+    and every player active -- refuse to activate on a pawn that is not locally
+    controlled, so a second player's abilities can only be driven on THEIR PIE
+    instance. See the per-world block in vigil_pie_common for the two traps that
+    come with it (labels are per-world; a client world is not authoritative).
+    """
+    spec = step.get("world")
+    if spec is None:
+        return world
+    return common.resolve_world(spec)
+
+
 def _actor(world, step, key="actor"):
+    """Resolve a step's actor label, in the step's world.
+
+    The label is resolved in whichever world the step addresses, which matters:
+    the same name identifies different pawns on the server and client worlds.
+    """
     label = step.get(key)
     if not label:
         raise ValueError("step is missing required field '%s'" % key)
-    return common.resolve_actor(world, label)
+    return common.resolve_actor(_step_world(world, step), label)
 
 
 def _activate(pawn, slot_name):
@@ -509,7 +532,7 @@ def _a_selah(world, step):
 def _a_aim_at(world, step):
     """Point the controller at another actor's origin."""
     pawn = _actor(world, step)
-    target = common.resolve_actor(world, step["target"])
+    target = _actor(world, step, "target")
     controller = pawn.get_controller()
     if controller is None:
         raise LookupError("no controller on %s" % pawn.get_name())
@@ -849,8 +872,11 @@ def _a_aim_at_vital(world, step):
     independently confirmed at 2.5 (70.84 vital vs 34.34 body on the boss,
     reconciling to the same formula).
     """
+    # Rebound once, up front: the traces below have to run in the same world
+    # the pawns were resolved in, or they trace an empty copy of the level.
+    world = _step_world(world, step)
     pawn = _actor(world, step)
-    target = common.resolve_actor(world, step["target"])
+    target = _actor(world, step, "target")
     vital = common.component(target, "GothicVitalPointComponent")
     if vital is None:
         raise LookupError("%s has no GothicVitalPointComponent" % target.get_name())
@@ -896,7 +922,7 @@ def _a_aim_at_vital(world, step):
 def _a_set_target(world, step):
     """Force an enemy onto a target, skipping perception acquisition."""
     enemy = _actor(world, step)
-    target = common.resolve_actor(world, step["target"])
+    target = _actor(world, step, "target")
     enemy.set_combat_target(target)
     return {"enemy": enemy.get_name(), "target": target.get_name()}
 
@@ -1153,6 +1179,16 @@ def validate(steps):
             float(step.get("at", 0.0))
         except (TypeError, ValueError):
             problems.append("step %d: 'at' must be a number" % i)
+
+        # The spec is checked without touching PIE, so a typo'd world name
+        # ("clientt") is caught by scenario_validate rather than by one failed
+        # step twenty seconds into a run. Whether that instance EXISTS is only
+        # answerable at execution time, and resolve_world reports it there.
+        if step.get("world") is not None:
+            try:
+                common.world_spec_index(step["world"])
+            except ValueError as exc:
+                problems.append("step %d: %s" % (i, exc))
     return problems
 
 

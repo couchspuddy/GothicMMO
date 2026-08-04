@@ -57,6 +57,13 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
 
     Scenarios are submitted whole and executed against game time by an in-engine
     tick. Nothing here blocks. Pair with VigilPIETools for observation.
+
+    MULTIPLAYER: steps default to the server world, and any step taking an
+    "actor" or "target" accepts "world": "client" to act on a second PIE
+    instance instead. That is the only way to drive a remote player's abilities
+    -- LocalPredicted abilities refuse a pawn that is not locally controlled --
+    and results from a client world are predictions, not authority. See
+    scenario_actions.
     """
 
     # ----------------------------------------------------------------------
@@ -72,11 +79,40 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
         (game-time offset in seconds), a "do" (action name), and whatever
         fields that action requires.
 
+        Every step that takes an "actor" or a "target" also accepts an optional
+        "world" (server|client|client2), which is the ONLY way to drive a
+        remote player's abilities -- see the world_field entry in the result.
+
         Returns:
             JSON listing action names, required fields, and a worked example.
         """
         return common.as_json({
             "actions": driver.available_actions(),
+            "world_field": {
+                "field": "world",
+                "accepts": "server (default) | client | client2 | a PIE index",
+                "applies_to": "every action taking an 'actor' or a 'target'",
+                "why": "Player abilities are LocalPredicted, and a LocalPredicted "
+                       "ability REFUSES to activate on a pawn that is not locally "
+                       "controlled -- 'Can't activate LocalPredicted ability ... "
+                       "when not local'. On the server world a second player's "
+                       "pawn is a remote proxy, so fire/activate_slot/melee can "
+                       "never work on it there. Set world=client to drive it on "
+                       "their own PIE instance, where it IS locally controlled.",
+                "labels_are_per_world": "Actor names are assigned per PIE "
+                                        "instance. '_C_0' is the HOST's pawn on "
+                                        "the server world and the LOCAL PLAYER's "
+                                        "pawn on a client world -- same label, "
+                                        "different pawn. Never carry a name from "
+                                        "one world's list_combatants into a step "
+                                        "addressing another world.",
+                "not_authoritative": "A client world is a replicated copy. Reads "
+                                     "there may be stale and writes there are "
+                                     "local predictions. Use it to DRIVE local "
+                                     "activation (input-layer simulation) and "
+                                     "verify every outcome on the server world.",
+                "pattern": "activate on the client world, assert on the server world",
+            },
             "fields": {
                 "fire": {"actor": "str"},
                 "melee": {"actor": "str"},
@@ -160,8 +196,22 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                 {"at": 1.3, "do": "mark", "label": "burst_complete"},
                 {"at": 2.0, "do": "convert_steadfast", "actor": "Player"},
             ],
+            "multiplayer_example": [
+                {"at": 0.0, "do": "aim_at", "world": "client",
+                 "actor": "BP_GothicCharacter_C_0", "target": "Feral"},
+                {"at": 0.4, "do": "fire", "world": "client",
+                 "actor": "BP_GothicCharacter_C_0"},
+                {"at": 1.0, "do": "mark", "label": "client_fired"},
+            ],
+            "multiplayer_example_note": "The client's own pawn is _C_0 on ITS "
+                                        "world. Fire there because the ability "
+                                        "is LocalPredicted; then read the damage "
+                                        "on the SERVER world with VigilPIETools, "
+                                        "because only the server's numbers are "
+                                        "authoritative.",
             "note": "Actor labels are pawn names from VigilPIETools.list_combatants. "
-                    "A unique substring works.",
+                    "A unique substring works, and it is resolved in the step's "
+                    "'world' (server unless stated).",
         })
 
     @toolset_registry.tool_call
@@ -169,9 +219,11 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
     def scenario_validate(steps_json: str) -> str:
         """Check a scenario script without running it.
 
-        Cheap dry run: verifies JSON shape, action names, and timing fields.
-        It does NOT resolve actor labels, because actors may not exist until
-        the scenario spawns them.
+        Cheap dry run: verifies JSON shape, action names, timing fields, and
+        the spelling of any "world" field. It does NOT resolve actor labels,
+        because actors may not exist until the scenario spawns them, and it
+        does not check that a requested PIE instance is actually running --
+        that answer only exists at execution time.
 
         Args:
             steps_json: JSON array of step objects.
