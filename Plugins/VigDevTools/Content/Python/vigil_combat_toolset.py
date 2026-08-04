@@ -172,15 +172,12 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                     "amount": "float, RAW damage before Defense and evasion",
                     "instigator": "str, optional -- the attacker's label",
                     "effect": "str, optional GE class path",
-                    "_note": "Without 'instigator' the victim damages ITSELF: "
-                             "AttackPower contributes 0 (the attacker bonus is "
-                             "read off the context's original instigator ASC) "
-                             "and NotifyDamagedBy never fires, so retaliation "
-                             "cannot be tested. Name an instigator to exercise "
-                             "both -- the spec is then built from the "
-                             "attacker's ASC and applied to the target's, the "
-                             "same shape as "
-                             "UGothicAbilitySystemComponent::ApplyEffectToASC.",
+                    "_note": "Without 'instigator' the victim damages ITSELF. "
+                             "With one named, the spec is built from the "
+                             "instigator's ASC instead of the target's own; "
+                             "whether AttackPower/retaliation result depends "
+                             "on the game-side resolution and the "
+                             "instigator's stats -- verify, don't assume.",
                 },
                 "kill": {
                     "actor": "str", "margin": "float (optional, default 1000)",
