@@ -147,9 +147,13 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                 },
                 "equip_item": {
                     "actor": "str (player)",
-                    "instance_id": "str, 32 hex digits (from inventory_snapshot)",
+                    "instance_id": "str, 32 hex digits (from inventory_snapshot; "
+                                   "null there means this build will not reflect "
+                                   "the FGuid -- use 'definition')",
                     "definition": "str, asset path or bare name -- use INSTEAD of "
-                                  "instance_id",
+                                  "instance_id, and PREFER it: this path resolves "
+                                  "the item without reading an instance GUID at "
+                                  "all",
                     "_note": "Real UGothicInventoryComponent::EquipItem, the call "
                              "the inventory UI makes. The slot comes from the "
                              "item definition and is not a parameter. On a CLIENT "
@@ -171,7 +175,9 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                 "inventory_snapshot": {
                     "actor": "str (player)",
                     "_note": "Read-only. Source of instance_ids, and the way to "
-                             "assert an equip actually landed.",
+                             "assert an equip actually landed. Every inventory "
+                             "result also carries 'resolver_route' -- which "
+                             "PlayerState route reached the inventory.",
                 },
                 "grant_test_items": {
                     "actor": "str (player)",

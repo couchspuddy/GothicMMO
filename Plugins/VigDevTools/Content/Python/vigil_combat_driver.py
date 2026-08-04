@@ -416,10 +416,19 @@ def _a_swap(world, step):
 # --------------------------------------------------------------------------
 
 def _inventory(world, step):
-    return common.inventory_component(_actor(world, step))
+    return _inventory_with_route(world, step)[0]
 
 
-def _equip_result(inv, slot_entry, before, called, authority):
+def _inventory_with_route(world, step):
+    """(component, route). The route is the `player_state_route` string that
+    reached the PlayerState -- surfaced in every inventory result because
+    APawn::GetPlayerState is not in the bindings and WHICH fallback answered is
+    the first thing worth knowing when the inventory turns out unreachable."""
+    pawn = _actor(world, step)
+    return common.inventory_component(pawn), common.player_state_route(pawn)
+
+
+def _equip_result(inv, slot_entry, before, called, authority, route=None):
     """Shared result shape: what was asked, what the API said, what changed.
 
     `changed` is the load-bearing field. On a client `called` is meaningless
@@ -432,6 +441,7 @@ def _equip_result(inv, slot_entry, before, called, authority):
     after_summary = common.item_summary(after) if after is not None else None
     return {
         "slot": common.equip_slot_name(slot_entry),
+        "resolver_route": route,
         "returned": called,
         "authority": authority,
         "return_means": (
@@ -467,18 +477,18 @@ def _a_equip_item(world, step):
     The slot is NOT a parameter: the definition owns it
     (UGothicItemDefinition::EquipSlot), exactly as it does for the UI.
     """
-    inv = _inventory(world, step)
+    inv, route = _inventory_with_route(world, step)
     item = common.find_inventory_item(
         inv,
         instance_id=step.get("instance_id"),
         definition=step.get("definition"))
 
     summary = common.item_summary(item)
-    definition = item.definition
+    definition = common.item_definition(item)
     if definition is None:
         raise common.ItemNotFound(
             "Item %s has a null Definition, so it has no slot to equip into."
-            % summary["instance_id"])
+            % (summary["instance_id"] or summary["definition_name"]))
     slot_entry = definition.get_editor_property("equip_slot")
     before = common.equipped_in_slot(inv, slot_entry)
     authority = common.inventory_authority(inv)
@@ -486,9 +496,15 @@ def _a_equip_item(world, step):
     # The FGuid is handed straight back from the live struct and never rebuilt
     # from the string -- constructing an FGuid in Python is not something to
     # rely on, and there is no reason to.
-    called = bool(inv.equip_item(item.instance_id))
+    guid = common.item_instance_id(item)
+    if guid is None:
+        raise common.ItemNotFound(
+            "Found the item by definition, but its InstanceID struct could not "
+            "be read off the instance at all, and EquipItem takes an FGuid. "
+            "This is a binding failure, not a missing item: %s" % summary)
+    called = bool(inv.equip_item(guid))
 
-    result = _equip_result(inv, slot_entry, before, called, authority)
+    result = _equip_result(inv, slot_entry, before, called, authority, route)
     result["requested"] = summary
     if authority and not called:
         result["refusal"] = (
@@ -521,7 +537,7 @@ def _a_unequip_slot(world, step):
     which case fired rather than raising, so a scenario testing the full-
     inventory refusal can assert on it.
     """
-    inv = _inventory(world, step)
+    inv, route = _inventory_with_route(world, step)
     if "slot" not in step:
         raise ValueError(
             "unequip_slot needs a 'slot'. Known: %s"
@@ -533,7 +549,7 @@ def _a_unequip_slot(world, step):
     authority = common.inventory_authority(inv)
     called = bool(inv.unequip_slot(slot_entry))
 
-    result = _equip_result(inv, slot_entry, before, called, authority)
+    result = _equip_result(inv, slot_entry, before, called, authority, route)
     if authority and not called:
         items = len(common.inventory_items(inv))
         cap = common.try_read(
@@ -565,7 +581,8 @@ def _a_inventory_snapshot(world, step):
     to assert on the result -- particularly on a client, where the equip call's
     own return value is not a verdict.
     """
-    return common.inventory_snapshot(_inventory(world, step))
+    inv, route = _inventory_with_route(world, step)
+    return common.inventory_snapshot(inv, resolver_route=route)
 
 
 @_action("grant_test_items")
@@ -588,7 +605,7 @@ def _a_grant_test_items(world, step):
     (GothicInventoryComponent.h:81-87), so on a client this silently grants
     nothing -- which is why authority is reported and asserted below.
     """
-    inv = _inventory(world, step)
+    inv, route = _inventory_with_route(world, step)
     if not common.inventory_authority(inv):
         raise common.InventoryUnavailable(
             "grant_test_items needs authority: DebugSpawnTestItems calls "
@@ -611,7 +628,7 @@ def _a_grant_test_items(world, step):
             "The usual cause is a full inventory -- AddItem refuses at "
             "MaxInventorySize." % before)
     return {"items_before": before, "items_after": after,
-            "granted": after - before,
+            "granted": after - before, "resolver_route": route,
             "note": "armor only; no weapon definitions are reachable from here"}
 
 
