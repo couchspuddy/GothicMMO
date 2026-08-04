@@ -333,19 +333,31 @@ class VigilPIETools(unreal.ToolsetDefinition):
 
     @toolset_registry.tool_call
     @staticmethod
-    def list_combatants() -> str:
-        """List every pawn in the PIE world with a one-line combat summary.
+    def list_combatants(world: str = "server") -> str:
+        """List every pawn in one PIE world with a one-line combat summary.
 
         Cheap orientation call. The returned names are the actor labels every
-        other tool takes, here and in VigilCombatDrive.
+        other tool takes, here and in VigilCombatDrive -- but LABELS DIFFER
+        PER WORLD: the same name picks out a different pawn on the server
+        world than on a client world (see resolve_world in vigil_pie_common).
+        Always resolve and act within the same world.
+
+        On a client world, the local player's pawn is the one whose `role`
+        reads "ROLE_AutonomousProxy". Every other pawn on that world is a
+        replicated copy, not something local input can drive.
+
+        Args:
+            world: "server" (default, preserves prior behaviour byte-for-byte),
+                "client"/"client2"/..., a bare PIE instance index, or a
+                "UEDPIE_<n>_" spelling. See vigil_pie_common.resolve_world.
 
         Returns:
-            JSON array of pawns with health, alive state, and which Gothic
-            components each one has.
+            JSON array of pawns with health, alive state, role/remote_role,
+            and which Gothic components each one has.
         """
-        world = common.require_world()
+        resolved_world = common.resolve_world(world)
         rows = []
-        for pawn in common.all_pawns(world):
+        for pawn in common.all_pawns(resolved_world):
             rows.append({
                 "name": pawn.get_name(),
                 "class": common.try_read(lambda p=pawn: p.get_class().get_name()),
@@ -353,6 +365,11 @@ class VigilPIETools(unreal.ToolsetDefinition):
                 "max_health": common.try_read(
                     lambda p=pawn: round(float(p.get_max_health()), 1)),
                 "alive": common.try_read(lambda p=pawn: bool(p.is_alive())),
+                # Raw, not interpreted: on a client world the local pawn is
+                # AutonomousProxy, not Authority -- the caller judges which
+                # role means "mine" for the world it asked about.
+                "role": common.try_read(lambda p=pawn: str(p.get_local_role())),
+                "remote_role": common.try_read(lambda p=pawn: str(p.get_remote_role())),
                 "components": [
                     name for name in (
                         "GothicSteadfastComponent",
