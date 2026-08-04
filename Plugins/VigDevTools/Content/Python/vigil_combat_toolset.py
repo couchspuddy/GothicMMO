@@ -60,9 +60,11 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
 
     MULTIPLAYER: steps default to the server world, and any step taking an
     "actor" or "target" accepts "world": "client" to act on a second PIE
-    instance instead. That is the only way to drive a remote player's abilities
-    -- LocalPredicted abilities refuse a pawn that is not locally controlled --
-    and results from a client world are predictions, not authority. See
+    instance instead -- for READS, aiming, and movement. ABILITY ACTIVATION ON A
+    CLIENT WORLD IS REFUSED (fire, melee, activate_slot): editor Python forces a
+    Local callspace on every RPC, so a non-authoritative activation re-enters
+    itself through the in-process ServerTryActivateAbility and stack-overflows
+    the editor. Drive every player's abilities on the SERVER world. See
     scenario_actions.
     """
 
@@ -80,8 +82,8 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
         fields that action requires.
 
         Every step that takes an "actor" or a "target" also accepts an optional
-        "world" (server|client|client2), which is the ONLY way to drive a
-        remote player's abilities -- see the world_field entry in the result.
+        "world" (server|client|client2) -- for reads, aiming and movement. It is
+        NOT an ability-activation route; see the world_field entry in the result.
 
         Returns:
             JSON listing action names, required fields, and a worked example.
@@ -92,13 +94,23 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                 "field": "world",
                 "accepts": "server (default) | client | client2 | a PIE index",
                 "applies_to": "every action taking an 'actor' or a 'target'",
-                "why": "Player abilities are LocalPredicted, and a LocalPredicted "
-                       "ability REFUSES to activate on a pawn that is not locally "
-                       "controlled -- 'Can't activate LocalPredicted ability ... "
-                       "when not local'. On the server world a second player's "
-                       "pawn is a remote proxy, so fire/activate_slot/melee can "
-                       "never work on it there. Set world=client to drive it on "
-                       "their own PIE instance, where it IS locally controlled.",
+                "why": "Reads, aiming and movement against a second PIE instance. "
+                       "Use it to observe a client's local view of state.",
+                "ABILITY_ACTIVATION_IS_REFUSED": "fire, melee and activate_slot "
+                       "refuse a non-authoritative pawn and return "
+                       "refused='non-authoritative-world' WITHOUT calling the ASC. "
+                       "Editor Python runs under FEditorScriptExecutionGuard, which "
+                       "sets GAllowActorScriptExecutionInEditor, and "
+                       "AActor::GetFunctionCallspace then returns Local for every "
+                       "RPC before any net-role test -- so the LocalPredicted path's "
+                       "ServerTryActivateAbility executes IN PROCESS, re-enters "
+                       "InternalTryActivateAbility still non-authoritative, and "
+                       "recurses unboundedly in one frame: a dependent prediction "
+                       "key per lap, ~200MB/min of log, then a stack overflow that "
+                       "kills the editor. Real clients are unaffected (the flag is "
+                       "false and the RPC goes over the wire). Activate every "
+                       "player's abilities on the SERVER world -- that pawn's label "
+                       "differs, so get it from list_combatants(world=\"server\").",
                 "labels_are_per_world": "Actor names are assigned per PIE "
                                         "instance. '_C_0' is the HOST's pawn on "
                                         "the server world and the LOCAL PLAYER's "
@@ -108,10 +120,10 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                                         "addressing another world.",
                 "not_authoritative": "A client world is a replicated copy. Reads "
                                      "there may be stale and writes there are "
-                                     "local predictions. Use it to DRIVE local "
-                                     "activation (input-layer simulation) and "
-                                     "verify every outcome on the server world.",
-                "pattern": "activate on the client world, assert on the server world",
+                                     "local predictions. Observe there; act on "
+                                     "the server world.",
+                "pattern": "activate on the server world; use a client world only "
+                           "to see what that client believes",
             },
             "fields": {
                 "fire": {"actor": "str"},
@@ -217,18 +229,19 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                 {"at": 2.0, "do": "convert_steadfast", "actor": "Player"},
             ],
             "multiplayer_example": [
-                {"at": 0.0, "do": "aim_at", "world": "client",
-                 "actor": "BP_GothicCharacter_C_0", "target": "Feral"},
-                {"at": 0.4, "do": "fire", "world": "client",
-                 "actor": "BP_GothicCharacter_C_0"},
-                {"at": 1.0, "do": "mark", "label": "client_fired"},
+                {"at": 0.0, "do": "aim_at", "actor": "BP_GothicCharacter_C_1",
+                 "target": "Feral"},
+                {"at": 0.4, "do": "fire", "actor": "BP_GothicCharacter_C_1"},
+                {"at": 1.0, "do": "mark", "label": "p2_fired"},
             ],
-            "multiplayer_example_note": "The client's own pawn is _C_0 on ITS "
-                                        "world. Fire there because the ability "
-                                        "is LocalPredicted; then read the damage "
-                                        "on the SERVER world with VigilPIETools, "
-                                        "because only the server's numbers are "
-                                        "authoritative.",
+            "multiplayer_example_note": "Second player driven on the SERVER "
+                                        "world, where _C_1 is their pawn (_C_0 is "
+                                        "the host). Never fire with world=client: "
+                                        "the activation is refused, and it is "
+                                        "refused because running it would recurse "
+                                        "and kill the editor. Get the label from "
+                                        "list_combatants(world=\"server\") -- it "
+                                        "churns on respawn.",
             "note": "Actor labels are pawn names from VigilPIETools.list_combatants. "
                     "A unique substring works, and it is resolved in the step's "
                     "'world' (server unless stated).",
@@ -385,6 +398,13 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
         Convenience for quick checks. For anything where timing matters
         relative to other actions, use a scenario instead.
 
+        SERVER WORLD ONLY, and non-authoritative pawns are refused. Activating an
+        ability on a non-authoritative ASC from editor Python recurses through the
+        in-process ServerTryActivateAbility (the editor script guard forces a Local
+        callspace on every RPC) and stack-overflows the editor. This tool resolves
+        against the server world, so the refusal below should never fire -- it is
+        there so a future world argument cannot reintroduce the crash.
+
         Args:
             actor_label: Pawn name. A unique substring works.
             slot: LIGHT_ATTACK, HEAVY_ATTACK, ABILITY1, ABILITY2, ABILITY3,
@@ -399,6 +419,18 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
         if asc is None:
             return common.as_json({"activated": False, "reason": "no ASC on %s"
                                    % pawn.get_name()})
+        if not bool(pawn.has_authority()):
+            return common.as_json({
+                "actor": pawn.get_name(),
+                "slot": slot.upper(),
+                "activated": False,
+                "refused": "non-authoritative-world",
+                "reason": "Refused without calling the ASC: activating an ability "
+                          "on a non-authoritative pawn from editor Python recurses "
+                          "through the in-process ServerTryActivateAbility and "
+                          "stack-overflows the editor. Use the server world's pawn "
+                          "for this player (list_combatants(world=\"server\")).",
+            })
         slot_enum = common.ability_slot(slot)
         common.audit("force_ability\t%s\t%s" % (pawn.get_name(), slot))
         activated = bool(asc.try_activate_ability_by_slot(slot_enum))

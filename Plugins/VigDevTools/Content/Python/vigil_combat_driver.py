@@ -103,11 +103,15 @@ def _step_world(world, step):
     Every scenario runs against the SERVER world and that stays the default, so
     a step with no "world" field behaves exactly as it always has.
 
-    "world": "client" exists for ONE reason: LocalPredicted abilities -- GA_Fire
-    and every player active -- refuse to activate on a pawn that is not locally
-    controlled, so a second player's abilities can only be driven on THEIR PIE
-    instance. See the per-world block in vigil_pie_common for the two traps that
-    come with it (labels are per-world; a client world is not authoritative).
+    "world": "client" exists for READS and for non-ability actions (aim, move,
+    teleport, snapshots) against a second PIE instance. It is NOT an activation
+    route: fire/melee/activate_slot refuse a non-authoritative pawn outright,
+    because driving a LocalPredicted ability on one from editor Python recurses
+    through the in-process Server RPC and stack-overflows the editor. See
+    _activate. Ability steps address the SERVER world's pawn for that player.
+
+    See the per-world block in vigil_pie_common for the two traps that come with
+    a client world (labels are per-world; a client world is not authoritative).
     """
     spec = step.get("world")
     if spec is None:
@@ -144,10 +148,43 @@ def _activate(pawn, slot_name, result_key):
 
     Deliberately no fallback route: if the slot path is broken, the step must
     fail, not quietly succeed by some other means.
+
+    CLIENT-WORLD ACTIVATION IS REFUSED HERE, and that refusal is the point.
+    Editor Python runs under FEditorScriptExecutionGuard, which sets
+    GAllowActorScriptExecutionInEditor; AActor::GetFunctionCallspace then answers
+    Local for every RPC before it ever looks at the net role. Activating a
+    LocalPredicted ability on a non-authoritative ASC from here therefore calls
+    ServerTryActivateAbility IN PROCESS, which re-enters InternalTryActivateAbility
+    still non-authoritative and recurses without bound inside a single frame --
+    one dependent prediction key per lap, ~200MB/min of log, then a stack overflow
+    that kills the editor. This has happened; it cost a session.
+
+    So the authority check happens BEFORE the ASC is touched. C++ carries the same
+    tripwire (GothicAbilitySystemComponent::TryActivateAbilityBySlot), but the
+    harness must not rely on it: an older binary would still recurse.
     """
     asc = pawn.get_gothic_asc()
     if asc is None:
         raise LookupError("no ASC on %s" % pawn.get_name())
+
+    # has_authority off the pawn, matching common.inventory_authority's route:
+    # AActor::HasAuthority is BlueprintCallable, the C++ helpers are not UFUNCTIONs.
+    if not bool(pawn.has_authority()):
+        return {
+            result_key: False,
+            "slot": slot_name,
+            "refused": "non-authoritative-world",
+            "actor": pawn.get_name(),
+            "failure_means":
+                "REFUSED WITHOUT CALLING THE ASC. %s is not authoritative in its "
+                "resolved world. Activating an ability on a non-authoritative pawn "
+                "from editor Python recurses through the in-process "
+                "ServerTryActivateAbility RPC (the editor script guard forces a Local "
+                "callspace) and stack-overflows the editor. Drive THIS PLAYER'S "
+                "SERVER-WORLD pawn instead -- its label differs from the client "
+                "world's, so resolve it with list_combatants(world=\"server\") rather "
+                "than reusing a client label." % pawn.get_name(),
+        }
 
     activated = bool(asc.try_activate_ability_by_slot(common.ability_slot(slot_name)))
     payload = {result_key: activated}
@@ -174,13 +211,21 @@ def _activate(pawn, slot_name, result_key):
 
 @_action("fire")
 def _a_fire(world, step):
-    """Fire the equipped weapon. Runs the real trace and damage path."""
+    """Fire the equipped weapon. Runs the real trace and damage path.
+
+    SERVER WORLD ONLY. A "world": "client" step is refused before the ASC is
+    touched -- client-world activation recurses through the in-process Server RPC
+    under the editor script guard and kills the editor. Fire the second player's
+    SERVER-world pawn (resolve its label with list_combatants(world="server")).
+    """
     pawn = _actor(world, step)
     return _activate(pawn, "PRIMARY_FIRE", "fired")
 
 
 @_action("melee")
 def _a_melee(world, step):
+    """Melee attack. SERVER WORLD ONLY -- see _activate for why a client-world
+    step is refused rather than run."""
     pawn = _actor(world, step)
     return _activate(pawn, "LIGHT_ATTACK", "melee")
 
@@ -422,7 +467,13 @@ def _a_grant_test_items(world, step):
 
 @_action("activate_slot")
 def _a_activate(world, step):
-    """Activate an ability by slot through the ASC, bypassing input."""
+    """Activate an ability by slot through the ASC, bypassing input.
+
+    SERVER WORLD ONLY. A "world": "client" step is refused before the ASC is
+    touched -- client-world activation recurses through the in-process Server RPC
+    under the editor script guard and kills the editor. Activate the second
+    player's SERVER-world pawn (list_combatants(world="server") for its label).
+    """
     pawn = _actor(world, step)
     return _activate(pawn, step.get("slot", "ABILITY1"), "activated")
 
