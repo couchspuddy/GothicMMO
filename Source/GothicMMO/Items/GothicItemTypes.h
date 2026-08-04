@@ -46,6 +46,17 @@ enum class EGothicEquipSlot : uint8
     Feet            = 19  UMETA(DisplayName = "Feet"),
 };
 
+/**
+ * True for the ten armor slots, false for the three weapon slots. Gear Score
+ * sums armor tiers only — weapon tier already pays out through the weapon's own
+ * damage multiplier (WEAPON_ARCHETYPES.md), and counting it twice would let one
+ * weapon upgrade raise both its damage and the player's Attack Power.
+ */
+FORCEINLINE bool IsGothicArmorSlot(EGothicEquipSlot Slot)
+{
+    return static_cast<uint8>(Slot) >= static_cast<uint8>(EGothicEquipSlot::Head);
+}
+
 /** Primary stats — creed-mapped, from PROGRESSION_STATS_AND_BALANCE.md. */
 UENUM(BlueprintType)
 enum class EGothicPrimaryStat : uint8

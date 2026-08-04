@@ -12,6 +12,7 @@
 #include "Character/GothicCharacterBase.h"
 #include "AI/GothicEnemyBase.h"
 #include "Game/GothicDeterminism.h"
+#include "GothicMMO.h"
 
 UGothicAttributeSet::UGothicAttributeSet()
 {
@@ -201,25 +202,74 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
             return;
         }
 
-        // AttackPower is the attacker's flat contribution, mirroring Defense as
-        // the defender's flat reduction. Applied here rather than in GA_Fire so
-        // it covers EVERY damage source -- enemy melee, boss abilities and the
-        // pillar collapse all route through IncomingDamage, and wiring it into
-        // the player's fire path alone would have made it a player-only stat.
+        // Damage resolution — ITEMIZATION_AND_LOOT.md, "Application — Damage
+        // Multiplies Off the Stats":
         //
-        // Read from the instigator, so a source with no ASC (the Rotunda
-        // collapse volume names the pillar as its source object) contributes
-        // nothing rather than inheriting the victim's own AttackPower.
+        //   Core     = max(1, Raw + BaseAP_attacker - BaseDef_defender)
+        //   Outgoing = Core x (AP_attacker  / BaseAP_attacker)
+        //   Incoming = Core x (BaseDef_defender / Def_defender)
         //
-        // Flat, not scaling: it is deliberately the same shape as Defense so the
-        // pair stays predictable to tune. That also means both matter far more
-        // to a 6-damage hit than a 250-damage one -- worth remembering when
-        // balancing armour against late-game weapons.
-        const float AttackBonus = SourceASC
+        // Applied here rather than in GA_Fire so it covers EVERY damage source --
+        // enemy melee, boss abilities and the pillar collapse all route through
+        // IncomingDamage, and wiring it into the player's fire path alone would
+        // have made it a player-only stat.
+        //
+        // The additive core is RETAINED BUT FROZEN at the authored base values.
+        // AP/Def used to be the scaling stats themselves and were added flat,
+        // which cannot carry a 50-point gear curve: a flat +50 means nothing to a
+        // Breacher and everything to a Carbine, and flat Defense eventually zeroes
+        // whole enemy tiers. Gear now enters only through the two ratios, which
+        // scale every archetype identically and never zero anything.
+        //
+        // "Base" is the GAS attribute BASE value, which is what GE_InitStats_*
+        // authored (player 15/8, Draugr 10/3, Feral Retained and Boss 20/5) --
+        // gear rides on top of it as an Infinite-duration modifier on the CURRENT
+        // value, so the base stays the calibration constant the doc calls for.
+        // This holds only while nothing applies an INSTANT modifier to AttackPower
+        // or Defense; an instant one would move the base and silently rebase the
+        // whole formula. Nothing does today.
+        //
+        // Read from the instigator, so a source with no ASC (the Rotunda collapse
+        // volume names the pillar as its source object) contributes nothing rather
+        // than inheriting the victim's own AttackPower.
+        const float BaseAttackPower = SourceASC
+            ? SourceASC->GetNumericAttributeBase(GetAttackPowerAttribute())
+            : 0.f;
+        const float CurrentAttackPower = SourceASC
             ? SourceASC->GetNumericAttribute(GetAttackPowerAttribute())
             : 0.f;
 
-        const float FinalDamage = FMath::Max(1.f, RawDamage + AttackBonus - GetDefense());
+        const float BaseDefense    = Data.Target.GetNumericAttributeBase(GetDefenseAttribute());
+        const float CurrentDefense = GetDefense();
+
+        // Both ratios fall back to 1.0 on a degenerate denominator -- an actor
+        // with no authored AttackPower divides by zero, and a zeroed Defense would
+        // otherwise turn every incoming hit into no damage at all. At Gear Score 0
+        // current equals base on both sides, so both ratios are exactly 1.0 and
+        // the result is the pre-2026-08-04 number to the float.
+        const float AttackRatio = (BaseAttackPower > 0.f)
+            ? CurrentAttackPower / BaseAttackPower
+            : 1.f;
+        const float DefenseRatio = (BaseDefense > 0.f && CurrentDefense > 0.f)
+            ? BaseDefense / CurrentDefense
+            : 1.f;
+
+        const float CoreDamage  = FMath::Max(1.f, RawDamage + BaseAttackPower - BaseDefense);
+        const float FinalDamage = CoreDamage * AttackRatio * DefenseRatio;
+
+        // applied=, the counterpart to GA_Fire's sent=. This is the health delta,
+        // and it is the only place the two gear ratios are visible -- without it a
+        // reader cannot tell a gear-scaled hit from a rebalanced base value.
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("DamageApplied: target=%s raw=%.1f core=%.1f applied=%.1f ")
+            TEXT("(AP %.1f/%.1f=x%.2f Def %.1f/%.1f=x%.2f)"),
+            *GetNameSafe(TargetActor),
+            RawDamage,
+            CoreDamage,
+            FinalDamage,
+            CurrentAttackPower, BaseAttackPower, AttackRatio,
+            BaseDefense, CurrentDefense, DefenseRatio);
+
         const float NewHealth = FMath::Clamp(GetHealth() - FinalDamage, 0.f, GetMaxHealth());
         SetHealth(NewHealth);
 

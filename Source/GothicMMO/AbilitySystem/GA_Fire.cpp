@@ -546,28 +546,29 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         return;
     }
 
-    // Damage model — ITEMIZATION_AND_LOOT.md plus the Gear Power / Attack Power
-    // split. Three factors, and no universal armor-damage anywhere:
+    // Damage model — WEAPON_ARCHETYPES.md, DECIDED 2026-08-04. Three factors,
+    // and no universal armor-damage anywhere:
     //
-    //   Weapon base damage — EffectiveDamage. The weapon's own attack power, per
-    //                        archetype. Armor never scales this universally.
-    //   Gear Power floor   — the AGGREGATE power level across ALL equipped gear,
-    //                        not just this weapon. It raises the floor of every
-    //                        hit and is the intended activity gate. Relative to a
-    //                        baseline so a starting loadout scales by ~1.0.
+    //   Weapon base damage — EffectiveDamage. The weapon's authored number, which
+    //                        the Calibration Reference states as the Tier-1 value.
+    //   Weapon tier        — this weapon INSTANCE's own Gear Power over the Tier-1
+    //                        baseline. Not the armor average: ten armor slots used
+    //                        to vote on how hard a Revolver hits while the
+    //                        Revolver's own rarity did nothing, and the average
+    //                        diluted every armor upgrade to a tenth of its face
+    //                        value. Armor tier now pays out through Gear Score →
+    //                        Attack Power instead (ITEMIZATION_AND_LOOT.md), which
+    //                        lands in GothicAttributeSet, not here.
     //   Archetype bonus    — armor's per-archetype damage lines, and ONLY the one
     //                        matching the equipped weapon's archetype. A Revolver
     //                        line does nothing while a Rifle is out.
-    const int32 AggregateGearPower = Char->GetAggregateGearPower();
-    const float GearFloor = (BaselineGearPower > 0.f && AggregateGearPower > 0)
-        ? static_cast<float>(AggregateGearPower) / BaselineGearPower
-        : 1.f;
+    const float WeaponTierMult = Char->GetActiveWeaponTierMultiplier();
 
     const float ArchetypeBonusPct = WeaponData
         ? Char->GetArchetypeDamageBonusPct(WeaponData->Archetype)
         : 0.f;
 
-    float FinalDamage = EffectiveDamage * GearFloor * (1.f + ArchetypeBonusPct / 100.f);
+    float FinalDamage = EffectiveDamage * WeaponTierMult * (1.f + ArchetypeBonusPct / 100.f);
     bool bIsVitalHit = false;
 
     // The point vital adjudication is measured from. Normally the impact; at
@@ -681,13 +682,17 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     SourceASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
 
     // One line tying the geometry above to the number that went out on the wire.
-    // sent=, not applied=: this is the SetByCaller magnitude, before the attribute
-    // set adds AttackPower and subtracts Defense (GothicAttributeSet.cpp:222). It
-    // is NOT the health delta, and reading it as one has cost a false anomaly.
+    // sent=, not applied=: this is the SetByCaller magnitude — the doc's `Raw`,
+    // before the attribute set applies the base AP/Def core and the two gear
+    // ratios (UGothicAttributeSet::PostGameplayEffectExecute). It is NOT the
+    // health delta, and reading it as one has cost a false anomaly.
     UE_LOG(LogVigilCombat, Verbose,
-        TEXT("Damage: target=%s sent=%.1f (pre-vital=%.1f vital=%s reckoning=%s read=%s oversurge=%s)"),
+        TEXT("Damage: target=%s sent=%.1f (base=%.1f weaponTier=x%.2f pre-vital=%.1f ")
+        TEXT("vital=%s reckoning=%s read=%s oversurge=%s)"),
         *Hit.GetActor()->GetName(),
         FinalDamage,
+        EffectiveDamage,
+        WeaponTierMult,
         PreVitalDamage,
         bIsVitalHit      ? TEXT("yes") : TEXT("no"),
         bReckoningForced ? TEXT("yes") : TEXT("no"),

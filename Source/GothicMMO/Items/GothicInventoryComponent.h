@@ -136,11 +136,36 @@ public:
 
     /**
      * Average Gear Power across equipped (non-empty) slots — the overall power
-     * level. Raises the damage floor in GA_Fire and is the intended hook for
-     * gating which activities the player can enter. 0 with nothing equipped.
+     * level, and the intended hook for gating which activities the player can
+     * enter. 0 with nothing equipped. No longer feeds damage: as of 2026-08-04
+     * weapon damage reads the weapon's own tier and armor tier reads Gear Score,
+     * because an average let ten armor slots vote on one weapon and diluted every
+     * upgrade to a tenth of its face value.
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
     int32 GetAggregateGearPower() const;
+
+    /**
+     * Gear Score — the SUM of gear tier across the ten equipped ARMOR slots,
+     * 0 to 50 (ITEMIZATION_AND_LOOT.md). Weapons are excluded and Salvage counts
+     * 0. Attack Power and Defense are derived from it linearly, so one tier point
+     * on one piece is a visible, guaranteed +1 rather than a tenth of one.
+     *
+     * Sum, not average, deliberately — see the doc; the average is exactly the
+     * trap this replaced.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Inventory")
+    int32 GetGearScore() const;
+
+    /**
+     * Attack Power and Defense granted per point of Gear Score, on top of the
+     * base 15/8 from GE_InitStats_Player — so AP 15→65 and Def 8→33 across the
+     * 0–50 range. Defense grows at half the rate so damage taken shrinks slower
+     * than damage dealt grows; ITEMIZATION_AND_LOOT.md flags that rate as an
+     * open redline knob, and this is the line to move when it is redlined.
+     */
+    static constexpr float AttackPowerPerGearTier = 1.0f;
+    static constexpr float DefensePerGearTier     = 0.5f;
 
     /**
      * Total of one archetype-damage secondary line summed across every equipped

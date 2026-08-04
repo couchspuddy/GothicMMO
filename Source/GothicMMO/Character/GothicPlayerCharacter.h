@@ -290,18 +290,28 @@ public:
     /**
      * Gear Power of the item in the active weapon slot, or 0 when the slot was
      * filled from the Blueprint default loadout rather than a rolled drop.
-     *
-     * Has no callers anywhere in Source/ — in particular NOT
-     * UGA_Fire::PerformFireTrace, which the old comment named and which never
-     * consults it. It exists for weapon damage scaling that has not been
-     * implemented. Do not assume equipping a higher-tier weapon changes damage
-     * through this path.
+     * GetActiveWeaponTierMultiplier() is what damage reads; this is the raw
+     * number behind it.
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
     int32 GetActiveGearPower() const;
 
-    /** Overall Gear Power (average across equipped gear) — the damage floor and
-     *  activity gate. Delegates to the inventory on the PlayerState. */
+    /**
+     * The active weapon's own damage multiplier — its instance Gear Power over
+     * the Tier-1 baseline, so x1 at Tier 1 through x5 at Tier 5
+     * (WEAPON_ARCHETYPES.md, DECIDED 2026-08-04). A slot with no rolled copy
+     * behind it floors at 1.0 rather than scaling to zero. GA_Fire multiplies
+     * the weapon's authored Damage by this; a tooltip can show it as-is.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
+    float GetActiveWeaponTierMultiplier() const;
+
+    /**
+     * Overall Gear Power (average across equipped gear). No longer touches
+     * damage — weapon damage now reads the weapon's own tier, and armor tier
+     * expresses through Gear Score → Attack Power. Kept as the activity-gating
+     * hook it was always also meant to be. Delegates to the inventory.
+     */
     UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
     int32 GetAggregateGearPower() const;
 
@@ -442,6 +452,13 @@ public:
 
     UPROPERTY(BlueprintReadOnly, Category = "Gothic|Weapons")
     int32 ActiveWeaponIndex = 0;
+
+    /**
+     * Gear Power one Tier-1 weapon carries — UGothicItemDefinition::GetGearPower()
+     * is GearTier * 100, so this is the divisor that turns Gear Power back into a
+     * tier multiplier. Not a tuning knob: change it only alongside GetGearPower().
+     */
+    static constexpr float WeaponTierBaselineGearPower = 100.f;
 
     /**
      * Swap to a weapon slot by index. Updates mesh, crosshair, and ammo state.

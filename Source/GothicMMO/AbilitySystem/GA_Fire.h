@@ -154,15 +154,10 @@ protected:
               meta = (ClampMin = "0.0", ClampMax = "15.0"))
     float ADSSpreadDegrees = 0.f;
 
-    /**
-     * Aggregate Gear Power that scales damage by exactly 1.0. UGothicItemDefinition
-     * defines a piece's GearPower as GearTier * 100, so an average of 100 across
-     * equipped gear is a full Tier 1 loadout — meaning a Tier 1 kit deals the
-     * damage its archetype asset actually says, and the numbers in
-     * WEAPON_ARCHETYPES.md stay readable as authored.
-     */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Scaling", meta = (ClampMin = 1))
-    float BaselineGearPower = 100.f;
+    // BaselineGearPower removed 2026-08-04. It divided the ARMOR-average Gear
+    // Power into weapon damage; WEAPON_ARCHETYPES.md now scales a weapon by its
+    // own instance instead, and the Tier-1 divisor lives with the data that
+    // defines it (AGothicPlayerCharacter::WeaponTierBaselineGearPower).
 
     /**
      * Extra vital-damage multiplier applied while the State.Read tag is active,
