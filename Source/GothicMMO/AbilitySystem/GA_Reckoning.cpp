@@ -2,6 +2,9 @@
 
 #include "AbilitySystem/GA_Reckoning.h"
 #include "AbilitySystem/GothicAttributeSet.h"
+#include "AbilitySystem/GothicGameplayTags.h"   // Perk.Weapon.VerbB.SpentWell
+#include "AI/GothicSteadfastComponent.h"
+#include "Character/GothicPlayerCharacter.h"
 #include "AbilitySystemComponent.h"
 #include "GameplayEffect.h"
 #include "TimerManager.h"
@@ -53,6 +56,27 @@ void UGA_Reckoning::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
         UGothicAttributeSet::GetMaxSuperMeterAttribute());
     CachedASC->SetNumericAttributeBase(
         UGothicAttributeSet::GetSuperMeterAttribute(), MaxSuper);
+
+    // Spent Well — "Covenant activation instantly refills Steadfast to full"
+    // (WEAPON_PERK_TABLES.md, Verb Bucket B). Here rather than in the Steadfast
+    // component because activation is the trigger, and after CommitAbility so a
+    // refused activation never pays out.
+    //
+    // The perk is read off the ACTIVE weapon, and the Steadfast meter is global —
+    // the doc's Steadfast-scope note is what makes this legal on a Heavy Melee
+    // Rig, which owns no ammo but can still carry the perk.
+    if (AGothicPlayerCharacter* Char =
+            Cast<AGothicPlayerCharacter>(ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr))
+    {
+        if (Char->HasWeaponPerk(GothicTags::Perk_Weapon_VerbB_SpentWell))
+        {
+            if (UGothicSteadfastComponent* Steadfast =
+                    Char->FindComponentByClass<UGothicSteadfastComponent>())
+            {
+                Steadfast->RefillToFull();
+            }
+        }
+    }
 
     GetWorld()->GetTimerManager().SetTimer(
         DrainTimerHandle, this, &UGA_Reckoning::TickSuperDrain, DrainTickInterval, true);

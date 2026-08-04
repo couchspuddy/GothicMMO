@@ -6,6 +6,7 @@
 #include "AbilitySystem/GothicInputConfig.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
+#include "AbilitySystem/GothicGameplayTags.h"   // Perk.Weapon.* — the handling and economy effects
 #include "Game/GothicPlayerState.h"
 #include "Game/GothicGameMode.h"
 #include "Game/GothicGameState.h"
@@ -54,6 +55,31 @@ namespace
         const UWorld* World = Actor ? Actor->GetWorld() : nullptr;
         return World ? World->GetTimeSeconds() : 0.f;
     }
+
+    // ── Weapon perk coefficients (WEAPON_PERK_TABLES.md) ────────────────────
+    //
+    // Constants, not catalog reads. FGothicWeaponPerkEntry::Magnitude is 0 in the
+    // authored asset, so reading it today would zero every effect silently; these
+    // are the doc's numbers and a real Magnitude can supersede them later without
+    // moving a single call site.
+
+    /** Dead Hand — "recoil pitch -30%". */
+    constexpr float DeadHandRecoilPitchReduction = 0.30f;
+
+    /** True Bore — "yaw spread -50%". */
+    constexpr float TrueBoreYawSpreadReduction = 0.50f;
+
+    /** Well-Tended — "Steadfast refill restores 50% more reserve ammo". */
+    constexpr float WellTendedYieldScale = 1.5f;
+
+    /** Charitable Toll — "costs 1 fewer charge (minimum 1)". */
+    constexpr int32 CharitableTollChargeDiscount = 1;
+
+    /** Frugal Hand — "one ammo tier lower, at half Steadfast cost". */
+    constexpr float FrugalHandCostScale = 0.5f;
+
+    /** Overcharge — "one ammo tier higher, at 1.5x Steadfast cost". */
+    constexpr float OverchargeCostScale = 1.5f;
 }
 
 AGothicPlayerCharacter::AGothicPlayerCharacter()
@@ -860,6 +886,15 @@ void AGothicPlayerCharacter::Tick(float DeltaTime)
         return;
     }
 
+    // Stillness clock for Steady Read. Stamped on every authority-and-local frame
+    // the pawn is moving, so the perk's "no movement in the last 0.5s" is one
+    // subtraction at the fire site rather than a timer that has to be started and
+    // cancelled from the movement input handlers.
+    if (IsMovingUnderOwnPower())
+    {
+        LastMovingWorldTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+    }
+
     // Ease the FOV toward the aim state. Interpolated rather than snapped: a hard
     // FOV cut reads as a glitch, and the ~0.15s pull-in is most of what makes
     // aiming feel like a weapon settling rather than a zoom toggle.
@@ -1249,7 +1284,17 @@ void AGothicPlayerCharacter::TryAutoReload()
 int32 AGothicPlayerCharacter::GetActiveSteadfastRefillCost() const
 {
     const UGothicWeaponData* WeaponData = GetActiveWeaponData();
-    return WeaponData ? WeaponData->GetSteadfastRefillCost() : 0;
+    const int32 BaseCost = WeaponData ? WeaponData->GetSteadfastRefillCost() : 0;
+
+    // Charitable Toll — "costs 1 fewer charge (minimum 1)". Applied here rather
+    // than only in the conversion so the HUD quotes the price the player will
+    // actually pay; a weapon that costs nothing (no ammo) still costs nothing.
+    if (BaseCost > 0 && HasWeaponPerk(GothicTags::Perk_Weapon_VerbB_CharitableToll))
+    {
+        return FMath::Max(1, BaseCost - CharitableTollChargeDiscount);
+    }
+
+    return BaseCost;
 }
 
 void AGothicPlayerCharacter::PushAmmoToHUD() const
@@ -1275,7 +1320,9 @@ void AGothicPlayerCharacter::PushAmmoToHUD() const
 
     GothicHUD->UpdateAmmo(
         Slot.CurrentMagazine,
-        Slot.WeaponData->MagazineCapacity,
+        // Effective for the same reason the reserve max is — Extended Magazine
+        // has to move the denominator or the counter reads past its own cap.
+        Slot.GetEffectiveMagazineCapacity(),
         Slot.CurrentReserve,
         // Effective, not authored — the HUD's max has to move with Deep Reserves
         // or the bar reads over 100% the moment the perk pays out.
@@ -1299,7 +1346,7 @@ bool AGothicPlayerCharacter::ReloadActiveWeapon()
         return false;
     }
 
-    const int32 Space = Slot.WeaponData->MagazineCapacity - Slot.CurrentMagazine;
+    const int32 Space = Slot.GetEffectiveMagazineCapacity() - Slot.CurrentMagazine;
     if (Space <= 0 || Slot.CurrentReserve <= 0)
     {
         return false;
@@ -1344,7 +1391,9 @@ bool AGothicPlayerCharacter::ConvertSteadfastToReserve()
 
     // Charges are a design-side unit; Steadfast itself is a float attribute.
     // Convert through the bar so the cost stays correct if MaxSteadfast is retuned.
-    const int32 ChargeCost = Slot.WeaponData->GetSteadfastRefillCost();
+    // Effective, not authored — Charitable Toll's discount is already folded in
+    // here, which is also what the HUD quotes.
+    const int32 ChargeCost = GetActiveSteadfastRefillCost();
     if (ChargeCost <= 0)
     {
         return false;
@@ -1360,9 +1409,56 @@ bool AGothicPlayerCharacter::ConvertSteadfastToReserve()
     }
 
     const float PerCharge = MaxSteadfast / FMath::Max(1, SteadfastChargesPerFullBar);
-    const float Cost = ChargeCost * PerCharge;
+    float Cost = ChargeCost * PerCharge;
 
-    const int32 Requested = FMath::Min(Slot.WeaponData->SteadfastRefillAmount, ReserveSpace);
+    float Yield = static_cast<float>(Slot.WeaponData->SteadfastRefillAmount);
+
+    // Well-Tended — "restores 50% more reserve ammo". Yield only; the price is
+    // untouched, which is the whole shape of the perk.
+    if (HasWeaponPerk(GothicTags::Perk_Weapon_VerbB_WellTended))
+    {
+        Yield *= WellTendedYieldScale;
+    }
+
+    // Frugal Hand / Overcharge — "one ammo tier lower at half cost" and "one tier
+    // higher at 1.5x cost".
+    //
+    // A "tier" is read here as one charge-step of the weapon's own price: the
+    // yield moves by (Steps +/- 1) / Steps where Steps is the charge cost, so a
+    // 3-charge Rig trades a third of its refill in either direction and a
+    // 1-charge Sidearm trades all of it. The cost multipliers are the doc's flat
+    // numbers.
+    //
+    // INTERPRETATION FLAGGED, not invented quietly: the doc names an "ammo tier"
+    // without defining one, and SteadfastChargesPerFullBar is the only tiering
+    // the system actually has. A 1-charge weapon cannot step DOWN a tier without
+    // yielding nothing, so Frugal Hand floors its yield at one step — it is then
+    // purely a half-price refill on a Sidearm, which is still the perk's promise.
+    // The two are mutually exclusive by bucket; the else-if only guards against a
+    // hand-authored instance carrying both.
+    const int32 YieldSteps = FMath::Max(1, ChargeCost);
+    if (HasWeaponPerk(GothicTags::Perk_Weapon_VerbB_FrugalHand))
+    {
+        Yield *= static_cast<float>(FMath::Max(1, YieldSteps - 1)) / static_cast<float>(YieldSteps);
+        Cost  *= FrugalHandCostScale;
+    }
+    else if (HasWeaponPerk(GothicTags::Perk_Weapon_VerbB_Overcharge))
+    {
+        Yield *= static_cast<float>(YieldSteps + 1) / static_cast<float>(YieldSteps);
+        Cost  *= OverchargeCostScale;
+    }
+
+    const int32 Requested = FMath::Min(FMath::FloorToInt(Yield), ReserveSpace);
+
+    // Nothing to grant — bail BEFORE the conversion. TryConvertSteadfast debits
+    // the cost and then returns whatever it was handed, so calling it with a zero
+    // yield charges the player for nothing. Reachable the moment a perk scales a
+    // small refill amount down.
+    if (Requested <= 0)
+    {
+        return false;
+    }
+
     const float Granted = Steadfast->TryConvertSteadfast(Cost, static_cast<float>(Requested));
     if (Granted <= 0.f)
     {
@@ -1508,6 +1604,66 @@ const TArray<FGameplayTag>& AGothicPlayerCharacter::GetActiveWeaponPerks() const
 bool AGothicPlayerCharacter::HasWeaponPerk(FGameplayTag Perk) const
 {
     return GetActiveWeaponPerks().Contains(Perk);
+}
+
+bool AGothicPlayerCharacter::IsMovingUnderOwnPower() const
+{
+    const UCharacterMovementComponent* Movement = GetCharacterMovement();
+    if (!Movement)
+    {
+        return false;
+    }
+
+    // Horizontal only. A falling character is moving fast in Z and is not doing
+    // the thing Moving Target rewards, and a lift ride should not read as strafing.
+    return Movement->Velocity.Size2D() >= PerkMovementSpeedThreshold;
+}
+
+float AGothicPlayerCharacter::GetStationaryDuration() const
+{
+    const UWorld* World = GetWorld();
+    if (!World || IsMovingUnderOwnPower())
+    {
+        return 0.f;
+    }
+
+    // Never moved since possession — treat the whole session as still rather
+    // than measuring back to world time zero, which would credit a pawn that
+    // spawned mid-match with a stillness it did not earn.
+    if (LastMovingWorldTime < 0.f)
+    {
+        return World->GetTimeSeconds();
+    }
+
+    return World->GetTimeSeconds() - LastMovingWorldTime;
+}
+
+int32 AGothicPlayerCharacter::AddRoundsToMagazine(int32 Rounds)
+{
+    if (Rounds <= 0 || !WeaponSlots.IsValidIndex(ActiveWeaponIndex))
+    {
+        return 0;
+    }
+
+    FGothicWeaponSlot& Slot = WeaponSlots[ActiveWeaponIndex];
+    if (!Slot.WeaponData || !Slot.WeaponData->bUsesAmmo)
+    {
+        return 0;
+    }
+
+    // Straight into the magazine, deliberately NOT out of the reserve — Marksman's
+    // Due creates the round, it does not move one. Clamped to the effective cap so
+    // it composes with Extended Magazine rather than fighting it.
+    const int32 Space = Slot.GetEffectiveMagazineCapacity() - Slot.CurrentMagazine;
+    const int32 Loaded = FMath::Clamp(Rounds, 0, FMath::Max(0, Space));
+    if (Loaded <= 0)
+    {
+        return 0;
+    }
+
+    Slot.CurrentMagazine += Loaded;
+    PushAmmoToHUD();
+    return Loaded;
 }
 
 int32 AGothicPlayerCharacter::GetAggregateGearPower() const
@@ -1700,8 +1856,24 @@ void AGothicPlayerCharacter::ApplyRecoilKick()
     }
 
     const UGothicWeaponData* WeaponData = GetActiveWeaponData();
-    const float Pitch = WeaponData ? WeaponData->RecoilPitch : -0.5f;
-    const float YawSpread = WeaponData ? WeaponData->RecoilYawSpread : 0.f;
+    float Pitch = WeaponData ? WeaponData->RecoilPitch : -0.5f;
+    float YawSpread = WeaponData ? WeaponData->RecoilYawSpread : 0.f;
+
+    // Dead Hand — "recoil pitch -30%". Scaling rather than subtracting: RecoilPitch
+    // is negative (up), so a subtraction would push the kick harder, and the sign
+    // survives a multiply on its own.
+    if (HasWeaponPerk(GothicTags::Perk_Weapon_FineTune_DeadHand))
+    {
+        Pitch *= (1.f - DeadHandRecoilPitchReduction);
+    }
+
+    // True Bore — "yaw spread -50%". Narrows the random cone; a weapon authored
+    // with no spread at all (Heavy Melee) stays at zero, which is why the perk is
+    // curated off it rather than guarded here.
+    if (HasWeaponPerk(GothicTags::Perk_Weapon_FineTune_TrueBore))
+    {
+        YawSpread *= (1.f - TrueBoreYawSpreadReduction);
+    }
 
     PC->AddPitchInput(Pitch);
 
@@ -1747,6 +1919,21 @@ void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
     RefreshWeaponVisuals(NewIndex);
     PushAmmoToHUD();
 
+
+    // NOT WIRED — Quick Hands, "swap-to speed +25%" (WEAPON_PERK_TABLES.md,
+    // Fine-Tune bucket). There is nothing here for it to modify: SwapWeapon is
+    // instantaneous. The index changes, the mesh and HUD update, and the weapon is
+    // fireable on the same frame — the only swap "duration" that exists is
+    // whatever animation OnWeaponSwapped plays in Blueprint, which is cosmetic and
+    // gates nothing.
+    //
+    // Deliberately left as a comment rather than given a timing system to speed
+    // up. When swap-to time becomes real (an equip montage, or a lockout tag
+    // between the index change and the first legal shot), this is its call site:
+    //   Duration *= (1.f - QuickHandsSwapSpeedBonus) when
+    //   HasWeaponPerk(GothicTags::Perk_Weapon_FineTune_QuickHands).
+    // Note the perk must read the NEW slot's perks, i.e. after ActiveWeaponIndex
+    // moves, which is already the case at this point.
 
     // Blueprint hook for swap animation / audio
     OnWeaponSwapped(NewIndex, NewWeapon);

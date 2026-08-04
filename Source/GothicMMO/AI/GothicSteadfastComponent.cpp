@@ -118,6 +118,32 @@ float UGothicSteadfastComponent::TryConvertSteadfast(float SteadfastCost, float 
     return AmmoGranted;
 }
 
+bool UGothicSteadfastComponent::RefillToFull()
+{
+    UAbilitySystemComponent* ASC = ResolveASC();
+    UGothicAttributeSet* AttributeSet = ASC
+        ? const_cast<UGothicAttributeSet*>(ASC->GetSet<UGothicAttributeSet>())
+        : nullptr;
+
+    if (!AttributeSet)
+    {
+        return false;
+    }
+
+    const float MaxSteadfast = AttributeSet->GetMaxSteadfast();
+    if (MaxSteadfast <= 0.f)
+    {
+        // ASC not initialized. Same guard the conversion path takes — writing a
+        // zero ceiling here would look like a successful refill to nothing.
+        return false;
+    }
+
+    // Direct set, matching TickComponent and TryConvertSteadfast: Steadfast is a
+    // plain accumulating resource and has never been driven through a GE.
+    AttributeSet->SetSteadfast(MaxSteadfast);
+    return true;
+}
+
 // The two readers are const to their Blueprint callers but still have to be able
 // to fill a cache BeginPlay couldn't — const_cast here rather than a mutable
 // UPROPERTY, which UHT won't take.

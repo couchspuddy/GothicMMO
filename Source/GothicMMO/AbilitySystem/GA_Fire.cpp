@@ -19,6 +19,40 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 
+namespace
+{
+    // ── Weapon perk coefficients (WEAPON_PERK_TABLES.md) ────────────────────
+    //
+    // Constants rather than catalog reads, for the reason the handling perks give
+    // in GothicPlayerCharacter.cpp: FGothicWeaponPerkEntry::Magnitude is 0 in the
+    // authored asset, so reading it today would silently zero every effect. Data
+    // can supersede these without moving a call site.
+
+    /** Jolt — "8% chance per hit to stagger target 1s". */
+    constexpr float JoltStaggerChance = 0.08f;
+
+    /** Drumbeat — "every 8th consecutive unmissed hit on one target staggers it". */
+    constexpr int32 DrumbeatHitsRequired = 8;
+
+    /** Steady Read — "+0.25 VitalDamageMultiplier while stationary". Additive to the multiplier, not a percentage. */
+    constexpr float SteadyReadVitalMultiplierBonus = 0.25f;
+
+    /** Steady Read — "no movement in the last 0.5s". */
+    constexpr float SteadyReadStillnessSeconds = 0.5f;
+
+    /** Moving Target — "vital hits while sprinting/strafing: flat +20% damage". */
+    constexpr float MovingTargetVitalDamageBonus = 0.20f;
+
+    /** Marksman's Due — "a vital hit returns 1 round to the magazine". */
+    constexpr int32 MarksmansDueRoundsReturned = 1;
+
+    /** Muffled Work — "hearing-aggro radius x0.5". */
+    constexpr float MuffledWorkLoudnessScale = 0.5f;
+
+    /** Dread Report — "hearing-aggro radius x1.5". */
+    constexpr float DreadReportLoudnessScale = 1.5f;
+}
+
 UGA_Fire::UGA_Fire()
 {
     // One instance per shot. Fire holds no state between activations.
@@ -223,6 +257,20 @@ void UGA_Fire::ApplyCooldown(
     ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, Spec);
 }
 
+TSubclassOf<UGameplayEffect> UGA_Fire::ResolvePerkStaggerEffect(const UGothicWeaponData* WeaponData) const
+{
+    if (PerkStaggerEffect)
+    {
+        return PerkStaggerEffect;
+    }
+
+    // The Shock stun is the only State.Stunned asset the weapon layer already
+    // owns. Borrowing it means a perk on the electrical Rig works the day it
+    // rolls, at that GE's duration rather than the doc's 1s — an honest
+    // approximation, and it is why PerkStaggerEffect wins when it is set.
+    return WeaponData ? WeaponData->ShockStunEffect : nullptr;
+}
+
 void UGA_Fire::ReportFireNoise(AGothicPlayerCharacter* Char) const
 {
     if (!Char)
@@ -231,7 +279,26 @@ void UGA_Fire::ReportFireNoise(AGothicPlayerCharacter* Char) const
     }
 
     const UGothicWeaponData* WeaponData = Char->GetActiveWeaponData();
-    const float Loudness = WeaponData ? WeaponData->FireNoiseLoudness : FallbackFireNoiseLoudness;
+    float Loudness = WeaponData ? WeaponData->FireNoiseLoudness : FallbackFireNoiseLoudness;
+
+    // Muffled Work / Dread Report — "hearing-aggro radius x0.5 / x1.5".
+    //
+    // Scaling Loudness IS scaling the radius: the sense compares distance against
+    // HearingRangeSq * Loudness^2, so the audible radius is
+    // ListenerHearingRange * Loudness (see UGothicWeaponData::FireNoiseLoudness).
+    // A x0.5 loudness therefore halves the radius exactly, per listener, and
+    // leaves each enemy's own HearingRange the authority it is supposed to be.
+    //
+    // Opposite halves of one pair, so the else-if only guards a hand-authored
+    // instance carrying both.
+    if (Char->HasWeaponPerk(GothicTags::Perk_Weapon_VerbB_MuffledWork))
+    {
+        Loudness *= MuffledWorkLoudnessScale;
+    }
+    else if (Char->HasWeaponPerk(GothicTags::Perk_Weapon_VerbB_DreadReport))
+    {
+        Loudness *= DreadReportLoudnessScale;
+    }
 
     // A weapon can be authored silent. Skip rather than report a zero-loudness
     // event the sense would discard anyway.
@@ -628,7 +695,36 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
     if (bIsVitalHit)
     {
-        FinalDamage *= EffectiveVitalMult;
+        // Steady Read — "+0.25 VitalDamageMultiplier while stationary (no movement
+        // input in the last 0.5s)". ADDITIVE to the multiplier, so a 2.0x weapon
+        // becomes 2.25x rather than gaining a 25% damage line; that is what the
+        // doc's units say and it is the difference between +0.25 and +25%.
+        float VitalMult = EffectiveVitalMult;
+        if (Char->HasWeaponPerk(GothicTags::Perk_Weapon_VerbA_SteadyRead) &&
+            Char->GetStationaryDuration() >= SteadyReadStillnessSeconds)
+        {
+            VitalMult += SteadyReadVitalMultiplierBonus;
+        }
+
+        FinalDamage *= VitalMult;
+
+        // Moving Target — "vital hits while sprinting/strafing: flat +20% damage".
+        // The mirror of Steady Read, and mutually exclusive with it in practice
+        // rather than by code: one pays for standing still, the other for not.
+        if (Char->HasWeaponPerk(GothicTags::Perk_Weapon_VerbA_MovingTarget) &&
+            Char->IsMovingUnderOwnPower())
+        {
+            FinalDamage *= (1.f + MovingTargetVitalDamageBonus);
+        }
+
+        // Marksman's Due — "a vital hit returns 1 round to the magazine". Creates
+        // the round rather than pulling it from reserve, and no-ops on a full
+        // magazine (see AddRoundsToMagazine). Granted on the vital, before the
+        // damage goes out, so a kill still pays it.
+        if (Char->HasWeaponPerk(GothicTags::Perk_Weapon_VerbA_MarksmansDue))
+        {
+            Char->AddRoundsToMagazine(MarksmansDueRoundsReturned);
+        }
 
         // The Read: vital hits hurt more against a target you have READ, and
         // only that target. Checked on TargetASC, not SourceASC -- as a caster
@@ -718,11 +814,10 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
         if (SuperSpec.IsValid())
         {
-            // PILOT EFFECT — Kindling, "SuperGainOnHit +60% (5 -> 8)"
-            // (WEAPON_PERK_TABLES.md, Verb Bucket A). One of two effects wired in
-            // the seam PR purely to prove the equipped copy's perks reach the fire
-            // path; the other sixteen land in part 2, reading their magnitudes
-            // from the perk catalog instead of a constant here.
+            // Kindling — "SuperGainOnHit +60% (5 -> 8)" (WEAPON_PERK_TABLES.md,
+            // Verb Bucket A). The first effect wired, and still the shape every
+            // other one takes: read the perk off the character at the site that
+            // already owns the number.
             const float SuperGain = Char->HasWeaponPerk(GothicTags::Perk_Weapon_VerbA_Kindling)
                 ? WeaponData->SuperGainOnHit * 1.6f
                 : WeaponData->SuperGainOnHit;
@@ -742,6 +837,54 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     {
         UGothicAbilitySystemComponent::ApplyEffectToASC(
             TargetASC, WeaponData->ShockStunEffect, Char);
+    }
+
+    // ── Perk staggers: Jolt (chance) and Drumbeat (streak) ───────────────
+    //
+    // Both ride the same mechanism the Shock stun above uses — a GE carrying
+    // State.Stunned, applied to the victim's ASC. They roll independently of it
+    // and of each other for the same reason Oversurge and the stun do: separate
+    // hooks, and one shot is allowed to do more than one thing.
+    //
+    // The GE comes from ResolvePerkStaggerEffect, which prefers the ability's own
+    // PerkStaggerEffect and falls back to the weapon's ShockStunEffect. With
+    // neither assigned both perks are inert and say so once per shot at Verbose —
+    // GE_Stagger is EMPTY in data, so a stagger asset is a real editor follow-up
+    // and not something this code can conjure.
+    const bool bWantsJolt = Char->HasWeaponPerk(GothicTags::Perk_Weapon_VerbA_Jolt) &&
+        FMath::FRand() < JoltStaggerChance;
+
+    // Drumbeat — "every 8th consecutive unmissed hit". RegisterWeaponHit already
+    // ran above, so the streak includes THIS hit and the 8th shot is the one that
+    // staggers. Reload does not touch the streak (nothing in the reload path
+    // calls ResetConsecutiveHits); a miss and a weapon swap both clear it, which
+    // is exactly the semantics the doc asks for.
+    //
+    // CAVEAT, flagged rather than worked around: the streak is shared with
+    // Oversurge, which SPENDS it on a proc. On a weapon carrying both, an
+    // Oversurge resets the count and pushes Drumbeat's next stagger out. Today
+    // only the electrical Rig sets OversurgeHitsRequired, so the overlap is one
+    // weapon; splitting the counters is a design call, not a bug fix.
+    // The doc's "on one target" is likewise NOT enforced — the streak is
+    // per-character, not per-victim, and making it per-victim is a wider change.
+    const bool bWantsDrumbeat = Char->HasWeaponPerk(GothicTags::Perk_Weapon_VerbA_Drumbeat) &&
+        Char->GetConsecutiveHits() > 0 &&
+        (Char->GetConsecutiveHits() % DrumbeatHitsRequired) == 0;
+
+    if (bWantsJolt || bWantsDrumbeat)
+    {
+        if (TSubclassOf<UGameplayEffect> StaggerGE = ResolvePerkStaggerEffect(WeaponData))
+        {
+            UGothicAbilitySystemComponent::ApplyEffectToASC(TargetASC, StaggerGE, Char);
+        }
+        else
+        {
+            UE_LOG(LogVigilCombat, Verbose,
+                TEXT("PerkStagger: %s wanted to stagger %s but no stagger GE is assigned ")
+                TEXT("(BP_GA_Fire::PerkStaggerEffect and the weapon's ShockStunEffect are both null)"),
+                bWantsJolt ? TEXT("Jolt") : TEXT("Drumbeat"),
+                *Hit.GetActor()->GetName());
+        }
     }
 
     if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(Hit.GetActor()))

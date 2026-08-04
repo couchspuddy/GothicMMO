@@ -33,6 +33,7 @@
 
 class AGothicPlayerCharacter;
 class UAnimMontage;
+class UGothicWeaponData;
 
 UCLASS()
 class GOTHICMMO_API UGA_Fire : public UGothicGameplayAbility
@@ -188,6 +189,29 @@ protected:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire", meta = (ClampMin = "0.0", UIMax = "3.0"))
     float FallbackFireNoiseLoudness = 1.f;
+
+    /**
+     * The GE the Jolt and Drumbeat weapon perks apply to a staggered victim
+     * (WEAPON_PERK_TABLES.md, Verb Bucket A). Both perks want "stagger 1s", and
+     * the duration is the ASSET's — nothing here can shorten a GE that is
+     * authored for longer.
+     *
+     * Null by default and null is survivable: with nothing assigned here the
+     * perks fall back to the active weapon's ShockStunEffect, and with neither
+     * set they are inert and log once per shot at Verbose rather than failing
+     * silently. Assign a real stagger GE in BP_GA_Fire — GE_Stagger exists in
+     * content but is EMPTY, so pointing at it as-is buys nothing.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Perks")
+    TSubclassOf<UGameplayEffect> PerkStaggerEffect;
+
+    /**
+     * The stagger GE Jolt and Drumbeat should apply, or null when neither this
+     * ability nor the weapon has one. Prefers PerkStaggerEffect; falls back to
+     * the weapon's ShockStunEffect so a Rig already carrying a stun asset works
+     * before the dedicated one is authored.
+     */
+    TSubclassOf<UGameplayEffect> ResolvePerkStaggerEffect(const UGothicWeaponData* WeaponData) const;
 
     /**
      * Server-only. Traces on ECC_Weapon (the mesh, not the capsule), resolves the
