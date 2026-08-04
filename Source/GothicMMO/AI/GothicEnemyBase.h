@@ -206,6 +206,17 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|AI")
     float GetPackRegroupDuration() const { return PackRegroupDuration; }
 
+    /**
+     * The pawn's perception component, so the controller can ask what is being
+     * perceived RIGHT NOW rather than waiting for the next perception edge.
+     *
+     * Perception lives on the pawn in this project, not on the controller, so
+     * AGothicEnemyAIController::FindBestPerceivedTarget has no other route to it.
+     * Read-only by intent — the controller queries it and never reconfigures it.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|AI")
+    UAIPerceptionComponent* GetPerceptionComponent() const { return PerceptionComponent; }
+
 protected:
     // -------------------------------------------------------------------------
     // Components
