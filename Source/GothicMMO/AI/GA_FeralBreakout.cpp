@@ -234,7 +234,7 @@ void UGA_FeralBreakout::RallyEnemy(AGothicEnemyBase* Enemy, AActor* AggroTarget)
 
     if (AggroTarget)
     {
-        Enemy->SetCombatTarget(AggroTarget);
+        Enemy->SetCombatTarget(AggroTarget, TEXT("pack-rally"));
     }
 }
 

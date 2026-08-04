@@ -71,9 +71,29 @@ public:
      * shared AGothicCharacterBase::IsFightableActor. Callers do not need to
      * pre-filter — and must not rely on being able to skip this by calling in
      * with a target they know is down. A null passes through as a clear.
+     *
+     * This one-argument form reports itself as "unspecified" in the TargetAcquire
+     * line; prefer the overload below wherever the route has a name.
      */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Enemy")
     void SetCombatTarget(AActor* NewTarget);
+
+    /**
+     * As above, plus the name of the acquisition route for the timeline.
+     *
+     * TargetAcquire used to be logged from exactly one site (the leash tick's
+     * rescan), so six other routes into this function — perception, retaliation,
+     * the encounter volume's overlap aggro and its wave hand-off, the pack rally,
+     * and the possess-time flush — set a target without leaving a trace, and a log
+     * read as "this enemy acquired once" when it had acquired seven times. Logging
+     * at the choke point instead means a route can only be invisible by being
+     * genuinely absent.
+     *
+     * C++-only overload: a UFUNCTION cannot take a const TCHAR*, and the string is
+     * a compile-time literal at every call site rather than data. Blueprint keeps
+     * the one-argument form.
+     */
+    void SetCombatTarget(AActor* NewTarget, const TCHAR* Via);
 
     /**
      * Drops the pawn-side combat latch.

@@ -131,7 +131,7 @@ void AGothicEncounterVolume::HandleTriggerBeginOverlap(
         // would re-populate a Blackboard key on an actor mid-death.
         if (Enemy && Enemy->IsAlive())
         {
-            Enemy->SetCombatTarget(Player);
+            Enemy->SetCombatTarget(Player, TEXT("encounter-roster"));
             ++AggroedCount;
         }
     }
@@ -371,7 +371,7 @@ TArray<AGothicEnemyBase*> AGothicEncounterVolume::SpawnWaveFromPoints(
         {
             if (Enemy)
             {
-                Enemy->SetCombatTarget(Target);
+                Enemy->SetCombatTarget(Target, TEXT("wave-handoff"));
             }
         }
     }
