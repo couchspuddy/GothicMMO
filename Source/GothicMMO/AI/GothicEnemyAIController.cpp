@@ -17,6 +17,7 @@
 #include "GameFramework/Character.h"
 #include "NavigationSystem.h"
 #include "Navigation/PathFollowingComponent.h"
+#include "Perception/AIPerceptionComponent.h"
 
 namespace
 {
@@ -466,7 +467,34 @@ void AGothicEnemyAIController::CheckLeash()
         {
             Blackboard->SetValueAsVector(GothicBBKeys::TargetLocation, Target->GetActorLocation());
         }
+
+        return;
     }
+
+    // Targetless: re-scan what is already perceived. This is the general cure for
+    // edge-only acquisition, and it is deliberately coupled to NOTHING — not to the
+    // downed system, not to revives.
+    //
+    // The case that forced it: a perceived-but-unfightable actor BECOMING fightable
+    // fires no event anywhere. Clearing the downed flag on a player standing in an
+    // enemy's line of sight changes only a bool on their character; perception's
+    // view of the world did not change, so OnPerceptionUpdated has nothing to
+    // report and the enemy stares at a valid target forever. Broadcasting from
+    // SetDowned(false) would fix that one transition while coupling PlayerState to
+    // the AI stack and still missing every other unfightable->fightable case; a
+    // periodic re-scan fixes all of them, including the ones nobody has hit yet.
+    //
+    // Last in CheckLeash on purpose: everything above can break the leash or drop a
+    // target, and re-acquiring before those have run would hand back a target the
+    // same tick is about to release. Piggybacked on the existing 2s leash timer —
+    // no new tick — so the worst-case latency from "becomes fightable" to
+    // "re-engaged" is one leash interval, and the cost on an idle enemy with an
+    // empty perception set is one cast and one array check.
+    //
+    // Every enemy inherits this, boss included. The Feral's gated tree and the
+    // boss's own acquisition are untouched by it — they simply stop being able to
+    // get stuck idle in front of something they can see, which is a feature.
+    ReacquireFromPerception(TEXT("idle-rescan"));
 }
 
 bool AGothicEnemyAIController::IsFightableTarget(const AActor* Actor)
@@ -548,6 +576,104 @@ void AGothicEnemyAIController::DropTargetIfNoLongerFightable()
         *GetNameSafe(BBTarget), *GetNameSafe(PawnTarget));
 
     ClearCombatTarget();
+
+    // The design beat this drop exists to serve: ignore the one who went down and
+    // start eliminating whoever is still standing. Immediately, off what perception
+    // ALREADY holds — waiting for the next perception edge means waiting for the
+    // surviving player to walk out of and back into the enemy's senses, which in
+    // the measured session simply never happened and the enemy went idle instead.
+    ReacquireFromPerception(TEXT("drop-rescan"));
+}
+
+AActor* AGothicEnemyAIController::FindBestPerceivedTarget() const
+{
+    const APawn* OwnerPawn = GetPawn();
+    const AGothicEnemyBase* Enemy = Cast<AGothicEnemyBase>(OwnerPawn);
+    if (!Enemy)
+    {
+        return nullptr;
+    }
+
+    const UAIPerceptionComponent* Perception = Enemy->GetPerceptionComponent();
+    if (!Perception)
+    {
+        return nullptr;
+    }
+
+    // Every sense, not sight alone. Gunfire noise is a real acquisition source in
+    // this project (see the hearing config on the perception component), and an
+    // enemy that can hear you shooting but not see you should still come looking.
+    TArray<AActor*> Perceived;
+    Perception->GetCurrentlyPerceivedActors(TSubclassOf<UAISense>(), Perceived);
+
+    const FVector PawnLocation = OwnerPawn->GetActorLocation();
+
+    AActor* Best         = nullptr;
+    float   BestDistance = TNumericLimits<float>::Max();
+
+    for (AActor* Candidate : Perceived)
+    {
+        // The shared predicate, never a local re-spelling of it — a downed player
+        // is not fightable, which is exactly what keeps this from handing the body
+        // straight back to the enemy that just dropped it.
+        if (!IsFightableTarget(Candidate))
+        {
+            continue;
+        }
+
+        const float Distance = FVector::Dist2D(PawnLocation, Candidate->GetActorLocation());
+        if (Distance < BestDistance)
+        {
+            BestDistance = Distance;
+            Best         = Candidate;
+        }
+    }
+
+    return Best;
+}
+
+bool AGothicEnemyAIController::ReacquireFromPerception(const TCHAR* Via)
+{
+    // Cheap outs first — this runs on the 2s leash tick for every possessed enemy
+    // in the level, so it must cost nothing in the common case.
+    if (bLeashReturning)
+    {
+        return false; // walking home; IsAcceptingCombatTargets would refuse it anyway
+    }
+
+    AGothicEnemyBase* Enemy = Cast<AGothicEnemyBase>(GetPawn());
+    if (!Enemy || !Enemy->IsAlive())
+    {
+        return false;
+    }
+
+    // Only ever fills a hole. Either half still holding a fightable target means
+    // there is an engagement running and nothing to re-acquire — this must never
+    // retarget a fight in progress.
+    if (GetLeashQuarry())
+    {
+        return false;
+    }
+
+    AActor* Best = FindBestPerceivedTarget();
+    if (!Best)
+    {
+        return false;
+    }
+
+    Enemy->SetCombatTarget(Best);
+
+    // Edge-triggered by construction: the guard above means this line can only be
+    // reached from a targetless state, so a target held across many rescans prints
+    // once, when it is latched. No latch member needed.
+    const UWorld* World = GetWorld();
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|TargetAcquire|target=%s|via=%s|distance=%.1f"),
+        World ? World->GetTimeSeconds() : 0.f, *GetNameSafe(Enemy),
+        *GetNameSafe(Best), Via,
+        FVector::Dist2D(Enemy->GetActorLocation(), Best->GetActorLocation()));
+
+    return true;
 }
 
 FPathFollowingRequestResult AGothicEnemyAIController::MoveTo(

@@ -503,6 +503,44 @@ private:
      */
     void DropTargetIfNoLongerFightable();
 
+    /**
+     * The nearest currently-perceived fightable actor, or nullptr.
+     *
+     * Asks the pawn's perception component for its CURRENT set rather than
+     * reading an event payload — the whole point is to answer the question at a
+     * moment when no perception event is arriving.
+     *
+     * Nearest wins. The edge path (AGothicEnemyBase::OnPerceptionUpdated) takes
+     * the first sensed actor in the update array because an update names one or
+     * two actors; a full re-scan can see the whole room, and "first in an
+     * unordered array" would be arbitrary there. 2D, like every other range in
+     * this class — see IsTargetInAttackRange for why capsule heights must never
+     * enter a combat distance.
+     */
+    AActor* FindBestPerceivedTarget() const;
+
+    /**
+     * Acquires the best currently-perceived fightable actor if this enemy has no
+     * target. Returns true if one was latched.
+     *
+     * WHY THIS EXISTS: acquisition was purely edge-triggered — OnPerceptionUpdated
+     * fires when perception CHANGES, and a player who was already perceived and
+     * stays perceived generates no further events. So any code path that cleared
+     * TargetActor while the player stood in plain sight left the enemy permanently
+     * idle: nothing was ever going to re-deliver an actor perception already knew
+     * about. Measured on a 2-player listen server — an enemy dropped a downed P2
+     * (correctly), P2 was revived 285uu in front of it with LOS clear and
+     * currently_seen_by_sight true, and the blackboard read TargetActor: None
+     * forever. The same hole meant an enemy that dropped a downed player only
+     * "turned on the survivors" if a fresh perception edge happened to arrive.
+     *
+     * Routed through AGothicEnemyBase::SetCombatTarget, the single aggro choke
+     * point, so the leash gate still refuses it while walking home.
+     *
+     * Via is a short tag for the telemetry line only.
+     */
+    bool ReacquireFromPerception(const TCHAR* Via);
+
     /** Handle for the pack-regroup BT pause. Member, so the pause is cancellable. */
     FTimerHandle RegroupPauseTimer;
 
