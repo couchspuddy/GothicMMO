@@ -14,16 +14,31 @@ void UGothicSteadfastComponent::BeginPlay()
 {
     Super::BeginPlay();
 
+    // First-spawn pawns resolve here. Respawned and joining pawns don't have an
+    // ASC yet at this point — ResolveASC() picks them up on first use.
+    ResolveASC();
+}
+
+UAbilitySystemComponent* UGothicSteadfastComponent::ResolveASC()
+{
+    if (CachedASC)
+    {
+        return CachedASC;
+    }
+
     if (GetOwner())
     {
         CachedASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(GetOwner());
     }
 
-    if (!CachedASC)
+    if (!CachedASC && !bWarnedNoASC)
     {
+        bWarnedNoASC = true;
         UE_LOG(LogTemp, Warning, TEXT("GothicSteadfastComponent: No ASC found on %s"),
-            *GetOwner()->GetName());
+            GetOwner() ? *GetOwner()->GetName() : TEXT("NULL owner"));
     }
+
+    return CachedASC;
 }
 
 void UGothicSteadfastComponent::TickComponent(float DeltaTime, ELevelTick TickType,
@@ -31,7 +46,8 @@ void UGothicSteadfastComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-    if (!CachedASC || !InCombatTag.IsValid())
+    UAbilitySystemComponent* ASC = ResolveASC();
+    if (!ASC || !InCombatTag.IsValid())
     {
         return;
     }
@@ -41,12 +57,12 @@ void UGothicSteadfastComponent::TickComponent(float DeltaTime, ELevelTick TickTy
         return; // server-authoritative accumulation only
     }
 
-    if (!CachedASC->HasMatchingGameplayTag(InCombatTag))
+    if (!ASC->HasMatchingGameplayTag(InCombatTag))
     {
         return; // not in combat, no fill
     }
 
-    const UGothicAttributeSet* AttributeSet = CachedASC->GetSet<UGothicAttributeSet>();
+    const UGothicAttributeSet* AttributeSet = ASC->GetSet<UGothicAttributeSet>();
     if (!AttributeSet)
     {
         return;
@@ -77,12 +93,13 @@ void UGothicSteadfastComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 
 float UGothicSteadfastComponent::TryConvertSteadfast(float SteadfastCost, float AmmoGranted)
 {
-    if (!CachedASC)
+    UAbilitySystemComponent* ASC = ResolveASC();
+    if (!ASC)
     {
         return 0.f;
     }
 
-    UGothicAttributeSet* AttributeSet = const_cast<UGothicAttributeSet*>(CachedASC->GetSet<UGothicAttributeSet>());
+    UGothicAttributeSet* AttributeSet = const_cast<UGothicAttributeSet*>(ASC->GetSet<UGothicAttributeSet>());
     if (!AttributeSet)
     {
         return 0.f;
@@ -101,11 +118,14 @@ float UGothicSteadfastComponent::TryConvertSteadfast(float SteadfastCost, float 
     return AmmoGranted;
 }
 
+// The two readers are const to their Blueprint callers but still have to be able
+// to fill a cache BeginPlay couldn't — const_cast here rather than a mutable
+// UPROPERTY, which UHT won't take.
 float UGothicSteadfastComponent::GetCurrentSteadfast() const
 {
-    if (CachedASC)
+    if (UAbilitySystemComponent* ASC = const_cast<UGothicSteadfastComponent*>(this)->ResolveASC())
     {
-        if (const UGothicAttributeSet* AttributeSet = CachedASC->GetSet<UGothicAttributeSet>())
+        if (const UGothicAttributeSet* AttributeSet = ASC->GetSet<UGothicAttributeSet>())
         {
             return AttributeSet->GetSteadfast();
         }
@@ -115,9 +135,9 @@ float UGothicSteadfastComponent::GetCurrentSteadfast() const
 
 float UGothicSteadfastComponent::GetMaxSteadfast() const
 {
-    if (CachedASC)
+    if (UAbilitySystemComponent* ASC = const_cast<UGothicSteadfastComponent*>(this)->ResolveASC())
     {
-        if (const UGothicAttributeSet* AttributeSet = CachedASC->GetSet<UGothicAttributeSet>())
+        if (const UGothicAttributeSet* AttributeSet = ASC->GetSet<UGothicAttributeSet>())
         {
             return AttributeSet->GetMaxSteadfast();
         }

@@ -68,6 +68,19 @@ private:
     UPROPERTY()
     TObjectPtr<class UAbilitySystemComponent> CachedASC;
 
+    /**
+     * Returns the owner's ASC, resolving it lazily if BeginPlay could not.
+     *
+     * BeginPlay runs inside SpawnActor, which on a RESPAWNED pawn (and on a
+     * client-side pawn at join) is BEFORE PossessedBy/InitGASFromPlayerState has
+     * set the character's ASC pointer. A single BeginPlay-time cache is null
+     * forever on those pawns, and State.InCombat then never went on or off.
+     */
+    class UAbilitySystemComponent* ResolveASC();
+
+    /** Keeps the "no ASC" warning to one line per component, not one per call. */
+    bool bWarnedNoASC = false;
+
     void EnterCombat();
     void OnExitGraceExpired();
 };

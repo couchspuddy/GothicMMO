@@ -1,6 +1,7 @@
 // GothicMeleeHitboxComponent.cpp
 
 #include "AI/GothicMeleeHitboxComponent.h"
+#include "GothicMMO.h"                      // LogVigilCombat
 #include "AI/GothicEnemyBase.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicGameplayTags.h"
@@ -8,6 +9,20 @@
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
 #include "GameplayTagContainer.h"
+
+namespace
+{
+    /**
+     * The `t=` stamp every VigilTimeline line carries. Free function so this file
+     * needs no header change to log, and it answers 0 rather than asserting for a
+     * component logging outside a world — this is a diagnostic, not a rule.
+     */
+    float HitboxTimelineNow(const UActorComponent* Component)
+    {
+        const UWorld* World = Component ? Component->GetWorld() : nullptr;
+        return World ? World->GetTimeSeconds() : 0.f;
+    }
+}
 
 UGothicMeleeHitboxComponent::UGothicMeleeHitboxComponent(
     const FObjectInitializer& ObjectInitializer)
@@ -43,9 +58,18 @@ void UGothicMeleeHitboxComponent::EnableHitbox()
 {
     bHitboxActive = true;
     AlreadyHitThisSwing.Empty();
+    OverlapsThisWindow = 0;
+    PaidThisWindow = 0;
     PruneDamageStamps();
     SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|HitboxWindow|OPEN|hitbox=%s|socket=%s|baseDamage=%.0f"),
+        HitboxTimelineNow(this),
+        GetOwner() ? *GetOwner()->GetName() : TEXT("Unknown"),
+        *GetName(),
+        *GetAttachSocketName().ToString(),
+        BaseDamage);
 }
 
 void UGothicMeleeHitboxComponent::PruneDamageStamps()
@@ -80,6 +104,18 @@ void UGothicMeleeHitboxComponent::DisableHitbox()
     bHitboxActive = false;
     SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
+    // overlaps = events the open window actually processed; paid = those that
+    // reached ApplyGameplayEffectSpecToTarget. overlaps>0 with paid=0 is a swing
+    // rejected by the guards (self, Accursed-on-Accursed, dead, immune, no ASC);
+    // overlaps=0 is reach or timing, and no line at all is a missing notify.
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|HitboxWindow|CLOSE|overlaps=%d|paid=%d|hitbox=%s|socket=%s"),
+        HitboxTimelineNow(this),
+        GetOwner() ? *GetOwner()->GetName() : TEXT("Unknown"),
+        OverlapsThisWindow,
+        PaidThisWindow,
+        *GetName(),
+        *GetAttachSocketName().ToString());
 }
 
 void UGothicMeleeHitboxComponent::OnHitboxOverlap(
@@ -94,6 +130,10 @@ void UGothicMeleeHitboxComponent::OnHitboxOverlap(
     {
         return;
     }
+
+    // Counted before any guard: the point of the number is to say that something
+    // WAS inside the box, whatever happened to it afterwards.
+    ++OverlapsThisWindow;
 
     // Don't hit self
     if (!OtherActor || OtherActor == GetOwner())
@@ -211,6 +251,7 @@ void UGothicMeleeHitboxComponent::OnHitboxOverlap(
         OwnerASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
 
         AlreadyHitThisSwing.Add(OtherActor);
+        ++PaidThisWindow;
 
         if (const UWorld* World = GetWorld())
         {
