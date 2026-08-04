@@ -847,6 +847,253 @@ def require_world():
     return world
 
 
+# --------------------------------------------------------------------------
+# Per-world resolution (multiplayer PIE)
+#
+# WHY THIS EXISTS: LOCALPREDICTED ABILITIES REFUSE A REMOTE PAWN
+# --------------------------------------------------------------
+# pie_world() hands back the SERVER world, which is the correct default for
+# everything that reads or asserts state -- the server is the authority and its
+# numbers are the real ones. But every player active in this project (GA_Fire
+# included) is a LocalPredicted ability, and UGameplayAbility::CanActivateAbility
+# refuses one on a pawn that is not locally controlled:
+#
+#     "Can't activate LocalPredicted ability ... when not local"
+#
+# On the server world the second player's pawn is a remote proxy, so no amount
+# of driving it there will ever fire their gun. The only place their pawn is
+# locally controlled is THEIR world -- the UEDPIE_1_ PIE instance -- and that
+# is what this resolves. Without it no remote-player ability can be harness
+# tested at all.
+#
+# TWO THINGS THAT WILL BITE THE NEXT PERSON
+# -----------------------------------------
+# 1. LABELS DIFFER PER WORLD. Each PIE instance names its own actors, so
+#    "BP_GothicCharacter_C_0" is the HOST's pawn on the server world and the
+#    LOCAL PLAYER's pawn on a client world -- the same label, two different
+#    pawns. A client world's local pawn is confusingly the _C_0 there too.
+#    Always resolve a label in the world you intend to act on, and never carry
+#    a name from one world's list_combatants into another world's action.
+#
+# 2. A CLIENT WORLD IS NOT AUTHORITATIVE. State read there is a replicated
+#    copy, and state written there is a local prediction that the server may
+#    never confirm. This facility is for DRIVING LOCAL ACTIVATION -- simulating
+#    the input layer on the machine that owns the pawn -- and nothing else.
+#    Verify every outcome on the server world: activate on the client, assert
+#    on the server.
+#
+# The lookup itself is deliberately paranoid. It was authored without a PIE
+# session to test against, so it cross-checks that whatever it found really is
+# a world carrying the requested UEDPIE_N_ prefix, and every failure lists the
+# worlds that DO resolve right now rather than just saying no.
+# --------------------------------------------------------------------------
+
+# Aliases an agent can write in a scenario step. The index is the PIE instance
+# number: 0 is the server/listen host, 1 is the first client window.
+WORLD_ALIASES = {
+    "server": 0,
+    "host": 0,
+    "authority": 0,
+    "client": 1,
+    "client1": 1,
+    "client2": 2,
+    "client3": 3,
+}
+
+DEFAULT_WORLD_SPEC = "server"
+
+# UEditorEngine prefixes PIE package names with UEDPIE_<instance>_ (see
+# UWorld::StreamingLevelsPrefix / PIE package fixup), so a world's own path name
+# carries its instance number: /Game/Maps/UEDPIE_1_Arena.UEDPIE_1_Arena.
+_PIE_PREFIX_RE = re.compile(r"UEDPIE_(\d+)_")
+
+_MAX_PROBED_PIE_INDEX = 7
+
+
+def world_path(world):
+    """A world's full object path, or None if it cannot be read."""
+    try:
+        return str(world.get_path_name())
+    except Exception:
+        return None
+
+
+def pie_world_index(world):
+    """The N in UEDPIE_N_ for a world, or None when the path carries no prefix.
+
+    None is a real answer, not a failure: the editor world has no prefix, and
+    neither does a cooked standalone world.
+    """
+    path = world_path(world)
+    if not path:
+        return None
+    match = _PIE_PREFIX_RE.search(path)
+    return int(match.group(1)) if match else None
+
+
+def world_spec_index(spec):
+    """A world spec -> its PIE instance index.
+
+    Accepts an alias ("server", "client", "client2"), a bare index (1, "1"), or
+    a prefix spelling ("UEDPIE_1_"). Raises rather than defaulting: silently
+    acting on the server world when a client was asked for would produce a
+    "LocalPredicted refused" result that looks like a gameplay bug.
+    """
+    if isinstance(spec, bool):
+        raise ValueError("world must be a name or an index, got %r" % spec)
+    if isinstance(spec, int):
+        return int(spec)
+
+    text = str(spec).strip()
+    if not text:
+        raise ValueError("empty world specifier")
+
+    lowered = text.lower()
+    if lowered in WORLD_ALIASES:
+        return WORLD_ALIASES[lowered]
+
+    match = _PIE_PREFIX_RE.search(text)
+    if match:
+        return int(match.group(1))
+    if text.isdigit():
+        return int(text)
+
+    raise ValueError(
+        "'%s' is not a world specifier. Accepted: %s, a bare PIE instance "
+        "index, or a 'UEDPIE_<n>_' spelling." % (spec, sorted(WORLD_ALIASES)))
+
+
+def _world_path_for_index(base_path, index):
+    """`base_path` rewritten to point at PIE instance `index`."""
+    return _PIE_PREFIX_RE.sub("UEDPIE_%d_" % index, base_path)
+
+
+def _looks_like_world(obj):
+    world_type = getattr(unreal, "World", None)
+    if world_type is not None:
+        return isinstance(obj, world_type)
+    return "World" in type(obj).__name__
+
+
+def _find_world_at_path(path):
+    """The already-loaded UWorld at `path`, or None.
+
+    FIND, never load. A PIE world exists only while PIE is running; loading is
+    both wrong and capable of pulling in the editor copy of the map under a
+    name that looks right and is not the running instance.
+    """
+    finder = getattr(unreal, "find_object", None)
+    if finder is None:
+        return None
+    try:
+        found = finder(None, path)
+    except Exception:
+        return None
+    if found is None or not _looks_like_world(found):
+        return None
+    return found
+
+
+def available_pie_worlds():
+    """[(index, path)] for every PIE world that resolves right now.
+
+    Derived from the running world's own path rather than from an engine world
+    list, because GEngine's WorldContexts array is not exposed to Python at all.
+    Probing a small index range is what stands in for enumeration, and it is
+    enough: PIE instance numbers are dense from 0.
+    """
+    base = pie_world()
+    if base is None:
+        return []
+
+    base_path = world_path(base)
+    base_index = pie_world_index(base)
+    if not base_path or base_index is None:
+        # Not a PIE world (or an engine build that stopped prefixing). The one
+        # world we have is still worth reporting, unnumbered.
+        return [(None, base_path)] if base_path else []
+
+    found = []
+    for index in range(_MAX_PROBED_PIE_INDEX + 1):
+        if index == base_index:
+            found.append((index, base_path))
+            continue
+        path = _world_path_for_index(base_path, index)
+        if _find_world_at_path(path) is not None:
+            found.append((index, path))
+    return found
+
+
+def describe_pie_worlds():
+    """A human-readable list of resolvable PIE worlds, for error text."""
+    worlds = available_pie_worlds()
+    if not worlds:
+        return "(none -- not in PIE)"
+    return ", ".join(
+        "%s -> %s" % ("UEDPIE_%d_" % i if i is not None else "(no prefix)", p)
+        for i, p in worlds)
+
+
+def resolve_world(spec=None):
+    """The UWorld for a world spec. Defaults to the SERVER world.
+
+    `spec` of None or "server" returns exactly what pie_world() returns, so
+    every existing caller and every scenario step without a "world" field keeps
+    its current behaviour bit for bit.
+
+    READ THE MODULE COMMENT ABOVE BEFORE USING A CLIENT WORLD. In short:
+      * Actor labels are per-world. "_C_0" is the host's pawn on the server
+        world and the local player's pawn on a client world.
+      * A client world is NOT authoritative. Drive local ability activation
+        there; verify the result on the server world.
+
+    Raises:
+        RuntimeError: Not in PIE, or the requested instance does not exist --
+            naming every world that does.
+    """
+    if spec is None:
+        return require_world()
+
+    index = world_spec_index(spec)
+    base = require_world()
+    base_index = pie_world_index(base)
+
+    if base_index is None:
+        if index == 0:
+            # No PIE prefix at all (single-process or a build that stopped
+            # prefixing). The one world we have IS the server world.
+            return base
+        raise RuntimeError(
+            "The running world %s carries no UEDPIE_<n>_ prefix, so PIE "
+            "instance %d ('%s') cannot be addressed. Multi-instance PIE has to "
+            "be running (Play > Number of Players > 2) for a client world to "
+            "exist." % (world_path(base), index, spec))
+
+    if index == base_index:
+        return base
+
+    path = _world_path_for_index(world_path(base), index)
+    world = _find_world_at_path(path)
+    if world is None:
+        raise RuntimeError(
+            "No PIE world for instance %d ('%s'). Looked for %s. Worlds that "
+            "resolve right now: %s. If a client window is open and this still "
+            "fails, the lookup route is what is wrong, not the session -- "
+            "resolve_world in vigil_pie_common is the single place to fix it."
+            % (index, spec, path, describe_pie_worlds()))
+
+    found_index = pie_world_index(world)
+    if found_index != index:
+        # Cross-check, same discipline as the trace-ordinal check above: a world
+        # found under an unexpected name must never quietly stand in for the
+        # one that was asked for.
+        raise RuntimeError(
+            "Asked for PIE instance %d ('%s') and found %s, whose prefix reads "
+            "as instance %s. Refusing to act on the wrong world."
+            % (index, spec, world_path(world), found_index))
+    return world
+
+
 def game_time(world):
     """Seconds of gameplay time.
 
@@ -878,6 +1125,11 @@ def resolve_actor(world, label):
     Raises on ambiguity rather than guessing. An agent that silently drove the
     wrong enemy would produce a plausible, wrong scenario result -- worse than
     an error, because it looks like data.
+
+    `world` decides which pawns are even candidates, and in multiplayer PIE that
+    is load-bearing: each instance names its own actors, so the same label picks
+    out a different pawn on the server world than on a client world. Resolve in
+    the world you intend to act on -- see resolve_world.
     """
     pawns = all_pawns(world)
     for pawn in pawns:

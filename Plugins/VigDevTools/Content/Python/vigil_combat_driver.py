@@ -97,11 +97,34 @@ def _aim_origin(pawn):
     return pawn.get_actor_location()
 
 
+def _step_world(world, step):
+    """The world a step addresses: its optional "world" field, else the run's.
+
+    Every scenario runs against the SERVER world and that stays the default, so
+    a step with no "world" field behaves exactly as it always has.
+
+    "world": "client" exists for ONE reason: LocalPredicted abilities -- GA_Fire
+    and every player active -- refuse to activate on a pawn that is not locally
+    controlled, so a second player's abilities can only be driven on THEIR PIE
+    instance. See the per-world block in vigil_pie_common for the two traps that
+    come with it (labels are per-world; a client world is not authoritative).
+    """
+    spec = step.get("world")
+    if spec is None:
+        return world
+    return common.resolve_world(spec)
+
+
 def _actor(world, step, key="actor"):
+    """Resolve a step's actor label, in the step's world.
+
+    The label is resolved in whichever world the step addresses, which matters:
+    the same name identifies different pawns on the server and client worlds.
+    """
     label = step.get(key)
     if not label:
         raise ValueError("step is missing required field '%s'" % key)
-    return common.resolve_actor(world, label)
+    return common.resolve_actor(_step_world(world, step), label)
 
 
 def _activate(pawn, slot_name):
@@ -411,9 +434,9 @@ def _setbycaller_tag(effect_class):
         "magnitude to" % effect_class.get_name())
 
 
-def _apply_damage(target, amount, effect_path):
+def _apply_damage(target, amount, effect_path, instigator=None):
     """Push damage through the REAL pipeline: GE_Damage carrying a Data.Damage
-    SetByCaller, applied to the target's own ASC.
+    SetByCaller, applied to the target's ASC.
 
     Deliberately not a health poke. GothicAttributeSet::PostGameplayEffectExecute
     is what converts IncomingDamage into a health change, and it also rolls
@@ -423,10 +446,53 @@ def _apply_damage(target, amount, effect_path):
     Because mitigation applies, `amount` is RAW damage, not the health delta:
     a Thrall with 8 Defense loses (amount - 8). Pass generously when the intent
     is simply to kill.
+
+    WHO DEALT IT
+    ------------
+    With no `instigator`, the spec is built from the TARGET's own ASC and the
+    victim is named as its own attacker. That is the historical shape and it is
+    kept as the default so existing scenarios do not change meaning, but it has
+    two consequences worth knowing before reading any result produced by it:
+
+      * AttackPower contributes NOTHING. PostGameplayEffectExecute reads the
+        bonus off Context.GetOriginalInstigatorAbilitySystemComponent()
+        (GothicAttributeSet.cpp:170, :218-220), which here is the victim, so the
+        damage is max(1, Raw - Defense) and no attacker's AttackPower is ever
+        exercised. This is the exact mechanism behind the "apply_damage carries
+        no instigator" gotcha.
+      * NotifyDamagedBy never fires with a real attacker
+        (GothicAttributeSet.cpp:246-268 skips it for self-damage), so
+        retaliation cannot be tested by harness damage at all.
+
+    Passing `instigator` fixes both by mirroring the project's blessed route,
+    UGothicAbilitySystemComponent::ApplyEffectToASC
+    (GothicAbilitySystemComponent.cpp:236-260): make the spec off the SOURCE's
+    ASC and apply it to the target's.
+
+    The C++ builds its context through MakeDamageContext, which re-points the
+    instigator at the avatar (:213-234). That call is a plain static with no
+    UFUNCTION macro (GothicAbilitySystemComponent.h:63-65), so it does not exist
+    in Python -- but it does not need to. UAbilitySystemComponent::MakeEffectContext
+    already instigates with the ASC's OWNER, and the attribute set resolves the
+    attacker back through GetOriginalInstigatorAbilitySystemComponent rather
+    than off the actor. For a player that owner is AGothicPlayerState, which
+    implements IAbilitySystemInterface (GothicPlayerState.h:22), so it resolves
+    to the same ASC and the same GetAvatarActor() pawn the C++ route names.
     """
-    asc = target.get_gothic_asc()
-    if asc is None:
+    target_asc = target.get_gothic_asc()
+    if target_asc is None:
         raise LookupError("no GothicAbilitySystemComponent on %s" % target.get_name())
+
+    source_asc = target_asc
+    if instigator is not None:
+        source_asc = instigator.get_gothic_asc()
+        if source_asc is None:
+            raise LookupError(
+                "no GothicAbilitySystemComponent on instigator %s, so it cannot "
+                "be named as the source of this damage. Drop the 'instigator' "
+                "field to fall back to self-damage, but note that AttackPower "
+                "and retaliation are then not exercised."
+                % instigator.get_name())
 
     effect_class = unreal.load_class(None, effect_path)
     if effect_class is None:
@@ -437,11 +503,11 @@ def _apply_damage(target, amount, effect_path):
     #   so Python sees unreal.AbilitySystemLibrary.
     #   The spec apply lives on the ASC itself as BP_ApplyGameplayEffectSpecToTarget,
     #   exposed via ScriptName as apply_gameplay_effect_spec_to_target.
-    context = asc.make_effect_context()
-    spec = asc.make_outgoing_spec(effect_class, 1.0, context)
+    context = source_asc.make_effect_context()
+    spec = source_asc.make_outgoing_spec(effect_class, 1.0, context)
     spec = unreal.AbilitySystemLibrary.assign_tag_set_by_caller_magnitude(
         spec, _setbycaller_tag(effect_class), float(amount))
-    asc.apply_gameplay_effect_spec_to_target(spec, asc)
+    source_asc.apply_gameplay_effect_spec_to_target(spec, target_asc)
 
 
 @_action("apply_damage")
@@ -452,22 +518,37 @@ def _a_apply_damage(world, step):
     rotation set this tick does not reach the camera until the next frame, and
     GA_Fire traces from the camera. This drives the damage path directly so
     encounter, wave and death-chain tests do not depend on hitting anything.
+
+    Pass an optional "instigator" (an actor label, resolved in the same world)
+    to name an attacker. With it, the damage exercises AttackPower and fires
+    NotifyDamagedBy, which is what makes retaliation testable from here.
+    Without it the victim damages itself, AttackPower contributes nothing, and
+    retaliation never triggers -- see _apply_damage for why.
     """
     target = _actor(world, step)
     amount = float(step.get("amount", 25.0))
     effect_path = step.get("effect", DEFAULT_DAMAGE_EFFECT)
+    instigator = (_actor(world, step, "instigator")
+                  if step.get("instigator") else None)
 
     before = common.try_read(lambda: float(target.get_health()))
-    _apply_damage(target, amount, effect_path)
+    _apply_damage(target, amount, effect_path, instigator)
     after = common.try_read(lambda: float(target.get_health()))
 
     return {
         "target": target.get_name(),
+        "instigator": instigator.get_name() if instigator is not None else None,
         "raw_amount": amount,
         "health_before": before,
         "health_after": after,
         "alive": common.try_read(lambda: bool(target.is_alive())),
-        "note": "raw damage; Defense and evasion still apply",
+        "note": ("raw damage; Defense and evasion still apply. "
+                 + ("Instigated: the attacker's AttackPower is added and "
+                    "NotifyDamagedBy fires, so retaliation is in play."
+                    if instigator is not None else
+                    "SELF-DAMAGE -- no instigator, so AttackPower contributes 0 "
+                    "and NotifyDamagedBy never fires. Add an 'instigator' field "
+                    "to exercise either.")),
     }
 
 
@@ -509,7 +590,7 @@ def _a_selah(world, step):
 def _a_aim_at(world, step):
     """Point the controller at another actor's origin."""
     pawn = _actor(world, step)
-    target = common.resolve_actor(world, step["target"])
+    target = _actor(world, step, "target")
     controller = pawn.get_controller()
     if controller is None:
         raise LookupError("no controller on %s" % pawn.get_name())
@@ -849,8 +930,11 @@ def _a_aim_at_vital(world, step):
     independently confirmed at 2.5 (70.84 vital vs 34.34 body on the boss,
     reconciling to the same formula).
     """
+    # Rebound once, up front: the traces below have to run in the same world
+    # the pawns were resolved in, or they trace an empty copy of the level.
+    world = _step_world(world, step)
     pawn = _actor(world, step)
-    target = common.resolve_actor(world, step["target"])
+    target = _actor(world, step, "target")
     vital = common.component(target, "GothicVitalPointComponent")
     if vital is None:
         raise LookupError("%s has no GothicVitalPointComponent" % target.get_name())
@@ -896,7 +980,7 @@ def _a_aim_at_vital(world, step):
 def _a_set_target(world, step):
     """Force an enemy onto a target, skipping perception acquisition."""
     enemy = _actor(world, step)
-    target = common.resolve_actor(world, step["target"])
+    target = _actor(world, step, "target")
     enemy.set_combat_target(target)
     return {"enemy": enemy.get_name(), "target": target.get_name()}
 
@@ -1153,6 +1237,16 @@ def validate(steps):
             float(step.get("at", 0.0))
         except (TypeError, ValueError):
             problems.append("step %d: 'at' must be a number" % i)
+
+        # The spec is checked without touching PIE, so a typo'd world name
+        # ("clientt") is caught by scenario_validate rather than by one failed
+        # step twenty seconds into a run. Whether that instance EXISTS is only
+        # answerable at execution time, and resolve_world reports it there.
+        if step.get("world") is not None:
+            try:
+                common.world_spec_index(step["world"])
+            except ValueError as exc:
+                problems.append("step %d: %s" % (i, exc))
     return problems
 
 
