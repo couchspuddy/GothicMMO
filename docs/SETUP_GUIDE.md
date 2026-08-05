@@ -225,3 +225,20 @@ The prototype is ready for you to hand me:
 - **UI/HUD layout** (health, Ether meter, ability slots)
 - **Loot system design**
 - **Progression system** (level curve, gear tiers)
+
+## Packaging (command line)
+
+The working command (PowerShell, via `&`; the editor's Package Project UI is NOT required):
+
+```
+& "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat" BuildCookRun `
+  -project="<project>.uproject" -noP4 -platform=Win64 -clientconfig=Development `
+  -cook -build -stage -pak -archive -archivedirectory="<out>" -utf8output `
+  -prereqs -applocaldirectory="C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\ThirdParty\AppLocalDependencies"
+```
+
+Two hard-won rules (2026-08-05, both shipped broken without them):
+- `-prereqs -applocaldirectory=...` is MANDATORY on direct RunUAT invocations — the `IncludeAppLocalPrerequisites=True` ini setting is only honored by the editor's packaging UI; without the flags, no `vcruntime140`/`msvcp140` DLLs stage and machines without the VC redist cannot launch the exe.
+- The `GameFeatureData` scan rule in `Config/DefaultGame.ini` must keep `bIsEditorOnly=True`: the GameFeatures plugin is not enabled, the class does not exist in cooked builds, and a runtime scan hangs engine init at an ensure (deleting the rule instead fails the cook — the commandlet demands a rule exist).
+
+Post-package checks: `UnrealPak -List` confirms all maps in the pak; the staged tree must contain NO Plugins directory (MCP/toolsets are Editor-gated and must not ship); boot the exe once and read its log to the front-end LoadMap.
