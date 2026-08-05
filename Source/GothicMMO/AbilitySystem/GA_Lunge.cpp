@@ -4,6 +4,7 @@
 #include "AbilitySystemComponent.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/Controller.h"
 #include "GameplayEffect.h"
 #include "TimerManager.h"
 #include "Engine/World.h"
@@ -60,24 +61,60 @@ FVector UGA_Lunge::GetLungeDirection(ACharacter* Character) const
         return FVector::ForwardVector;
     }
 
-    // Prefer current input-driven velocity direction if the character is moving
-    const FVector Velocity = Character->GetVelocity();
-    FVector Dir = Velocity.GetSafeNormal2D();
-
-    if (Dir.IsNearlyZero())
+    if (!bDashUsesMovementInputDirection)
     {
-        // No input — fall back to facing direction
-        Dir = Character->GetActorForwardVector().GetSafeNormal2D();
+        // Legacy behaviour: travel along current velocity. Reads fine on the ground,
+        // but in the air velocity is whatever you were carrying before the dash, so
+        // the lunge ignores both the camera and the stick.
+        FVector LegacyDir = Character->GetVelocity().GetSafeNormal2D();
+        if (LegacyDir.IsNearlyZero())
+        {
+            LegacyDir = Character->GetActorForwardVector().GetSafeNormal2D();
+        }
+        return LegacyDir;
     }
 
-    return Dir;
+    // Held movement input wins. Pending input first — that is this frame's stick,
+    // before CharacterMovement consumes it — then last consumed, which covers the
+    // frame ordering where the ability activates after the move input was eaten.
+    if (const UCharacterMovementComponent* MoveComp = Character->GetCharacterMovement())
+    {
+        FVector InputDir = MoveComp->GetPendingInputVector().GetSafeNormal2D();
+        if (InputDir.IsNearlyZero())
+        {
+            InputDir = MoveComp->GetLastInputVector().GetSafeNormal2D();
+        }
+
+        if (!InputDir.IsNearlyZero())
+        {
+            return InputDir;
+        }
+    }
+
+    // No input held — dash where the player is looking. Control rotation rather than
+    // the actor's forward vector: with the camera free of the mesh, where you look is
+    // what the player reads as "forward".
+    if (const AController* Controller = Character->GetController())
+    {
+        const FVector CameraForward =
+            FRotationMatrix(FRotator(0.f, Controller->GetControlRotation().Yaw, 0.f))
+                .GetUnitAxis(EAxis::X);
+        if (!CameraForward.IsNearlyZero())
+        {
+            return CameraForward.GetSafeNormal2D();
+        }
+    }
+
+    return Character->GetActorForwardVector().GetSafeNormal2D();
 }
 
 void UGA_Lunge::StartLungeMovement(ACharacter* Character, const FVector& Direction)
 {
     LungeStartLocation = Character->GetActorLocation();
     LungeTargetLocation = LungeStartLocation + (Direction * LungeDistance);
+    LungeDirection = Direction.GetSafeNormal2D();
     LungeElapsed = 0.f;
+    bLungeMovementActive = true;
 
     // Optional: disable normal movement input processing during the lunge
     // by briefly zeroing velocity so CharacterMovement doesn't fight the manual set.
@@ -119,6 +156,31 @@ void UGA_Lunge::TickLunge()
     }
 }
 
+void UGA_Lunge::ApplyExitMomentum(ACharacter* Character) const
+{
+    if (!Character || DashEndMomentumRetention <= 0.f || LungeDirection.IsNearlyZero())
+    {
+        return;
+    }
+
+    UCharacterMovementComponent* MoveComp = Character->GetCharacterMovement();
+    if (!MoveComp || LungeDuration <= 0.f)
+    {
+        return;
+    }
+
+    // The traversal speed the lerp was actually running at, not a separate number
+    // to keep in sync: distance over duration is the lunge's real velocity.
+    const float TraversalSpeed = LungeDistance / LungeDuration;
+
+    // Horizontal only. Z is left at zero rather than carried or boosted — the lunge
+    // is a ground-plane reposition, and any vertical component here turns it into a
+    // jump the player never asked for.
+    const FVector ExitVelocity = LungeDirection * TraversalSpeed * DashEndMomentumRetention;
+
+    MoveComp->Velocity = FVector(ExitVelocity.X, ExitVelocity.Y, 0.f);
+}
+
 void UGA_Lunge::EndAbility(const FGameplayAbilitySpecHandle Handle,
     const FGameplayAbilityActorInfo* ActorInfo,
     const FGameplayAbilityActivationInfo ActivationInfo,
@@ -128,6 +190,15 @@ void UGA_Lunge::EndAbility(const FGameplayAbilitySpecHandle Handle,
     if (GetWorld())
     {
         GetWorld()->GetTimerManager().ClearTimer(LungeTickHandle);
+    }
+
+    // Hand momentum back before anything else — including on a cancel, because a
+    // lunge interrupted mid-flight leaves the character just as motionless as one
+    // that finished.
+    if (bLungeMovementActive)
+    {
+        bLungeMovementActive = false;
+        ApplyExitMomentum(Cast<ACharacter>(GetAvatarActorFromActorInfo()));
     }
 
     if (CachedASC && ActiveLungeStateHandle.IsValid())

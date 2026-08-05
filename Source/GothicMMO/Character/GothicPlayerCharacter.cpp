@@ -915,6 +915,10 @@ void AGothicPlayerCharacter::Tick(float DeltaTime)
         // first frame, and the HUD has nothing to do with it.
         UpdateFirstPersonWeaponPose(DeltaTime);
 
+        // Recoil lives on control rotation, so its recovery has to as well — the
+        // weapon-pose kick above is a separate, purely cosmetic spring.
+        TickRecoilRecovery(DeltaTime);
+
         UpdateSelahInteractPrompt();
     }
 
@@ -984,6 +988,20 @@ void AGothicPlayerCharacter::OnLook(const FInputActionValue& Value)
     const FVector2D LookVec = Value.Get<FVector2D>();
     AddControllerYawInput(LookVec.X);
     AddControllerPitchInput(LookVec.Y);
+
+    // Recover only what the player has NOT already pulled back themselves. Look
+    // input opposing the outstanding kick is the player compensating manually;
+    // burning it off here stops the automatic recovery from correcting a second
+    // time and dragging their aim past the target.
+    if (!FMath::IsNearlyZero(PendingRecoilPitch) && LookVec.Y != 0.f)
+    {
+        const float Opposing = FMath::Sign(PendingRecoilPitch) * LookVec.Y;
+        if (Opposing < 0.f)
+        {
+            const float Compensated = FMath::Min(FMath::Abs(LookVec.Y), FMath::Abs(PendingRecoilPitch));
+            PendingRecoilPitch -= FMath::Sign(PendingRecoilPitch) * Compensated;
+        }
+    }
 }
 
 void AGothicPlayerCharacter::OnSprintStarted()
@@ -1877,10 +1895,51 @@ void AGothicPlayerCharacter::ApplyRecoilKick()
 
     PC->AddPitchInput(Pitch);
 
+    // Bank the kick so TickRecoilRecovery can walk it back out. Same units, same
+    // call on the way back, so any scaling AddPitchInput applies is symmetric.
+    PendingRecoilPitch += Pitch;
+    LastRecoilKickTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+
     if (YawSpread > 0.f)
     {
+        // Yaw spread is deliberately NOT banked. Spread is where the shot went, not
+        // a displacement the gun should undo — recovering it would drag the player's
+        // aim sideways after every shot.
         PC->AddYawInput(FMath::FRandRange(-YawSpread, YawSpread));
     }
+}
+
+void AGothicPlayerCharacter::TickRecoilRecovery(float DeltaTime)
+{
+    if (FMath::IsNearlyZero(PendingRecoilPitch, 0.0001f) || RecoilRecoveryRate <= 0.f)
+    {
+        PendingRecoilPitch = 0.f;
+        return;
+    }
+
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    if (!PC)
+    {
+        PendingRecoilPitch = 0.f;
+        return;
+    }
+
+    // Hold off until the player stops firing. Every shot restamps the time, so a
+    // burst climbs cleanly instead of fighting its own recovery between rounds.
+    const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+    if (Now - LastRecoilKickTime < RecoilRecoveryDelay)
+    {
+        return;
+    }
+
+    // Exponential rather than linear: the gun drops fast off the top of the kick
+    // and eases into the resting position, which is what reads as the weapon
+    // settling rather than the camera being driven.
+    const float Recovered = PendingRecoilPitch *
+        FMath::Clamp(RecoilRecoveryRate * DeltaTime, 0.f, 1.f);
+
+    PC->AddPitchInput(-Recovered);
+    PendingRecoilPitch -= Recovered;
 }
 
 void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
