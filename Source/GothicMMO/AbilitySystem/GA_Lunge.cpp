@@ -77,7 +77,9 @@ void UGA_Lunge::StartLungeMovement(ACharacter* Character, const FVector& Directi
 {
     LungeStartLocation = Character->GetActorLocation();
     LungeTargetLocation = LungeStartLocation + (Direction * LungeDistance);
+    LungeDirection = Direction.GetSafeNormal2D();
     LungeElapsed = 0.f;
+    bLungeMovementActive = true;
 
     // Optional: disable normal movement input processing during the lunge
     // by briefly zeroing velocity so CharacterMovement doesn't fight the manual set.
@@ -119,6 +121,31 @@ void UGA_Lunge::TickLunge()
     }
 }
 
+void UGA_Lunge::ApplyExitMomentum(ACharacter* Character) const
+{
+    if (!Character || DashEndMomentumRetention <= 0.f || LungeDirection.IsNearlyZero())
+    {
+        return;
+    }
+
+    UCharacterMovementComponent* MoveComp = Character->GetCharacterMovement();
+    if (!MoveComp || LungeDuration <= 0.f)
+    {
+        return;
+    }
+
+    // The traversal speed the lerp was actually running at, not a separate number
+    // to keep in sync: distance over duration is the lunge's real velocity.
+    const float TraversalSpeed = LungeDistance / LungeDuration;
+
+    // Horizontal only. Z is left at zero rather than carried or boosted — the lunge
+    // is a ground-plane reposition, and any vertical component here turns it into a
+    // jump the player never asked for.
+    const FVector ExitVelocity = LungeDirection * TraversalSpeed * DashEndMomentumRetention;
+
+    MoveComp->Velocity = FVector(ExitVelocity.X, ExitVelocity.Y, 0.f);
+}
+
 void UGA_Lunge::EndAbility(const FGameplayAbilitySpecHandle Handle,
     const FGameplayAbilityActorInfo* ActorInfo,
     const FGameplayAbilityActivationInfo ActivationInfo,
@@ -128,6 +155,15 @@ void UGA_Lunge::EndAbility(const FGameplayAbilitySpecHandle Handle,
     if (GetWorld())
     {
         GetWorld()->GetTimerManager().ClearTimer(LungeTickHandle);
+    }
+
+    // Hand momentum back before anything else — including on a cancel, because a
+    // lunge interrupted mid-flight leaves the character just as motionless as one
+    // that finished.
+    if (bLungeMovementActive)
+    {
+        bLungeMovementActive = false;
+        ApplyExitMomentum(Cast<ACharacter>(GetAvatarActorFromActorInfo()));
     }
 
     if (CachedASC && ActiveLungeStateHandle.IsValid())
