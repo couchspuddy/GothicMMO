@@ -4,6 +4,7 @@
 #include "AI/GothicEnemyBase.h"
 #include "Game/GothicGameState.h"
 #include "Game/GothicPlayerState.h"
+#include "Game/GothicGameInstance.h"
 #include "Character/GothicPlayerCharacter.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AI/GothicEnemySpawnPoint.h"
@@ -574,6 +575,19 @@ void AGothicEncounterVolume::ReturnToHub()
     if (!HasAuthority() || ReturnHubLevelName.IsNone())
     {
         return;
+    }
+
+    // Park the player's holdings on the GameInstance BEFORE the world goes away.
+    // OpenLevel destroys every actor including the PlayerState the inventory
+    // lives on, so this is the last frame the gear exists; without it the run's
+    // entire haul is lost on the trip home.
+    //
+    // Player 0 rather than a per-player loop, matching the single snapshot on the
+    // GameInstance — OpenLevel is a local travel and this path is single-player /
+    // listen-server-host only for now. See UGothicGameInstance's class comment.
+    if (UGothicGameInstance* GothicGI = GetGameInstance<UGothicGameInstance>())
+    {
+        GothicGI->CaptureTravelSnapshot(UGameplayStatics::GetPlayerState(this, 0));
     }
 
     UGameplayStatics::OpenLevel(this, ReturnHubLevelName);

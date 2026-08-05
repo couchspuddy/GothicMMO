@@ -9,6 +9,7 @@
 #include "AbilitySystem/GothicGameplayTags.h"   // Perk.Weapon.* — the handling and economy effects
 #include "Game/GothicPlayerState.h"
 #include "Game/GothicGameMode.h"
+#include "Game/GothicGameInstance.h"
 #include "Game/GothicGameState.h"
 #include "GameFramework/PlayerStart.h"
 #include "Components/CapsuleComponent.h"
@@ -435,6 +436,27 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         // legible at the call site.
         if (HasAuthority())
         {
+            // A player who just travelled here from another level gets their own
+            // gear back instead of the starting kit. The snapshot lives on the
+            // GameInstance, the only object OpenLevel does not destroy, and is
+            // one-shot — so this is a no-op on a respawn, on a fresh boot, and on
+            // every pass but the first after a travel.
+            //
+            // It must run BEFORE GrantStartingItems, and it does its own
+            // suppression: the restore raises bStartingItemsGranted, so the call
+            // below turns into the early return it already has.
+            //
+            // Position matters as much as order. This sits after InitializeGAS
+            // and after the ASC/AttributeSet have been re-read from the
+            // PlayerState, because the restore re-equips through EquipItem and
+            // therefore needs a live ASC to apply GE_EquipmentStats to, and it
+            // writes the Selah attribute, which GE_InitStats_Player would
+            // otherwise stomp if it ran afterwards.
+            if (UGothicGameInstance* GothicGI = GetGameInstance<UGothicGameInstance>())
+            {
+                GothicGI->RestoreTravelSnapshot(PS);
+            }
+
             Inventory->GrantStartingItems();
         }
 

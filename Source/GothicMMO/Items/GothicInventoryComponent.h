@@ -135,6 +135,13 @@ public:
     bool IsSlotEquipped(EGothicEquipSlot Slot) const;
 
     /**
+     * Every occupied slot, for callers that need the whole equipment set rather
+     * than one slot — the travel snapshot is the one today. Equipped items are
+     * NOT in Items, so this and GetAllItems together are the complete holdings.
+     */
+    const TArray<FGothicEquippedSlot>& GetEquippedSlots() const { return EquippedItems; }
+
+    /**
      * Average Gear Power across equipped (non-empty) slots — the overall power
      * level, and the intended hook for gating which activities the player can
      * enter. 0 with nothing equipped. No longer feeds damage: as of 2026-08-04
@@ -189,6 +196,25 @@ public:
     /** Rolls, adds, and equips each StartingItemDef once, on authority. */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
     void GrantStartingItems();
+
+    /**
+     * Refill this (freshly-created) inventory from a UGothicGameInstance travel
+     * snapshot. Authority-only; returns false if it refuses.
+     *
+     * Restores through the real paths — AddItem for every carried and equipped
+     * instance, then EquipItem_Authority for the ones that were equipped — so
+     * GE_EquipmentStats, gear score, Attack Power/Defense, the character's weapon
+     * slots and the HUD all rebuild exactly as they do when a player equips by
+     * hand. Nothing derived is written directly.
+     *
+     * It also raises bStartingItemsGranted, which is what suppresses the starting
+     * kit: a travelling player already owns their gear, and re-granting it would
+     * both duplicate the kit and overwrite what they were wearing. That means the
+     * restore must run BEFORE GrantStartingItems at the init seam.
+     */
+    bool RestoreFromTravelSnapshot(
+        const TArray<FGothicItemInstance>& InItems,
+        const TArray<FGothicEquippedSlot>& InEquipped);
 
     // ── Resonance Strain ─────────────────────────────────────────────────
 

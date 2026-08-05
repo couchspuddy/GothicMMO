@@ -784,6 +784,54 @@ void UGothicInventoryComponent::GrantStartingItems()
     }
 }
 
+bool UGothicInventoryComponent::RestoreFromTravelSnapshot(
+    const TArray<FGothicItemInstance>& InItems,
+    const TArray<FGothicEquippedSlot>& InEquipped)
+{
+    if (!HasInventoryAuthority())
+    {
+        return false;
+    }
+
+    // Suppress the starting kit before anything else. If a later step fails, the
+    // player is better off with a partial restore than with a full kit granted
+    // on top of it.
+    bStartingItemsGranted = true;
+
+    // Everything goes into the backpack first, equipped items included: EquipItem
+    // takes an item OUT of Items, so an item has to be there to be equipped.
+    for (const FGothicItemInstance& Item : InItems)
+    {
+        if (Item.IsValid())
+        {
+            AddItem(Item);
+        }
+    }
+    for (const FGothicEquippedSlot& Equipped : InEquipped)
+    {
+        if (Equipped.Item.IsValid())
+        {
+            AddItem(Equipped.Item);
+        }
+    }
+
+    // Now re-equip, by instance ID and through the authority implementation —
+    // the slot comes from the item definition, exactly as it did the first time,
+    // so the pre-travel slot is reproduced without trusting a stored slot value.
+    // This is also what rebuilds every derived stat.
+    for (const FGothicEquippedSlot& Equipped : InEquipped)
+    {
+        if (Equipped.Item.IsValid())
+        {
+            EquipItem_Authority(Equipped.Item.InstanceID);
+        }
+    }
+
+    RecalculateStrain();
+
+    return true;
+}
+
 // =============================================================================
 // Debug
 // =============================================================================
