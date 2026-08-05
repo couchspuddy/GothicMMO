@@ -767,6 +767,21 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Movement")
     float SprintSpeed = 800.f;
 
+    /**
+     * Sprinting costs you the gun.
+     *
+     * With this on, sprinting carries State.Sprinting on the ASC and the gun goes
+     * dead: fire is blocked by GA_Fire's ActivationBlockedTags, and reload,
+     * Steadfast conversion and weapon swap early-out. Every OTHER ability cancels
+     * the sprint and then runs.
+     *
+     * Off restores the pre-existing behaviour exactly — sprint changes speed and
+     * the weapon pose and nothing else — so this is the one checkbox to flip if
+     * the trade turns out to feel wrong in playtest.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Movement")
+    bool bSprintBlocksGunActions = true;
+
     // -------------------------------------------------------------------------
     // Input handlers — direct non-ability bindings
     // -------------------------------------------------------------------------
@@ -801,9 +816,45 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|Movement")
     void RefreshMovementSpeed();
 
+    /**
+     * THE way the sprint flag moves. Every start and every end path goes through
+     * here so State.Sprinting cannot drift out of step with bIsSprinting — which
+     * matters more than it looks, because the ASC lives on the PlayerState and
+     * OUTLIVES the pawn: a tag left set at death would follow the player into
+     * their respawn and leave them unable to fire, the same shape as the
+     * State.Dead bug already fixed in InitGASFromPlayerState.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Movement")
+    void SetSprinting(bool bNewSprinting);
+
+    /** Convenience end-path for callers that only ever stop a sprint (abilities). */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Movement")
+    void StopSprinting() { SetSprinting(false); }
+
+    /**
+     * True when gun actions should be refused right now: sprinting, with the
+     * opportunity cost switched on. Fire is gated separately by GA_Fire's
+     * ActivationBlockedTags — this is for the gun actions that are plain C++
+     * input handlers and never touch GAS (reload, Steadfast, swap).
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Movement")
+    bool AreGunActionsBlocked() const { return bSprintBlocksGunActions && bIsSprinting; }
+
+    /**
+     * Called from the ability input choke point when a non-gun ability is about
+     * to activate: the sprint ends first, then the ability runs. No-op when the
+     * opportunity cost is switched off.
+     */
+    void CancelSprintForAbility();
+
 protected:
     /** True while the sprint input is held. Drives RefreshMovementSpeed's base. */
     bool bIsSprinting = false;
+
+    /** Push bIsSprinting into the ASC as the State.Sprinting loose tag.
+     *  SetLooseGameplayTagCount, not Add/Remove: loose tags are ref-counted, and
+     *  an absolute count is the only form that is safe to call repeatedly. */
+    void SyncSprintTag();
 
     void OnWeaponSlot1();
     void OnWeaponSlot2();

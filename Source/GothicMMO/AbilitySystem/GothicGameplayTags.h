@@ -30,6 +30,7 @@ namespace GothicTags
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Stunned);
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Attacking);
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Reckoning);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Sprinting);
 
 	// ── SetByCaller data channels ────────────────────────────────────────────
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Damage);

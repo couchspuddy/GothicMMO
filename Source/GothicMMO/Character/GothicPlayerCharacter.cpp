@@ -290,6 +290,14 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
             FGameplayTag::RequestGameplayTag(FName("State.Dead")), 0);
     }
 
+    // Belt and braces on the same inherited-ASC hazard: whatever State.Sprinting
+    // count the previous pawn left behind, this fresh pawn is not sprinting, so
+    // the tag is forced to match. Unlike the State.Dead clear above this is NOT
+    // authority-gated — the sprint tag is owning-client state, applied wherever
+    // the sprint input runs, so an authority-only reset would miss the client
+    // that actually holds it.
+    SyncSprintTag();
+
     InitializeGAS();
 
     if (HasAuthority() && AttributeSet)
@@ -1006,14 +1014,56 @@ void AGothicPlayerCharacter::OnLook(const FInputActionValue& Value)
 
 void AGothicPlayerCharacter::OnSprintStarted()
 {
-    bIsSprinting = true;
-    RefreshMovementSpeed();
+    SetSprinting(true);
 }
 
 void AGothicPlayerCharacter::OnSprintStopped()
 {
-    bIsSprinting = false;
+    SetSprinting(false);
+}
+
+void AGothicPlayerCharacter::SetSprinting(bool bNewSprinting)
+{
+    if (bIsSprinting == bNewSprinting)
+    {
+        return;
+    }
+
+    bIsSprinting = bNewSprinting;
+    SyncSprintTag();
+
+    // A sprint abandons any Steadfast hold in progress. The hold is a gun action
+    // and the sprint just took the gun away, so leaving its timer running would
+    // pay out a conversion mid-sprint through a path the block never sees.
+    if (bIsSprinting && bSprintBlocksGunActions)
+    {
+        EndSteadfastHold();
+        bSteadfastHoldThresholdReached = false;
+    }
+
     RefreshMovementSpeed();
+}
+
+void AGothicPlayerCharacter::SyncSprintTag()
+{
+    if (!AbilitySystemComponent)
+    {
+        return; // pre-possession; InitGASFromPlayerState re-syncs once the ASC arrives
+    }
+
+    AbilitySystemComponent->SetLooseGameplayTagCount(
+        GothicTags::State_Sprinting, bIsSprinting ? 1 : 0);
+}
+
+void AGothicPlayerCharacter::CancelSprintForAbility()
+{
+    // Only the gun is blocked by a sprint; everything else breaks it instead.
+    // Guarded on the same switch as the block so one checkbox restores the whole
+    // of the old behaviour.
+    if (bSprintBlocksGunActions)
+    {
+        SetSprinting(false);
+    }
 }
 
 void AGothicPlayerCharacter::OnInteract()
@@ -1138,10 +1188,12 @@ void AGothicPlayerCharacter::SetAiming(bool bNewAiming)
     }
 
     // Sprinting and aiming are mutually exclusive — holding both would otherwise
-    // leave you at sprint speed with a sniper's FOV.
+    // leave you at sprint speed with a sniper's FOV. Routed through SetSprinting
+    // rather than writing the flag, so this end path drops State.Sprinting too;
+    // aiming out of a sprint is the most common way the gun comes back.
     if (bNewAiming && bIsSprinting)
     {
-        bIsSprinting = false;
+        SetSprinting(false);
     }
 
     bIsAiming = bNewAiming;
@@ -1500,6 +1552,13 @@ void AGothicPlayerCharacter::OnReloadPressed()
         return;
     }
 
+    // Sprinting — the gun is down. Dead input, deliberately: no queued reload
+    // waiting for the sprint to end, and no auto-unsprint. Reload is a gun action.
+    if (AreGunActionsBlocked())
+    {
+        return;
+    }
+
     bSteadfastConversionFired = false;
     bSteadfastHoldThresholdReached = false;
 
@@ -1513,6 +1572,15 @@ void AGothicPlayerCharacter::OnReloadPressed()
 
 void AGothicPlayerCharacter::OnReloadReleased()
 {
+    // Checked on release as well as press, not only on press: a player who starts
+    // the sprint DURING the hold would otherwise release into a tap-reload, since
+    // the release handler reloads whenever the threshold was not reached. The
+    // sprint already cleared the hold state in SetSprinting.
+    if (AreGunActionsBlocked())
+    {
+        return;
+    }
+
     const bool bWasHeld = bSteadfastHoldThresholdReached;
 
     EndSteadfastHold();
@@ -1777,6 +1845,13 @@ void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
         return;
     }
 
+    // Death is a sprint end path like any other, and the most dangerous one to
+    // miss: the ASC lives on the PlayerState and outlives the pawn, so a
+    // State.Sprinting left set here would ride into the respawn on a pawn whose
+    // bIsSprinting is false — and the player would come back unable to shoot,
+    // with no input that could clear it.
+    SetSprinting(false);
+
     // Tag as dead, cancel abilities, drop collision, stop moving.
     Super::OnDeath_Implementation(Killer);
 
@@ -1998,9 +2073,13 @@ void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
     OnWeaponSwapped(NewIndex, NewWeapon);
 }
 
-void AGothicPlayerCharacter::OnWeaponSlot1() { SwapWeapon(0); }
-void AGothicPlayerCharacter::OnWeaponSlot2() { SwapWeapon(1); }
-void AGothicPlayerCharacter::OnWeaponSlot3() { SwapWeapon(2); }
+// The slot keys are blocked while sprinting — "any gun actions" covers reaching
+// for a different gun. Gated HERE and not inside SwapWeapon, so the inventory's
+// equip path (OnEquipmentChanged) still swaps whatever the player equips: the
+// block is on the combat input, not on the act of changing weapons.
+void AGothicPlayerCharacter::OnWeaponSlot1() { if (AreGunActionsBlocked()) { return; } SwapWeapon(0); }
+void AGothicPlayerCharacter::OnWeaponSlot2() { if (AreGunActionsBlocked()) { return; } SwapWeapon(1); }
+void AGothicPlayerCharacter::OnWeaponSlot3() { if (AreGunActionsBlocked()) { return; } SwapWeapon(2); }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Inventory UI
