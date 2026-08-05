@@ -12,6 +12,8 @@
 #include "Game/GothicGameInstance.h"
 #include "Game/GothicGameState.h"
 #include "GameFramework/PlayerStart.h"
+#include "GameFramework/GameStateBase.h"       // PlayerArray — the party-aliveness walk
+#include "HAL/IConsoleManager.h"               // Gothic.Revive
 #include "Components/CapsuleComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "UI/GothicHUD.h"
@@ -296,6 +298,15 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     {
         AbilitySystemComponent->SetLooseGameplayTagCount(
             FGameplayTag::RequestGameplayTag(FName("State.Dead")), 0);
+
+        // Same hazard, same fix, for the downed flag. A fresh pawn is never
+        // downed, and the flag lives on the PlayerState — which survives the pawn
+        // that WAS downed. OnReviveWindowExpired already clears it on the way out,
+        // so this is belt and braces for every other way a downed player can end
+        // up with a new pawn (a fall respawn, a debug Gothic.SetDowned left set,
+        // a level transition). SetDowned is a no-op when it agrees, so the normal
+        // spawn pays nothing for it.
+        PS->SetDowned(false);
     }
 
     // Belt and braces on the same inherited-ASC hazard: whatever State.Sprinting
@@ -860,6 +871,28 @@ void AGothicPlayerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
     // and freeze the respawned one. See UnbindStunTagListener.
     UnbindStunTagListener();
 
+    // Downed hygiene, and the same lifetime argument as the two unbinds above:
+    // the timer is owned by the world and fires into `this`, and the downed flag
+    // lives on the PlayerState, which outlives this pawn. A player who
+    // disconnects, travels, or is otherwise unpossessed while down would leave
+    // both behind — a timer calling into a dead pawn, and a PlayerState that
+    // still reads downed for whatever pawn comes next.
+    //
+    // The flag is only cleared on the authority (SetDowned refuses elsewhere) and
+    // only if it is actually set, so a normal pawn teardown does nothing here.
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().ClearTimer(ReviveWindowTimer);
+    }
+
+    if (HasAuthority())
+    {
+        if (AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>())
+        {
+            PS->SetDowned(false);
+        }
+    }
+
     Super::EndPlay(EndPlayReason);
 }
 
@@ -1060,6 +1093,16 @@ void AGothicPlayerCharacter::OnMove(const FInputActionValue& Value)
     // The Selah moment holds you in place. Same reasoning as the cursor gate above:
     // refuse the input here, once, rather than in every system that could move.
     if (bSelahMomentLock)
+    {
+        return;
+    }
+
+    // Downed players do not walk. DisableMovement in EnterDownedState is the
+    // authoritative half; this is the owning client's half, and it needs to exist
+    // separately because IsDowned() reads the REPLICATED flag on the PlayerState
+    // and is therefore true on the client too, whereas the movement mode set on
+    // the server is not what the client's own input path consults.
+    if (IsDowned())
     {
         return;
     }
@@ -1989,6 +2032,44 @@ void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
     // with no input that could clear it.
     SetSprinting(false);
 
+    // ── THE DOWNED FORK ──────────────────────────────────────────────────────
+    // Everything below this block is irreversible for a player we mean to keep:
+    // Super applies State.Dead (in the ActivationBlockedTags of every ability),
+    // cancels everything, drops the capsule's collision and disables movement,
+    // and the tail of this function asks the game mode to destroy the pawn and
+    // respawn a new one. So the fork goes HERE, ahead of all of it.
+    //
+    // Three gates, and each one is a case where downing would be wrong:
+    //   - authority: the state is server-owned; a client reaching this predicts
+    //     nothing useful and would only desync the flag.
+    //   - a player controller: an AI-possessed player pawn (test dummy, future
+    //     companion) has nobody to revive it and no revive UI, same reasoning as
+    //     the RequestRespawn gate below.
+    //   - the expiring window: OnReviveWindowExpired calls straight back into
+    //     this function, and without the latch it would find the party still
+    //     alive and put the player down for another 30 seconds, forever.
+    if (HasAuthority() && !bReviveWindowExpiring && Cast<APlayerController>(GetController()))
+    {
+        // Already down and taking damage anyway — environmental, an AoE that
+        // does not care about targeting, a shot already in flight when they went
+        // down. Re-pin the health and leave, WITHOUT re-arming the timer: a
+        // downed player who keeps getting clipped must not get an endless window.
+        if (IsDowned())
+        {
+            if (AttributeSet)
+            {
+                AttributeSet->SetHealth(1.f);
+            }
+            return;
+        }
+
+        if (HasLivingPartyMember())
+        {
+            EnterDownedState(Killer);
+            return;
+        }
+    }
+
     // Tag as dead, cancel abilities, drop collision, stop moving.
     Super::OnDeath_Implementation(Killer);
 
@@ -2024,6 +2105,252 @@ void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
             GM->RequestRespawn(GetController());
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Downed fork
+// ---------------------------------------------------------------------------
+
+bool AGothicPlayerCharacter::HasLivingPartyMember() const
+{
+    const UWorld* World = GetWorld();
+    const AGameStateBase* GS = World ? World->GetGameState() : nullptr;
+    if (!GS)
+    {
+        return false;
+    }
+
+    const APlayerState* MyPS = GetPlayerState();
+
+    // PlayerArray is every player in the world, which is the whole party until
+    // PR-5 gives parties their own membership. Deliberately simple and read-only:
+    // no caching, no delegate, no state of its own — it is asked once per death,
+    // and a wrong answer that is one frame stale is not a thing that can happen
+    // because the two inputs (health, downed flag) are both authoritative here.
+    //
+    // SEAM FOR PR-5: swap the loop's source from GS->PlayerArray to the party
+    // roster and nothing else in this file changes.
+    for (const APlayerState* PS : GS->PlayerArray)
+    {
+        if (!PS || PS == MyPS)
+        {
+            continue;
+        }
+
+        // A spectator, a player mid-travel, a PlayerState whose pawn has not
+        // spawned yet: no pawn means nobody who can walk over and revive us.
+        const AGothicCharacterBase* Char = Cast<AGothicCharacterBase>(PS->GetPawn());
+        if (!Char)
+        {
+            continue;
+        }
+
+        // Exactly the fightability predicate, and for exactly the same reason:
+        // "could an enemy be fighting this player right now" and "is this player
+        // still in the fight to pick me up" are the same question. Reusing it
+        // means the downed fork can never disagree with the AI about who is up.
+        if (AGothicCharacterBase::IsFightableActor(Char))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void AGothicPlayerCharacter::EnterDownedState(AActor* Killer)
+{
+    AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
+    if (!PS)
+    {
+        return;
+    }
+
+    // Clear the latch from any PREVIOUS life's expiry before anything else — a
+    // player who bled out last life and respawned into this one must be able to
+    // go down again.
+    bReviveWindowExpiring = false;
+
+    DownedKiller = Killer;
+
+    // Alive, but only just. IsAlive() is health > 0, and the whole downed design
+    // rests on a downed player passing it — that is what keeps the damage
+    // pipeline, the HUD and every IsAlive caller in the project working without
+    // learning a third state. Not-in-the-fight is carried by IsDowned() instead.
+    if (AttributeSet)
+    {
+        AttributeSet->SetHealth(1.f);
+    }
+
+    // The replicated primitive. This is what the enemy AI reads (through
+    // IsFightableActor), what the reviving player's client reads, and what mirrors
+    // State.Downed onto the ASC.
+    PS->SetDowned(true);
+
+    // Out of the fight means out of the fight: anything mid-cast ends here. Note
+    // this also ends the passives, which is precisely the debt ReviveFromDowned
+    // has to pay back — see there.
+    if (AbilitySystemComponent)
+    {
+        AbilitySystemComponent->CancelAllAbilities();
+    }
+
+    // Movement off, momentum killed. Capsule COLLISION IS DELIBERATELY LEFT ON,
+    // unlike the death path: a downed body has to stay a physical, traceable
+    // thing for PR-3's revive to aim at, and it should not sink through the floor
+    // while it waits.
+    if (UCharacterMovementComponent* Move = GetCharacterMovement())
+    {
+        Move->StopMovementImmediately();
+        Move->DisableMovement();
+    }
+
+    // The clock. Expiry is not a second death path — it is the ONLY death path,
+    // reached through the same OnDeath_Implementation everything else uses.
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().SetTimer(
+            ReviveWindowTimer, this, &AGothicPlayerCharacter::OnReviveWindowExpired,
+            FMath::Max(1.f, ReviveWindowSeconds), false);
+    }
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("VigilTimeline|t=%.3f|%s|Downed|ENTER|killer=%s|window=%.1fs"),
+        GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetNameSafe(this),
+        *GetNameSafe(Killer), FMath::Max(1.f, ReviveWindowSeconds));
+
+    OnDownedStateChanged(true);
+}
+
+void AGothicPlayerCharacter::OnReviveWindowExpired()
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    // Somebody revived us between the timer firing and this running, or the state
+    // was cleared out from under us by Gothic.SetDowned. Either way there is
+    // nothing to bleed out.
+    if (!IsDowned())
+    {
+        return;
+    }
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("VigilTimeline|t=%.3f|%s|Downed|EXPIRED|falling through to death"),
+        GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetNameSafe(this));
+
+    // TAG HYGIENE. The ASC and the PlayerState both outlive this pawn, so a
+    // State.Downed left set here rides into the next life on a pawn that is
+    // upright and fighting — the exact shape of the State.Dead and
+    // State.Sprinting bugs this file already carries fixes for. Cleared BEFORE
+    // the death call, not after, because the death call destroys this pawn.
+    if (AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>())
+    {
+        PS->SetDowned(false);
+    }
+    OnDownedStateChanged(false);
+
+    // Health back off 1 so the death that follows is a real zero-health death
+    // rather than a killed-while-alive special case.
+    if (AttributeSet)
+    {
+        AttributeSet->SetHealth(0.f);
+    }
+
+    // The latch. OnDeath_Implementation is about to re-ask "is anyone else up?",
+    // and the answer is very likely still yes — without this the player goes down
+    // again and the window never actually expires.
+    bReviveWindowExpiring = true;
+
+    // Through the interface, not OnDeath_Implementation directly: this is the
+    // same entry point GothicAttributeSet uses when health crosses zero, so a
+    // Blueprint override of OnDeath keeps working on the bleed-out path.
+    IGothicCombatInterface::Execute_OnDeath(this, DownedKiller.Get());
+}
+
+void AGothicPlayerCharacter::ReviveFromDowned()
+{
+    if (!HasAuthority() || !IsDowned())
+    {
+        return;
+    }
+
+    AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
+    if (!PS)
+    {
+        return;
+    }
+
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().ClearTimer(ReviveWindowTimer);
+    }
+
+    DownedKiller.Reset();
+    bReviveWindowExpiring = false;
+
+    // Clear the state first: SetDowned(false) drops State.Downed off the ASC, and
+    // the ability re-activation below goes through TryActivateAbility, which a
+    // blocking tag would refuse — the same ordering InitGASFromPlayerState needs
+    // for State.Dead, and for the same reason.
+    PS->SetDowned(false);
+
+    // Movement back. NavWalking/Flying are not used by the player, so Walking is
+    // the correct restore; the death path never gets here to disagree.
+    if (UCharacterMovementComponent* Move = GetCharacterMovement())
+    {
+        Move->SetMovementMode(MOVE_Walking);
+    }
+
+    // A revived player is not a respawned one — GE_InitStats_Player does not run,
+    // so this is the only thing that lifts them off the 1 HP they were pinned at.
+    // Deliberately a FRACTION rather than a full heal: standing back up at full
+    // health would make going down a free reset. PR-3 owns the tuning; the value
+    // is here so the state is playable before that ability lands.
+    if (AttributeSet && AttributeSet->GetMaxHealth() > 0.f)
+    {
+        AttributeSet->SetHealth(AttributeSet->GetMaxHealth() * ReviveHealthFraction);
+    }
+
+    // ── THE PASSIVES ─────────────────────────────────────────────────────────
+    // This is the half an in-place revive gets wrong by default, and it is the
+    // first-death passive-loss bug in a new costume.
+    //
+    // On a RESPAWN the passives come back for free: the pawn is replaced, so its
+    // AbilitiesGrantedIntoASC latch starts null, InitGASFromPlayerState re-runs
+    // the grant, and UGothicAbilitySet::GiveToAbilitySystem finds each spec
+    // already present on the surviving PlayerState ASC and RE-ACTIVATES the ones
+    // marked bActivateOnGranted (The Loved and The Lost, Not At All) instead of
+    // skipping them.
+    //
+    // A revive has no new pawn. The latch on THIS pawn still points at THIS ASC,
+    // so nothing re-runs, and EnterDownedState's CancelAllAbilities already ended
+    // the passive instances — the player would stand back up permanently missing
+    // their passives, with the specs sitting right there on the ASC looking fine.
+    //
+    // So run the same grant loop directly, deliberately bypassing the latch. It
+    // is idempotent by construction (existing specs are re-pointed and
+    // re-activated, never duplicated), which is exactly why it is safe to call on
+    // an ASC that has already been granted into.
+    if (AbilitySystemComponent)
+    {
+        for (const TObjectPtr<UGothicAbilitySet>& AbilitySet : StartupAbilitySets)
+        {
+            if (AbilitySet)
+            {
+                AbilitySet->GiveToAbilitySystem(AbilitySystemComponent, this);
+            }
+        }
+    }
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("VigilTimeline|t=%.3f|%s|Downed|REVIVED|health=%.1f"),
+        GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetNameSafe(this),
+        AttributeSet ? AttributeSet->GetHealth() : -1.f);
+
+    OnDownedStateChanged(false);
 }
 
 void AGothicPlayerCharacter::TriggerFallRespawn()
@@ -2565,3 +2892,89 @@ void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
         WeaponMeshComponent->SetStaticMesh(nullptr);
     }
 }
+// ---------------------------------------------------------------------------
+// Gothic.Revive <PlayerIndex> — debug console command
+//
+// The counterpart to Gothic.SetDowned, and here for the same reason that one
+// exists: ReviveFromDowned is BlueprintCallable and server-only, and until PR-3
+// ships the channelled revive ability there is no surface in the running game
+// that can call it. Without this the in-place revive — the passive re-grant
+// above all — would ship unverified.
+//
+// Drives the real function, not a shortcut: every guard ReviveFromDowned has
+// (authority, actually-downed) still applies, so what a verification run proves
+// here is what the revive ability will get.
+//
+// PlayerIndex indexes the game state's PlayerArray exactly as Gothic.SetDowned
+// does — 0 is the host on a listen server, 1 the first joining player — and the
+// command prints the resolved name so the caller can confirm who came back.
+// ---------------------------------------------------------------------------
+#if !UE_BUILD_SHIPPING
+static void GothicReviveConsoleCommand(const TArray<FString>& Args, UWorld* World)
+{
+    if (!World)
+    {
+        return;
+    }
+
+    if (Args.Num() < 1)
+    {
+        UE_LOG(LogVigilCombat, Warning, TEXT("Gothic.Revive: usage is Gothic.Revive <PlayerIndex>."));
+        return;
+    }
+
+    const AGameStateBase* GS = World->GetGameState();
+    if (!GS)
+    {
+        UE_LOG(LogVigilCombat, Warning, TEXT("Gothic.Revive: no game state in this world."));
+        return;
+    }
+
+    const int32 PlayerIndex = FCString::Atoi(*Args[0]);
+    if (!GS->PlayerArray.IsValidIndex(PlayerIndex))
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Gothic.Revive: no player at index %d — this world has %d."),
+            PlayerIndex, GS->PlayerArray.Num());
+        return;
+    }
+
+    const APlayerState* PS = GS->PlayerArray[PlayerIndex];
+    AGothicPlayerCharacter* Char = PS ? Cast<AGothicPlayerCharacter>(PS->GetPawn()) : nullptr;
+    if (!Char)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Gothic.Revive: player %d has no AGothicPlayerCharacter pawn."), PlayerIndex);
+        return;
+    }
+
+    // Typed into a client's console this reaches the client's copy, where
+    // ReviveFromDowned correctly refuses. Say so rather than appearing to work.
+    if (!Char->HasAuthority())
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Gothic.Revive: %s is not authoritative in this world — run this on the server."),
+            *GetNameSafe(Char));
+        return;
+    }
+
+    if (!Char->IsDowned())
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Gothic.Revive: player %d ('%s') is not downed — nothing to revive."),
+            PlayerIndex, *PS->GetPlayerName());
+        return;
+    }
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("Gothic.Revive: reviving %s (index %d, player '%s')."),
+        *GetNameSafe(Char), PlayerIndex, *PS->GetPlayerName());
+
+    Char->ReviveFromDowned();
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GGothicReviveCmd(
+    TEXT("Gothic.Revive"),
+    TEXT("Gothic.Revive <PlayerIndex> — revive a downed player in place on the authority. Debug only."),
+    FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&GothicReviveConsoleCommand));
+#endif

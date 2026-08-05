@@ -3,6 +3,7 @@
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
 #include "Character/GothicPlayerCharacter.h"  // CancelSprintForAbility — the sprint opportunity cost
+#include "Game/GothicPlayerState.h"          // IsDowned — the input gate in AbilityInputTagPressed
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffect.h"
 #include "GothicMMO.h"                      // LogVigilCombat
@@ -282,6 +283,28 @@ void UGothicAbilitySystemComponent::AbilityInputTagPressed(const FGameplayTag& I
     // ability list. Nothing here mutates the list itself, so there is nothing the
     // lock is protecting.
     CancelSprintForNonGunInput(InputTag);
+
+    // A downed player presses nothing. EnterDownedState cancels what was running,
+    // but nothing stopped the next press from starting it up again — and a downed
+    // player who can still fire is not downed in any sense the design means.
+    //
+    // Gated here rather than by putting State.Downed in every ability's
+    // ActivationBlockedTags for two reasons: the tag is a SERVER-SIDE loose tag
+    // (loose tags never replicate), so a locally-predicted activation on the
+    // client would sail straight past it, whereas the bool below is the
+    // replicated flag and reads true on every machine; and this way a kit added
+    // later inherits the rule by existing, the same argument the sprint cancel
+    // above is placed here for.
+    //
+    // Input only. The passives are activated by the ability-set grant, not by
+    // input, so ReviveFromDowned's re-grant is untouched by this.
+    if (const AGothicPlayerState* GothicPS = Cast<AGothicPlayerState>(GetOwnerActor()))
+    {
+        if (GothicPS->IsDowned())
+        {
+            return;
+        }
+    }
 
     ABILITYLIST_SCOPE_LOCK();
     for (FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)

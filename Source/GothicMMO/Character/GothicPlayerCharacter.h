@@ -236,6 +236,82 @@ public:
      *  height check. Authority-only; no-op if already handled or no game mode. */
     void TriggerFallRespawn();
 
+    // -------------------------------------------------------------------------
+    // Downed fork (multiplayer)
+    //
+    // Zero health with at least one other player still up puts you DOWN instead
+    // of dead: health pinned at 1, abilities cancelled, movement off, and the
+    // SAME PAWN kept. Solo — or as the last one standing — nothing changes and
+    // the existing death path runs untouched.
+    //
+    // The fork lives at the top of OnDeath_Implementation, ahead of Super,
+    // because everything irreversible for this purpose is inside Super:
+    // State.Dead (which blocks every ability's activation), CancelAllAbilities,
+    // capsule collision off, DisableMovement. A downed player needs the pawn to
+    // still be a pawn, so the branch has to happen before any of that.
+    //
+    // Nothing here touches the enemy side. AGothicCharacterBase::IsFightableActor
+    // already asks the PlayerState whether this player is downed, so the moment
+    // SetDowned(true) lands the AI stops targeting the body on its own cadence.
+    // -------------------------------------------------------------------------
+
+    /**
+     * How long a downed player has before the revive window expires and the
+     * normal death path runs. Tunable per-Blueprint.
+     *
+     * EditDefaultsOnly, so a placed player pawn (if any level ever places one
+     * rather than spawning it from a PlayerStart) freezes this at its placement
+     * value and must be re-placed to pick up a new default.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Downed",
+              meta = (ClampMin = "1.0"))
+    float ReviveWindowSeconds = 30.f;
+
+    /**
+     * Fraction of MaxHealth a revived player stands up on. A revive is not a
+     * respawn — GE_InitStats_Player never runs — so this is the only thing that
+     * lifts them off the 1 HP the downed state pinned them at, and a full heal
+     * would make going down a free reset. PR-3 owns the real tuning.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Downed",
+              meta = (ClampMin = "0.05", ClampMax = "1.0"))
+    float ReviveHealthFraction = 0.5f;
+
+    /**
+     * True if some OTHER player is alive and not downed — i.e. somebody is left
+     * who could come and pick this one up. Meaningful on the authority only; it
+     * walks the game state's PlayerArray, which is the closest thing this project
+     * has to a party roster.
+     *
+     * SEAM FOR PR-5: when real party state exists this is the one function that
+     * should change — "everyone in the world" becomes "everyone in my party".
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Downed")
+    bool HasLivingPartyMember() const;
+
+    /**
+     * Server-only. Brings a downed player back IN PLACE — no new pawn, no
+     * respawn. Clears the downed state, restores health, re-enables movement and
+     * re-runs the ability-set grant so the passives that CancelAllAbilities shut
+     * down come back (see the body: bAbilitiesGranted's successor latch would
+     * otherwise skip the whole grant, because this is the same pawn holding the
+     * same ASC it was already granted into).
+     *
+     * PR-3's channeled revive is the intended caller. Exposed to Blueprint and to
+     * the Gothic.Revive console command now so the state is testable before that
+     * ability exists.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Downed")
+    void ReviveFromDowned();
+
+    /**
+     * Fired on the authority when this player goes down, and again when they are
+     * revived. Blueprint hangs the downed camera/vignette/animation off this; the
+     * replicated half of the same signal is AGothicPlayerState::OnDownedChanged.
+     */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Downed")
+    void OnDownedStateChanged(bool bNowDowned);
+
     UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
     void TriggerSelahMoment();
 
@@ -939,6 +1015,29 @@ private:
     void LogGASInitComplete() const;
 
     FTimerHandle GASInitRetryTimer;
+
+    // ── Downed fork internals ────────────────────────────────────────────────
+
+    /** Authority-only. Pins health at 1, sets the replicated downed flag, cancels
+     *  abilities, stops movement and arms ReviveWindowTimer. Does NOT call Super
+     *  — see the comment on ReviveWindowSeconds for why that ordering is load-bearing. */
+    void EnterDownedState(AActor* Killer);
+
+    /** ReviveWindowTimer's callback: nobody came, so fall through to the real
+     *  death path with the killer we banked when we went down. */
+    void OnReviveWindowExpired();
+
+    FTimerHandle ReviveWindowTimer;
+
+    /** Whoever put us down, banked so the eventual death is still attributed to
+     *  them. Weak — the killer can easily be dead itself by the time the window
+     *  runs out. */
+    TWeakObjectPtr<AActor> DownedKiller;
+
+    /** Set for the single OnDeath call that the expiring window drives, so the
+     *  fork does not put the same player straight back down. Cleared in
+     *  EnterDownedState so a later life can go down normally. */
+    bool bReviveWindowExpiring = false;
     int32 GASInitRetryCount = 0;
 
     /** Roughly a couple of frames — long enough to let possession settle, short enough to be invisible. */
