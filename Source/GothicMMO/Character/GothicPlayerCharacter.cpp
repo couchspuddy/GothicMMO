@@ -887,6 +887,13 @@ void AGothicPlayerCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
     if (HasAuthority())
     {
+        // Identical argument for the channel: ReviveChannelTimer is world-owned and
+        // fires into `this`, and the channel state it drives lives on two
+        // PlayerStates that both outlive this pawn. A reviver who dies, disconnects
+        // or travels mid-channel would otherwise leave a bar filling on the downed
+        // player's screen forever, driven by nothing.
+        CancelReviveChannel(TEXT("reviver-pawn-endplay"));
+
         if (AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>())
         {
             PS->SetDowned(false);
@@ -938,9 +945,14 @@ void AGothicPlayerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
         EIC->BindAction(SprintAction, ETriggerEvent::Completed, this, &AGothicPlayerCharacter::OnSprintStopped);
     }
 
-    // Interact — collect the shared Selah prompt when near the fallen corpse.
+    // Interact — a revive channel is a HOLD, so this now needs both edges, the same
+    // shape as reload/sprint/ADS above. The Selah collect still happens on the press
+    // alone and simply ignores the release.
     if (InteractAction)
-        EIC->BindAction(InteractAction, ETriggerEvent::Started, this, &AGothicPlayerCharacter::OnInteract);
+    {
+        EIC->BindAction(InteractAction, ETriggerEvent::Started,   this, &AGothicPlayerCharacter::OnInteract);
+        EIC->BindAction(InteractAction, ETriggerEvent::Completed, this, &AGothicPlayerCharacter::OnInteractReleased);
+    }
 
     // Weapon slot swap — 1/2/3 keys
     if (WeaponSlot1Action)
@@ -1047,7 +1059,15 @@ void AGothicPlayerCharacter::Tick(float DeltaTime)
         // weapon-pose kick above is a separate, purely cosmetic spring.
         TickRecoilRecovery(DeltaTime);
 
+        // Revive first: it owns the prompt slot ahead of the Selah collect, and
+        // UpdateSelahInteractPrompt reads ShownRevivePromptPawn to yield. A body on
+        // the floor beats a meditation you can take any time, and the Selah prompt's
+        // range (1200uu, the encounter's own MeditationRange) covers most of an
+        // arena — without the ordering it would starve the revive prompt outright.
+        UpdateRevivePrompt();
         UpdateSelahInteractPrompt();
+
+        UpdateReviveChannelHUD();
     }
 
     if (!IsLocallyControlled() || !AbilitySystemComponent || !bHUDReady) return;
@@ -1223,6 +1243,21 @@ void AGothicPlayerCharacter::CancelSprintForAbility()
 
 void AGothicPlayerCharacter::OnInteract()
 {
+    // A downed player has no interactions. Their movement is off and their
+    // abilities are cancelled; letting them collect Selah or start a revive from
+    // the floor would be the one thing that still worked.
+    if (IsDowned())
+    {
+        return;
+    }
+
+    // Revive takes priority over the collect, for the same reason the prompt does.
+    if (AGothicPlayerCharacter* Target = FindReviveTargetInRange())
+    {
+        ServerStartReviveChannel(Target);
+        return;
+    }
+
     AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr;
 
     // Nearest pending encounter that covers us — NOT "whichever completed last".
@@ -1269,6 +1304,18 @@ void AGothicPlayerCharacter::UpdateSelahInteractPrompt()
         return;
     }
 
+    // Yield the whole slot to a revive prompt. UpdateRevivePrompt ran first this
+    // tick and has already claimed it if a body is in range.
+    if (ShownRevivePromptPawn.IsValid())
+    {
+        if (ShownSelahPromptCorpse.IsValid())
+        {
+            HUD->ClearInteractPrompt(ShownSelahPromptCorpse.Get());
+            ShownSelahPromptCorpse = nullptr;
+        }
+        return;
+    }
+
     AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr;
     AGothicEncounterVolume* Enc = GS ? GS->GetPromptEncounterFor(GetActorLocation()) : nullptr;
 
@@ -1292,6 +1339,375 @@ void AGothicPlayerCharacter::UpdateSelahInteractPrompt()
     {
         HUD->ClearInteractPrompt(ShownSelahPromptCorpse.Get());
         ShownSelahPromptCorpse = nullptr;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Channelled revive (PR-3)
+//
+// The whole feature is four pieces: a proximity search for a body, a two-edge
+// input that opens and closes a server-side channel, a 0.1s authoritative timer
+// that fills a replicated bar and tests four cancellation conditions, and a
+// completion that calls the ReviveFromDowned that already existed.
+//
+// What is deliberately NOT here: the revive WINDOW is not paused while a channel
+// runs. That is the simpler of the two honest readings and the one this PR takes
+// — one clock, started when the player went down, and it is the player's whole
+// budget. A channel that starts at 28s into a 30s window loses to the bleed-out,
+// and the loss is handled rather than special-cased: the window fires, the target
+// stops being downed, and the next channel tick sees that and breaks cleanly.
+// Pausing it would mean a body could be held alive indefinitely by a reviver who
+// never finishes, which is a strictly worse failure than losing a late pickup.
+// ---------------------------------------------------------------------------
+
+AGothicPlayerCharacter* AGothicPlayerCharacter::FindReviveTargetInRange() const
+{
+    const AGameStateBase* GS = GetWorld() ? GetWorld()->GetGameState() : nullptr;
+    if (!GS)
+    {
+        return nullptr;
+    }
+
+    // Nearest, not first. Two bodies side by side is the exact case where "first in
+    // PlayerArray" would silently pick the one you are not looking at.
+    AGothicPlayerCharacter* Best = nullptr;
+    float BestDistSq = FMath::Square(FMath::Max(50.f, ReviveChannelRange));
+
+    for (const APlayerState* PS : GS->PlayerArray)
+    {
+        const AGothicPlayerState* GothicPS = Cast<const AGothicPlayerState>(PS);
+        if (!GothicPS || GothicPS == GetPlayerState() || !GothicPS->IsDowned())
+        {
+            continue;
+        }
+
+        AGothicPlayerCharacter* Candidate = Cast<AGothicPlayerCharacter>(GothicPS->GetPawn());
+        if (!IsValid(Candidate) || Candidate == this)
+        {
+            continue;
+        }
+
+        const float DistSq = FVector::DistSquared(GetActorLocation(), Candidate->GetActorLocation());
+        if (DistSq <= BestDistSq)
+        {
+            BestDistSq = DistSq;
+            Best = Candidate;
+        }
+    }
+
+    return Best;
+}
+
+void AGothicPlayerCharacter::OnInteractReleased()
+{
+    // Unconditional: the server is the only thing that knows whether a channel is
+    // actually open, and it no-ops when there is not one. Gating this on a local
+    // guess is how a client ends up holding a channel it thinks it released.
+    ServerEndReviveChannel();
+}
+
+void AGothicPlayerCharacter::ServerStartReviveChannel_Implementation(AGothicPlayerCharacter* Target)
+{
+    StartReviveChannel(Target);
+}
+
+void AGothicPlayerCharacter::ServerEndReviveChannel_Implementation()
+{
+    CancelReviveChannel(TEXT("released"));
+}
+
+void AGothicPlayerCharacter::StartReviveChannel(AGothicPlayerCharacter* Target)
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    // Trust nothing the client sent — every one of these is re-derived here.
+    if (!IsValid(Target) || Target == this || !Target->IsDowned())
+    {
+        return;
+    }
+
+    if (!IsAlive() || IsDowned())
+    {
+        return;
+    }
+
+    AGothicPlayerState* TargetPS = Target->GetPlayerState<AGothicPlayerState>();
+    AGothicPlayerState* SelfPS   = GetPlayerState<AGothicPlayerState>();
+    if (!TargetPS || !SelfPS)
+    {
+        return;
+    }
+
+    // Somebody is already on this body. PR-3 does not stack revivers — see the
+    // header. Refusing here rather than silently taking the slot means the first
+    // reviver's channel is never quietly reset by a second player walking up.
+    if (TargetPS->IsReviveChannelActive())
+    {
+        return;
+    }
+
+    if (FVector::Dist(GetActorLocation(), Target->GetActorLocation()) > ReviveChannelRange)
+    {
+        return;
+    }
+
+    // Re-entrancy: a press with a channel already running restarts it on the same
+    // body rather than stacking a second timer.
+    CancelReviveChannel(TEXT("restarted"));
+
+    ReviveChannelTargetPawn  = Target;
+    ReviveChannelElapsed     = 0.f;
+    ReviveChannelAnchor      = GetActorLocation();
+    ReviveChannelLastHealth  = AttributeSet ? AttributeSet->GetHealth() : 0.f;
+
+    SelfPS->SetReviveChannelTarget(TargetPS);
+    TargetPS->BeginReviveChannel(SelfPS);
+
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().SetTimer(
+            ReviveChannelTimer, this, &AGothicPlayerCharacter::TickReviveChannel,
+            ReviveChannelTickInterval, true);
+    }
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("VigilTimeline|t=%.3f|%s|ReviveChannel|START|target=%s|duration=%.1fs"),
+        GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetNameSafe(this),
+        *GetNameSafe(Target), FMath::Max(0.2f, ReviveChannelSeconds));
+}
+
+void AGothicPlayerCharacter::CancelReviveChannel(const FString& Reason)
+{
+    if (!HasAuthority() || !ReviveChannelTargetPawn.IsValid())
+    {
+        return;
+    }
+
+    AGothicPlayerCharacter* Target = ReviveChannelTargetPawn.Get();
+    ReviveChannelTargetPawn.Reset();
+
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().ClearTimer(ReviveChannelTimer);
+    }
+
+    if (AGothicPlayerState* TargetPS = Target ? Target->GetPlayerState<AGothicPlayerState>() : nullptr)
+    {
+        TargetPS->EndReviveChannel(/*bCompleted*/ false);
+    }
+
+    // Belt and braces. EndReviveChannel above clears the back-pointer through the
+    // reviver it recorded, but a target whose PlayerState has already gone (a
+    // disconnect mid-channel) would leave ours pointing at nothing.
+    if (AGothicPlayerState* SelfPS = GetPlayerState<AGothicPlayerState>())
+    {
+        SelfPS->SetReviveChannelTarget(nullptr);
+    }
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("VigilTimeline|t=%.3f|%s|ReviveChannel|CANCEL|reason=%s|progress=%.2f"),
+        GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetNameSafe(this),
+        *Reason, ReviveChannelElapsed / FMath::Max(0.2f, ReviveChannelSeconds));
+
+    ReviveChannelElapsed = 0.f;
+}
+
+void AGothicPlayerCharacter::TickReviveChannel()
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    AGothicPlayerCharacter* Target = ReviveChannelTargetPawn.Get();
+
+    // The target stopped being a valid revive: revived by someone else, bled out
+    // (the un-paused window doing its job), or destroyed.
+    if (!IsValid(Target) || !Target->IsDowned())
+    {
+        CancelReviveChannel(TEXT("target-no-longer-downed"));
+        return;
+    }
+
+    // The reviver went down or died mid-channel.
+    if (!IsAlive() || IsDowned())
+    {
+        CancelReviveChannel(TEXT("reviver-down"));
+        return;
+    }
+
+    // Took a hit. See ReviveChannelLastHealth for why this is a poll. A HEAL is
+    // explicitly not an interrupt, which is why this compares against the previous
+    // tick rather than against the health the channel opened at.
+    const float Health = AttributeSet ? AttributeSet->GetHealth() : ReviveChannelLastHealth;
+    if (Health < ReviveChannelLastHealth - KINDA_SMALL_NUMBER)
+    {
+        CancelReviveChannel(TEXT("damaged"));
+        return;
+    }
+    ReviveChannelLastHealth = Health;
+
+    // Moved off the body.
+    if (FVector::Dist(GetActorLocation(), ReviveChannelAnchor) > ReviveChannelMoveTolerance)
+    {
+        CancelReviveChannel(TEXT("moved"));
+        return;
+    }
+
+    // Separate from the displacement test above: this one catches the BODY moving
+    // away (ragdoll settle, a physics shove) rather than the reviver.
+    if (FVector::Dist(GetActorLocation(), Target->GetActorLocation()) > ReviveChannelRange)
+    {
+        CancelReviveChannel(TEXT("out-of-range"));
+        return;
+    }
+
+    ReviveChannelElapsed += ReviveChannelTickInterval;
+
+    const float Duration = FMath::Max(0.2f, ReviveChannelSeconds);
+    const float Progress = FMath::Clamp(ReviveChannelElapsed / Duration, 0.f, 1.f);
+
+    if (AGothicPlayerState* TargetPS = Target->GetPlayerState<AGothicPlayerState>())
+    {
+        TargetPS->SetReviveChannelProgress(Progress);
+    }
+
+    if (Progress >= 1.f)
+    {
+        CompleteReviveChannel();
+    }
+}
+
+void AGothicPlayerCharacter::CompleteReviveChannel()
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    AGothicPlayerCharacter* Target = ReviveChannelTargetPawn.Get();
+    ReviveChannelTargetPawn.Reset();
+    ReviveChannelElapsed = 0.f;
+
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().ClearTimer(ReviveChannelTimer);
+    }
+
+    // ORDER MATTERS. The channel is stamped COMPLETED before ReviveFromDowned runs,
+    // because ReviveFromDowned calls SetDowned(false), and SetDowned's own cleanup
+    // closes any still-open channel as an INTERRUPT. Stamping first makes that
+    // cleanup a no-op and leaves the correct result replicated for both bars.
+    if (AGothicPlayerState* TargetPS = Target ? Target->GetPlayerState<AGothicPlayerState>() : nullptr)
+    {
+        TargetPS->EndReviveChannel(/*bCompleted*/ true);
+    }
+
+    if (AGothicPlayerState* SelfPS = GetPlayerState<AGothicPlayerState>())
+    {
+        SelfPS->SetReviveChannelTarget(nullptr);
+    }
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("VigilTimeline|t=%.3f|%s|ReviveChannel|COMPLETE|target=%s"),
+        GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetNameSafe(this),
+        *GetNameSafe(Target));
+
+    if (IsValid(Target))
+    {
+        Target->ReviveFromDowned();
+    }
+}
+
+void AGothicPlayerCharacter::UpdateRevivePrompt()
+{
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    AGothicHUD* HUD = PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
+    if (!HUD)
+    {
+        return;
+    }
+
+    AGothicPlayerCharacter* Target = IsDowned() ? nullptr : FindReviveTargetInRange();
+
+    if (Target)
+    {
+        // Yield to a genuinely different interactable (a door, the Contract Board),
+        // but NOT to the Selah prompt, which this pawn raised itself and which
+        // covers most of an arena. Without that exception a body inside a completed
+        // encounter could never be picked up.
+        AActor* CurrentOwner = HUD->GetInteractPromptOwner();
+        const bool bCanClaim =
+            !CurrentOwner || CurrentOwner == Target || CurrentOwner == ShownSelahPromptCorpse.Get();
+
+        if (bCanClaim)
+        {
+            const AGothicPlayerState* TargetPS = Target->GetPlayerState<AGothicPlayerState>();
+            const FString Name = TargetPS ? TargetPS->GetPlayerName() : TEXT("teammate");
+
+            HUD->SetInteractPrompt(Target, FText::FromString(FString::Printf(TEXT("Revive %s"), *Name)));
+            ShownRevivePromptPawn = Target;
+            return;
+        }
+    }
+
+    if (ShownRevivePromptPawn.IsValid())
+    {
+        HUD->ClearInteractPrompt(ShownRevivePromptPawn.Get());
+        ShownRevivePromptPawn = nullptr;
+    }
+}
+
+void AGothicPlayerCharacter::UpdateReviveChannelHUD()
+{
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    AGothicHUD* HUD = PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
+    if (!HUD)
+    {
+        return;
+    }
+
+    AGothicPlayerState* MyPS = GetPlayerState<AGothicPlayerState>();
+
+    // Which channel concerns THIS viewer? Exactly two answers, and both are read
+    // off replicated PlayerState data that every client has: one where we are the
+    // body, one where we are the hands. Anybody else's revive is not our bar.
+    AGothicPlayerState* Subject = nullptr;
+    if (MyPS)
+    {
+        if (MyPS->IsReviveChannelActive())
+        {
+            Subject = MyPS;
+        }
+        else if (AGothicPlayerState* TargetPS = MyPS->GetReviveChannelTarget())
+        {
+            if (TargetPS->IsReviveChannelActive())
+            {
+                Subject = TargetPS;
+            }
+        }
+    }
+
+    if (Subject)
+    {
+        ShownReviveChannelSubject = Subject;
+        HUD->ShowReviveChannel(Subject, Subject->GetReviveChannelReviver(),
+                               Subject->GetReviveChannelProgress());
+        return;
+    }
+
+    if (HUD->IsReviveChannelShown())
+    {
+        // The result is read off the subject we cached rather than off MyPS's
+        // back-pointer, which the authority has already cleared by now — that is
+        // the whole reason the cache exists. Result 2 is completed; anything else
+        // (including a subject that vanished entirely) reads as interrupted.
+        const AGothicPlayerState* Last = ShownReviveChannelSubject.Get();
+        HUD->HideReviveChannel(Last && Last->GetReviveChannelResult() == 2);
+        ShownReviveChannelSubject = nullptr;
     }
 }
 
@@ -2171,6 +2587,11 @@ void AGothicPlayerCharacter::EnterDownedState(AActor* Killer)
     // go down again.
     bReviveWindowExpiring = false;
 
+    // If WE were mid-revive on somebody else, that ends here. TickReviveChannel
+    // would catch it within one interval anyway, but a player going down should not
+    // spend a tenth of a second still visibly reviving from the floor.
+    CancelReviveChannel(TEXT("reviver-went-down"));
+
     DownedKiller = Killer;
 
     // Alive, but only just. IsAlive() is health > 0, and the whole downed design
@@ -2977,4 +3398,170 @@ static FAutoConsoleCommandWithWorldAndArgs GGothicReviveCmd(
     TEXT("Gothic.Revive"),
     TEXT("Gothic.Revive <PlayerIndex> — revive a downed player in place on the authority. Debug only."),
     FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&GothicReviveConsoleCommand));
+
+// ---------------------------------------------------------------------------
+// Gothic.StartReviveChannel / Gothic.EndReviveChannel — debug console commands
+//
+// The harness cannot hold a key down, and the channel's whole point is that it is
+// a hold. These open and close the SERVER-SIDE channel directly, which is the
+// exact thing ServerStartReviveChannel_Implementation does when a real press
+// arrives — so what runs here is the shipping path, not a shortcut past it. Every
+// guard in StartReviveChannel still applies, and a channel opened this way is
+// interrupted by damage, by movement and by the body bleeding out exactly as a
+// held one is. Only the input edge is faked.
+//
+// Indices are into the game state's PlayerArray, as with Gothic.Revive and
+// Gothic.SetDowned. TargetIndex is optional: omitted, the reviver's own
+// FindReviveTargetInRange picks the nearest downed body, which is also what a real
+// press would have used.
+// ---------------------------------------------------------------------------
+
+/** Shared resolution for both commands. Logs and returns null on every failure. */
+static AGothicPlayerCharacter* GothicResolveReviverPawn(
+    const UWorld* World, const TArray<FString>& Args, int32 ArgIndex, const TCHAR* CommandName)
+{
+    const AGameStateBase* GS = World ? World->GetGameState() : nullptr;
+    if (!GS)
+    {
+        UE_LOG(LogVigilCombat, Warning, TEXT("%s: no game state in this world."), CommandName);
+        return nullptr;
+    }
+
+    const int32 Index = FCString::Atoi(*Args[ArgIndex]);
+    if (!GS->PlayerArray.IsValidIndex(Index))
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("%s: no player at index %d — this world has %d."),
+            CommandName, Index, GS->PlayerArray.Num());
+        return nullptr;
+    }
+
+    const APlayerState* PS = GS->PlayerArray[Index];
+    AGothicPlayerCharacter* Char = PS ? Cast<AGothicPlayerCharacter>(PS->GetPawn()) : nullptr;
+    if (!Char)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("%s: player %d has no AGothicPlayerCharacter pawn."), CommandName, Index);
+        return nullptr;
+    }
+
+    // Typed into a client's console this reaches the client's copy, where the
+    // channel functions correctly refuse. Say so rather than appearing to work.
+    if (!Char->HasAuthority())
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("%s: %s is not authoritative in this world — run this on the server."),
+            CommandName, *GetNameSafe(Char));
+        return nullptr;
+    }
+
+    return Char;
+}
+
+static void GothicStartReviveChannelConsoleCommand(const TArray<FString>& Args, UWorld* World)
+{
+    if (!World)
+    {
+        return;
+    }
+
+    if (Args.Num() < 1)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Gothic.StartReviveChannel: usage is Gothic.StartReviveChannel <ReviverIndex> [TargetIndex]."));
+        return;
+    }
+
+    AGothicPlayerCharacter* Reviver =
+        GothicResolveReviverPawn(World, Args, 0, TEXT("Gothic.StartReviveChannel"));
+    if (!Reviver)
+    {
+        return;
+    }
+
+    AGothicPlayerCharacter* Target = nullptr;
+    if (Args.Num() >= 2)
+    {
+        Target = GothicResolveReviverPawn(World, Args, 1, TEXT("Gothic.StartReviveChannel"));
+        if (!Target)
+        {
+            return;
+        }
+    }
+    else
+    {
+        Target = Reviver->FindReviveTargetInRange();
+        if (!Target)
+        {
+            UE_LOG(LogVigilCombat, Warning,
+                TEXT("Gothic.StartReviveChannel: no downed player within %.0fuu of %s — "
+                     "pass an explicit TargetIndex, or move the reviver closer."),
+                Reviver->ReviveChannelRange, *GetNameSafe(Reviver));
+            return;
+        }
+    }
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("Gothic.StartReviveChannel: %s channelling on %s over %.1fs."),
+        *GetNameSafe(Reviver), *GetNameSafe(Target), Reviver->ReviveChannelSeconds);
+
+    Reviver->StartReviveChannel(Target);
+
+    // StartReviveChannel refuses silently on a bad state (target not downed, out of
+    // range, slot taken). Report the outcome so a failed setup does not read as a
+    // failed feature.
+    if (!Reviver->IsChannelingRevive())
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Gothic.StartReviveChannel: refused — check the target is downed, within %.0fuu, "
+                 "and not already being revived."),
+            Reviver->ReviveChannelRange);
+    }
+}
+
+static void GothicEndReviveChannelConsoleCommand(const TArray<FString>& Args, UWorld* World)
+{
+    if (!World)
+    {
+        return;
+    }
+
+    if (Args.Num() < 1)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Gothic.EndReviveChannel: usage is Gothic.EndReviveChannel <ReviverIndex>."));
+        return;
+    }
+
+    AGothicPlayerCharacter* Reviver =
+        GothicResolveReviverPawn(World, Args, 0, TEXT("Gothic.EndReviveChannel"));
+    if (!Reviver)
+    {
+        return;
+    }
+
+    if (!Reviver->IsChannelingRevive())
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Gothic.EndReviveChannel: %s is not channelling — nothing to break."),
+            *GetNameSafe(Reviver));
+        return;
+    }
+
+    // The same route the key release takes, so this proves the release path and
+    // not a private one.
+    Reviver->CancelReviveChannel(TEXT("console-released"));
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GGothicStartReviveChannelCmd(
+    TEXT("Gothic.StartReviveChannel"),
+    TEXT("Gothic.StartReviveChannel <ReviverIndex> [TargetIndex] — open a server-side revive channel "
+         "without holding a key. Debug only."),
+    FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&GothicStartReviveChannelConsoleCommand));
+
+static FAutoConsoleCommandWithWorldAndArgs GGothicEndReviveChannelCmd(
+    TEXT("Gothic.EndReviveChannel"),
+    TEXT("Gothic.EndReviveChannel <ReviverIndex> — break an in-progress revive channel, as a key "
+         "release would. Debug only."),
+    FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&GothicEndReviveChannelConsoleCommand));
 #endif

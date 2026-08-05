@@ -30,6 +30,7 @@ class UGothicHintManagerComponent;
 class UGothicAbilitySet;
 class UGothicInventoryWidget;
 class UGA_TheLovedAndTheLost;
+class AGothicPlayerState;
 struct FInputActionValue;
 
 UCLASS()
@@ -311,6 +312,83 @@ public:
      */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Downed")
     void OnDownedStateChanged(bool bNowDowned);
+
+    // -------------------------------------------------------------------------
+    // Channelled revive (PR-3)
+    //
+    // A living player holds the interact key over a downed teammate for
+    // ReviveChannelSeconds and they stand back up through ReviveFromDowned above —
+    // the same function Gothic.Revive already drives, so everything that path
+    // fixed (the passive re-grant most of all) is inherited rather than repeated.
+    //
+    // The channel is SERVER-AUTHORITATIVE end to end. The client sends two edges
+    // (press, release) exactly as the reload hold does and nothing else; the clock,
+    // every cancellation test and the revive itself run on the authority, and the
+    // only thing that comes back is the replicated fill on the downed player's
+    // PlayerState. A client that lies about holding the key gets a channel that
+    // still has to survive the server's own range, movement and damage checks.
+    //
+    // The downed body is discovered by proximity, not by a trace. That matches how
+    // the Selah prompt already works, and the capsule collision EnterDownedState
+    // deliberately keeps is what makes the body a solid thing to stand on rather
+    // than what makes it findable.
+    // -------------------------------------------------------------------------
+
+    /** How long the hold lasts. The single tuning knob for how much a pickup costs. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Downed",
+              meta = (ClampMin = "0.2"))
+    float ReviveChannelSeconds = 4.f;
+
+    /**
+     * How close the reviver must be to the body, both to see the prompt and to
+     * keep the channel alive. Deliberately much tighter than the Selah prompt's
+     * 1200uu meditation range — that one is an area you stand in, this one is a
+     * body you stand over.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Downed",
+              meta = (ClampMin = "50.0"))
+    float ReviveChannelRange = 250.f;
+
+    /**
+     * How far the reviver may drift from where they started before the channel
+     * breaks. This is the "interrupted by moving" rule, and it is a DISPLACEMENT
+     * test rather than an input or velocity test on purpose: input can be held
+     * against a wall, and a player knocked back by an attack has given no input at
+     * all but has very much left the body. Small enough that a step off breaks it,
+     * large enough that settling on uneven ground does not.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Downed",
+              meta = (ClampMin = "0.0"))
+    float ReviveChannelMoveTolerance = 100.f;
+
+    /** Nearest downed teammate inside ReviveChannelRange, or null. Locally callable
+     *  (for the prompt) and re-run server-side (for the channel) — never trusted
+     *  across the wire. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Downed")
+    AGothicPlayerCharacter* FindReviveTargetInRange() const;
+
+    /**
+     * Server-only. Opens a channel on Target. Refuses if either party is in the
+     * wrong state, if Target is out of range, or if somebody is ALREADY channelling
+     * on Target.
+     *
+     * That last refusal is where "a second reviver joining an in-progress channel"
+     * is ruled out — deliberately out of scope for PR-3. The slot on the downed
+     * player's PlayerState holds one reviver, so co-op reviving would need that
+     * slot to become a set and the fill rate to become a function of its size.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Downed")
+    void StartReviveChannel(AGothicPlayerCharacter* Target);
+
+    /** Server-only. Breaks the channel this pawn is running, if any. Reason appears
+     *  in the VigilTimeline line and nowhere else. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Downed")
+    void CancelReviveChannel(const FString& Reason);
+
+    /** True while this pawn is the one doing the channelling. Authority-side truth;
+     *  clients read AGothicPlayerState::IsReviveChannelActive instead. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Downed")
+    bool IsChannelingRevive() const { return ReviveChannelTargetPawn.IsValid(); }
 
     UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
     void TriggerSelahMoment();
@@ -879,8 +957,16 @@ protected:
     void OnSprintStarted();
     void OnSprintStopped();
 
-    /** IA_Interact — if a Selah prompt corpse is in range, ask the server to collect it. */
+    /**
+     * IA_Interact pressed. A downed teammate in range takes priority over the Selah
+     * prompt and starts a revive channel; otherwise this falls through to the
+     * collect exactly as it always did.
+     */
     void OnInteract();
+
+    /** IA_Interact released — ends any revive channel. A Selah collect is a single
+     *  press and ignores this edge entirely. */
+    void OnInteractReleased();
 
     /** Server-side collect for a specific encounter, re-validated server-side. */
     UFUNCTION(Server, Reliable)
@@ -895,6 +981,70 @@ protected:
 
     /** The encounter the local interact prompt is currently raised for (to clear it correctly). */
     TWeakObjectPtr<AActor> ShownSelahPromptCorpse;
+
+    // ── Channelled revive internals ──────────────────────────────────────────
+
+    /** Client → server: begin channelling on Target. Every guard is re-run there. */
+    UFUNCTION(Server, Reliable)
+    void ServerStartReviveChannel(AGothicPlayerCharacter* Target);
+
+    /** Client → server: the key came up. */
+    UFUNCTION(Server, Reliable)
+    void ServerEndReviveChannel();
+
+    /**
+     * The authority's channel clock. A repeating 0.1s timer rather than Tick: the
+     * fill replicates on every pass, and forty updates over a four-second channel
+     * is plenty for a bar while a per-frame push would be ~240 for the same result.
+     */
+    void TickReviveChannel();
+
+    /** Ends the channel and stands the target back up. Authority only. */
+    void CompleteReviveChannel();
+
+    /** Local: raise/clear the "[E] Revive <name>" prompt. Runs before the Selah
+     *  prompt update, which yields to it. */
+    void UpdateRevivePrompt();
+
+    /** Local: mirror the replicated channel state onto THIS viewer's HUD. */
+    void UpdateReviveChannelHUD();
+
+    /** Who we are channelling on, or null. Doubles as the "am I channelling" flag. */
+    TWeakObjectPtr<AGothicPlayerCharacter> ReviveChannelTargetPawn;
+
+    FTimerHandle ReviveChannelTimer;
+
+    /** Seconds of channel banked so far. */
+    float ReviveChannelElapsed = 0.f;
+
+    /** Where the reviver stood when the channel opened — the origin of the
+     *  displacement test. See ReviveChannelMoveTolerance. */
+    FVector ReviveChannelAnchor = FVector::ZeroVector;
+
+    /**
+     * The reviver's health as of the previous channel tick. Any DECREASE breaks
+     * the channel.
+     *
+     * A poll rather than an attribute-change delegate, and that is a real trade:
+     * it costs up to one tick interval of latency on the break, and it buys not
+     * having to bind a delegate to an ASC that lives on the PlayerState and
+     * outlives this pawn — the lifetime hazard BindHUDAttributeDelegates and
+     * BindStunTagListener both exist to manage. The channel already has an
+     * authoritative timer running; hanging one comparison off it has no lifetime
+     * of its own to get wrong.
+     */
+    float ReviveChannelLastHealth = 0.f;
+
+    /** Local: the downed pawn the interact prompt is currently raised for. */
+    TWeakObjectPtr<AActor> ShownRevivePromptPawn;
+
+    /** Local: the PlayerState whose channel this viewer's HUD is currently showing.
+     *  Held so the END can still read the result off it after the reviver's own
+     *  back-pointer has been cleared. */
+    TWeakObjectPtr<AGothicPlayerState> ShownReviveChannelSubject;
+
+    /** See TickReviveChannel. */
+    static constexpr float ReviveChannelTickInterval = 0.1f;
 
 public:
     /**

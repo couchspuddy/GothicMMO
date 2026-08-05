@@ -73,7 +73,70 @@ public:
      */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Downed")
     void OnDownedChanged(bool bNowDowned);
-    
+
+    // ── Revive channel ───────────────────────────────────────────────────────
+    // A living player holds interact over a downed one for ReviveChannelSeconds.
+    // The clock runs on the SERVER (AGothicPlayerCharacter drives it); what lives
+    // here is the replicated readout, and it lives on the PlayerState for the same
+    // reason bIsDowned does — the pawn is the thing most likely to churn, and a
+    // PlayerState is always relevant to every client, so BOTH the reviver's HUD and
+    // the downed player's HUD can read the same number without either of them
+    // needing the other's pawn to be net-relevant.
+    //
+    // The channel is recorded on the DOWNED player's PlayerState (bReviveChannelActive
+    // / ReviveChannelProgress / ReviveChannelReviver) and the reviver's PlayerState
+    // carries only a back-pointer (ReviveChannelTarget). That direction is what
+    // makes "one reviver per body" a structural property rather than a rule someone
+    // has to remember: the slot is occupied or it is not. A SECOND reviver joining an
+    // in-progress channel is deliberately out of scope — see StartReviveChannel.
+
+    /** True while somebody is channelling a revive on THIS player. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Downed")
+    bool IsReviveChannelActive() const { return bReviveChannelActive; }
+
+    /** 0..1 server-authoritative fill. Holds its final value after the channel ends
+     *  so a bar can freeze where it broke; reset to 0 by the next channel. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Downed")
+    float GetReviveChannelProgress() const { return ReviveChannelProgress; }
+
+    /** Who is picking us up, or null. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Downed")
+    AGothicPlayerState* GetReviveChannelReviver() const { return ReviveChannelReviver; }
+
+    /** Who WE are picking up, or null. The reviver-side half. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Downed")
+    AGothicPlayerState* GetReviveChannelTarget() const { return ReviveChannelTarget; }
+
+    /**
+     * How the last channel on this player ended: 0 none/still running, 1 interrupted,
+     * 2 completed. Replicated so a client can tell a broken bar from a finished one
+     * AFTER bReviveChannelActive has already gone false — the flag alone cannot,
+     * because both endings look identical from the outside.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Downed")
+    uint8 GetReviveChannelResult() const { return ReviveChannelResult; }
+
+    /** Server-only. Opens the channel slot on this (downed) player. */
+    void BeginReviveChannel(AGothicPlayerState* InReviver);
+
+    /** Server-only. Pushes the authoritative fill. No-op if no channel is open. */
+    void SetReviveChannelProgress(float NewProgress);
+
+    /** Server-only. Closes the slot and stamps the result. No-op if none is open. */
+    void EndReviveChannel(bool bCompleted);
+
+    /** Server-only. Sets/clears the reviver-side back-pointer. */
+    void SetReviveChannelTarget(AGothicPlayerState* InTarget);
+
+    /**
+     * Fired on every machine whenever the channel state changes — remote clients via
+     * OnRep, the authority directly from the setters above (OnRep never fires on the
+     * authority, the same trap SetDowned documents).
+     */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Downed")
+    void OnReviveChannelChanged(bool bActive, float Progress, AGothicPlayerState* Reviver);
+
+
     UFUNCTION(BlueprintPure, Category = "Gothic|PlayerState")
     UGothicInventoryComponent* GetInventory() const { return InventoryComponent; }
     
@@ -133,6 +196,31 @@ protected:
 
     UFUNCTION()
     void OnRep_IsDowned();
+
+    // ── Revive channel — replicated readout. Authority writes through the
+    //    Begin/Set/End functions only. See IsReviveChannelActive.
+    UPROPERTY(ReplicatedUsing = OnRep_ReviveChannel, BlueprintReadOnly, Category = "Gothic|Downed")
+    bool bReviveChannelActive = false;
+
+    UPROPERTY(ReplicatedUsing = OnRep_ReviveChannel, BlueprintReadOnly, Category = "Gothic|Downed")
+    float ReviveChannelProgress = 0.f;
+
+    UPROPERTY(ReplicatedUsing = OnRep_ReviveChannel, BlueprintReadOnly, Category = "Gothic|Downed")
+    TObjectPtr<AGothicPlayerState> ReviveChannelReviver;
+
+    /** 0 none, 1 interrupted, 2 completed. See GetReviveChannelResult. */
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gothic|Downed")
+    uint8 ReviveChannelResult = 0;
+
+    /** The reviver-side back-pointer. Not on the OnRep — nothing draws off it,
+     *  it only tells the reviver's own client which PlayerState to read. */
+    UPROPERTY(Replicated, BlueprintReadOnly, Category = "Gothic|Downed")
+    TObjectPtr<AGothicPlayerState> ReviveChannelTarget;
+
+    /** Shared by all three channel properties — a progress update and a state
+     *  change want the identical client-side response. */
+    UFUNCTION()
+    void OnRep_ReviveChannel();
 
     // The ASC lives here — it is replicated and survives respawns.
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Abilities")

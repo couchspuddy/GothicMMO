@@ -35,6 +35,11 @@ void AGothicPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
     DOREPLIFETIME(AGothicPlayerState, bIsDowned);
+    DOREPLIFETIME(AGothicPlayerState, bReviveChannelActive);
+    DOREPLIFETIME(AGothicPlayerState, ReviveChannelProgress);
+    DOREPLIFETIME(AGothicPlayerState, ReviveChannelReviver);
+    DOREPLIFETIME(AGothicPlayerState, ReviveChannelResult);
+    DOREPLIFETIME(AGothicPlayerState, ReviveChannelTarget);
 }
 
 void AGothicPlayerState::SetDowned(bool bNewDowned)
@@ -45,6 +50,20 @@ void AGothicPlayerState::SetDowned(bool bNewDowned)
     }
 
     bIsDowned = bNewDowned;
+
+    // Leaving the downed state — by revive, by bleed-out, or by a debug
+    // Gothic.SetDowned 0 — closes any channel that was still running on us. This is
+    // the catch-all, not the normal path: a completing revive stamps its own result
+    // just before it calls ReviveFromDowned, and EndReviveChannel is a no-op the
+    // second time. What this actually covers is every OTHER exit, where a channel
+    // left open would replicate a stale "someone is reviving you" bar into a life
+    // where nobody is — the same shape as the loose-tag bugs this class already
+    // guards against.
+    if (!bIsDowned && bReviveChannelActive)
+    {
+        EndReviveChannel(false);
+    }
+
     ForceNetUpdate();
 
     // Mirror onto the ASC so GAS-side consumers — ability ActivationBlockedTags,
@@ -75,6 +94,102 @@ void AGothicPlayerState::SetDowned(bool bNewDowned)
 void AGothicPlayerState::OnRep_IsDowned()
 {
     OnDownedChanged(bIsDowned);
+}
+
+// ---------------------------------------------------------------------------
+// Revive channel — the replicated readout
+//
+// Every setter below is authority-only and calls OnRep_ReviveChannel() directly
+// afterwards, for exactly the reason SetDowned does: the authority never
+// receives its own OnRep, so a listen-server host would otherwise be the one
+// machine in the session that never saw the bar it is driving.
+// ---------------------------------------------------------------------------
+
+void AGothicPlayerState::BeginReviveChannel(AGothicPlayerState* InReviver)
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    bReviveChannelActive = true;
+    ReviveChannelProgress = 0.f;
+    ReviveChannelReviver = InReviver;
+    ReviveChannelResult = 0;
+    ForceNetUpdate();
+
+    const UWorld* World = GetWorld();
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|ReviveChannel|BEGIN|reviver=%s"),
+        World ? World->GetTimeSeconds() : 0.f, *GetPlayerName(),
+        InReviver ? *InReviver->GetPlayerName() : TEXT("none"));
+
+    OnRep_ReviveChannel();
+}
+
+void AGothicPlayerState::SetReviveChannelProgress(float NewProgress)
+{
+    if (!HasAuthority() || !bReviveChannelActive)
+    {
+        return;
+    }
+
+    ReviveChannelProgress = FMath::Clamp(NewProgress, 0.f, 1.f);
+    ForceNetUpdate();
+    OnRep_ReviveChannel();
+}
+
+void AGothicPlayerState::EndReviveChannel(bool bCompleted)
+{
+    if (!HasAuthority() || !bReviveChannelActive)
+    {
+        return;
+    }
+
+    bReviveChannelActive = false;
+    ReviveChannelResult = bCompleted ? 2 : 1;
+
+    // Progress is deliberately NOT reset here. An interrupted channel should stay
+    // readable at the fraction it reached — that is the whole payload of an
+    // interruption, and the next BeginReviveChannel zeroes it anyway.
+    if (bCompleted)
+    {
+        ReviveChannelProgress = 1.f;
+    }
+
+    // The reviver's back-pointer is theirs to hold, but it can only ever point at
+    // an open slot, so it is cleared from here rather than from four call sites.
+    if (ReviveChannelReviver && ReviveChannelReviver->ReviveChannelTarget == this)
+    {
+        ReviveChannelReviver->SetReviveChannelTarget(nullptr);
+    }
+    ReviveChannelReviver = nullptr;
+
+    ForceNetUpdate();
+
+    const UWorld* World = GetWorld();
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|ReviveChannel|END|result=%s|progress=%.2f"),
+        World ? World->GetTimeSeconds() : 0.f, *GetPlayerName(),
+        bCompleted ? TEXT("COMPLETED") : TEXT("INTERRUPTED"), ReviveChannelProgress);
+
+    OnRep_ReviveChannel();
+}
+
+void AGothicPlayerState::SetReviveChannelTarget(AGothicPlayerState* InTarget)
+{
+    if (!HasAuthority() || ReviveChannelTarget == InTarget)
+    {
+        return;
+    }
+
+    ReviveChannelTarget = InTarget;
+    ForceNetUpdate();
+}
+
+void AGothicPlayerState::OnRep_ReviveChannel()
+{
+    OnReviveChannelChanged(bReviveChannelActive, ReviveChannelProgress, ReviveChannelReviver);
 }
 
 // ---------------------------------------------------------------------------

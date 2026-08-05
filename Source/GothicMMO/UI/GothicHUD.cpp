@@ -8,6 +8,8 @@
 #include "UI/GothicHUDWidget.h"
 #include "UI/GothicCrosshairWidget.h"
 #include "UI/GothicQuitMenuWidget.h"
+#include "UI/GothicReviveChannelBarWidget.h"
+#include "Game/GothicPlayerState.h"
 #include "UI/GothicHintManagerComponent.h"
 #include "AbilitySystem/GothicGameplayTags.h"
 #include "AI/GothicEnemyBase.h"
@@ -650,4 +652,74 @@ void AGothicHUD::ToggleQuitMenu()
         // under them -- a confirmation the player cannot see is worse than none.
         ActiveQuitMenu->AddToViewport(1000);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Revive channel bar
+//
+// See the header for why this lives on the HUD rather than on the GameState the
+// Selah bar is driven from: one AHUD per local PlayerController means the owning
+// controller is never in question, so there is no per-viewer bookkeeping to get
+// wrong and no opportunity to reach for GetFirstPlayerController.
+// ---------------------------------------------------------------------------
+
+void AGothicHUD::ShowReviveChannel(AGothicPlayerState* DownedPlayer, AGothicPlayerState* Reviver, float Progress)
+{
+    ReviveChannelProgress = FMath::Clamp(Progress, 0.f, 1.f);
+
+    const bool bWasShown = bReviveChannelShown;
+    bReviveChannelShown = true;
+
+    if (!bWasShown)
+    {
+        if (ReviveChannelBarClass)
+        {
+            // Recreated per channel rather than pooled: the previous bar removes
+            // itself on a dismiss timer, so a pooled one could still be mid-fade
+            // when the next channel starts and would flash the old fill.
+            ActiveReviveChannelBar = CreateWidget<UGothicReviveChannelBarWidget>(
+                GetOwningPlayerController(), ReviveChannelBarClass);
+
+            if (ActiveReviveChannelBar)
+            {
+                ActiveReviveChannelBar->AddToViewport();
+                ActiveReviveChannelBar->BeginChannel(DownedPlayer, Reviver);
+            }
+        }
+
+        OnReviveChannelShown(DownedPlayer, Reviver);
+    }
+
+    if (ActiveReviveChannelBar)
+    {
+        ActiveReviveChannelBar->SetProgress(ReviveChannelProgress);
+    }
+
+    OnReviveChannelUpdated(ReviveChannelProgress);
+}
+
+void AGothicHUD::HideReviveChannel(bool bCompleted)
+{
+    if (!bReviveChannelShown)
+    {
+        return;
+    }
+
+    bReviveChannelShown = false;
+
+    if (bCompleted)
+    {
+        ReviveChannelProgress = 1.f;
+    }
+
+    if (ActiveReviveChannelBar)
+    {
+        // EndChannel arms the widget's OWN dismiss timer and it removes itself, so
+        // the pointer is dropped here rather than the widget torn down — ripping it
+        // out now would cut the break/complete flourish off mid-play.
+        ActiveReviveChannelBar->EndChannel(bCompleted);
+        ActiveReviveChannelBar = nullptr;
+    }
+
+    OnReviveChannelHidden(bCompleted);
 }
