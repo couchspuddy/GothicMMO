@@ -8,6 +8,8 @@
 #include "UI/GothicHUDWidget.h"
 #include "UI/GothicCrosshairWidget.h"
 #include "UI/GothicQuitMenuWidget.h"
+#include "UI/GothicHintManagerComponent.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "AI/GothicEnemyBase.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/Character.h"
@@ -190,6 +192,15 @@ void AGothicHUD::UpdateSuperMeter(float CurrentValue, float MaxValue)
         {
             ActiveHUDWidget->OnSuperReady();
         }
+    }
+}
+
+void AGothicHUD::UpdateSteadfast(float CurrentValue, float MaxValue)
+{
+    if (ActiveHUDWidget)
+    {
+        ActiveHUDWidget->CachedSteadfast = MaxValue > 0.f ? CurrentValue / MaxValue : 0.f;
+        ActiveHUDWidget->OnSteadfastChanged(CurrentValue, MaxValue);
     }
 }
 
@@ -404,6 +415,7 @@ void AGothicHUD::DrawHUD()
 
     DrawEnemyHealthBars();
     DrawInteractPrompt();
+    DrawTutorialHint();
 }
 
 void AGothicHUD::SetInteractPrompt(AActor* Interactable, const FText& PromptText)
@@ -412,6 +424,55 @@ void AGothicHUD::SetInteractPrompt(AActor* Interactable, const FText& PromptText
     // arriving from an interactable the player has already left.
     InteractPromptText  = PromptText;
     InteractPromptOwner = Interactable;
+
+    // First prompt of the session teaches the key. Hooked here rather than in any
+    // one interactable because every interactable in the game funnels through
+    // this call — including the Blueprint ones, which a C++-side hook in the
+    // player pawn would never see.
+    if (APawn* Pawn = PlayerOwner ? PlayerOwner->GetPawn() : nullptr)
+    {
+        if (UGothicHintManagerComponent* Hints =
+                Pawn->FindComponentByClass<UGothicHintManagerComponent>())
+        {
+            Hints->ShowHint(GothicTags::Hint_Interact);
+        }
+    }
+}
+
+void AGothicHUD::SetTutorialHint(const FText& HintText)
+{
+    TutorialHintText = HintText;
+}
+
+void AGothicHUD::ClearTutorialHint()
+{
+    TutorialHintText = FText::GetEmpty();
+}
+
+void AGothicHUD::DrawTutorialHint()
+{
+    if (!Canvas || TutorialHintText.IsEmpty())
+    {
+        return;
+    }
+
+    const UFont* DrawFont = GEngine->GetLargeFont();
+
+    // No key-hint prefix wrapper here, unlike the interact prompt. Hint copy names
+    // its own key inline ("Hold R — convert Steadfast to ammo") because the key
+    // is part of the sentence, not a bracket in front of it.
+    FCanvasTextItem TextItem(
+        FVector2D(Canvas->SizeX * 0.5f, Canvas->SizeY * 0.5f + TutorialHintOffsetY),
+        TutorialHintText,
+        DrawFont,
+        TutorialHintColor.ToFColor(true));
+
+    TextItem.bCentreX     = true;
+    TextItem.bOutlined    = true;
+    TextItem.OutlineColor = FLinearColor(0.f, 0.f, 0.f, 0.85f);
+    TextItem.Scale        = FVector2D(TutorialHintScale, TutorialHintScale);
+
+    Canvas->DrawItem(TextItem);
 }
 
 void AGothicHUD::ClearInteractPrompt(AActor* Requester)

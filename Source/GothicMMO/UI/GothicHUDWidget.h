@@ -33,6 +33,18 @@ public:
     void OnSuperMeterChanged(float CurrentValue, float MaxValue);
 
     /**
+     * Steadfast, the hold-reload resource. Drives the pip row.
+     *
+     * The attribute existed and filled from the first build, and nothing on the
+     * HUD ever read it — the player was expected to spend a resource they could
+     * not see. Raw values rather than a normalized fraction because the pips are
+     * discrete: the row draws SteadfastChargesPerFullBar pips, and rounding a
+     * fraction back into a pip count in Blueprint loses the partial.
+     */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
+    void OnSteadfastChanged(float CurrentValue, float MaxValue);
+
+    /**
      * @param SlotIndex     0 = ability 1, 1 = ability 2, 2 = ability 3
      * @param Remaining     Seconds remaining on cooldown (0 = ready)
      * @param Total         Total cooldown duration (for filling the overlay)
@@ -71,6 +83,10 @@ public:
 
     UPROPERTY(BlueprintReadOnly, Category = "Gothic|HUD")
     float CachedSuperMeter = 0.f;
+
+    /** Normalized 0-1, matching CachedSuperMeter. Raw values arrive on OnSteadfastChanged. */
+    UPROPERTY(BlueprintReadOnly, Category = "Gothic|HUD")
+    float CachedSteadfast = 0.f;
     
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
     void OnSelahChanged(int32 NewSelah);

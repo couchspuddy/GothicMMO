@@ -95,6 +95,10 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
     void UpdateSuperMeter(float CurrentValue, float MaxValue);
 
+    /** Steadfast pip row. See UGothicHUDWidget::OnSteadfastChanged for why it was missing. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
+    void UpdateSteadfast(float CurrentValue, float MaxValue);
+
     UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
     void UpdateAbilityCooldown(EGothicAbilitySlot SlotIndex, float CooldownRemaining, float CooldownTotal);
 
@@ -169,9 +173,54 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|HUD|Interact")
     AActor* GetInteractPromptOwner() const { return InteractPromptOwner.Get(); }
 
+    // -------------------------------------------------------------------------
+    // Tutorial hint — a SECOND, INDEPENDENT canvas slot above the interact band.
+    //
+    // Canvas-drawn for the reasons the interact prompt's header gives, which
+    // apply unchanged here: no per-hint widget state, and it joins the same draw
+    // path as the damage numbers and health bars.
+    //
+    // It is deliberately NOT the interact prompt. That slot is single-owner and
+    // arbitrated by GetInteractPromptOwner — routing hints through it would mean
+    // a hint and a doorway fighting over one line of text, and the hint would win
+    // for five seconds while the player stood at the door pressing E. Separate
+    // slot, separate Y offset, separate colour, no interaction between them.
+    // -------------------------------------------------------------------------
+
+    /** Put a hint on screen. Replaces whatever hint was there; never touches the interact prompt. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD|Hints")
+    void SetTutorialHint(const FText& HintText);
+
+    /** Clear the hint slot. No owner check — the hint manager is the only writer. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD|Hints")
+    void ClearTutorialHint();
+
+    /** True while a hint is on screen. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|HUD|Hints")
+    bool HasTutorialHint() const { return !TutorialHintText.IsEmpty(); }
+
     virtual void DrawHUD() override;
 protected:
     void DrawInteractPrompt();
+    void DrawTutorialHint();
+
+    /** Active hint text. Empty means nothing is drawn. */
+    FText TutorialHintText;
+
+    /**
+     * Pixels from screen centre. NEGATIVE — the hint sits ABOVE the reticle while
+     * the interact prompt sits below it, so a hint and a prompt can be up at the
+     * same time without overlapping. Change the sign here and the two collide.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|Hints")
+    float TutorialHintOffsetY = -160.f;
+
+    /** Colder than the interact prompt's warm gold — a hint is instruction, not an offer. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|Hints")
+    FLinearColor TutorialHintColor = FLinearColor(0.78f, 0.86f, 0.94f, 1.f);
+
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|Hints")
+    float TutorialHintScale = 1.05f;
 
     /** Active prompt text. Empty means nothing is drawn. */
     FText InteractPromptText;

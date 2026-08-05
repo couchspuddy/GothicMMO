@@ -41,6 +41,35 @@ namespace GothicTags
 	// ── Events ───────────────────────────────────────────────────────────────
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Kill_Confirmed);
 
+	// ── Tutorial hints ───────────────────────────────────────────────────────
+	// Identity for one teachable action, and nothing more. The tag is the key
+	// into the hint manager's per-session seen-set and into its copy map; it
+	// carries no state and is never applied to an ASC.
+	//
+	// Named for the ACTION taught, not for the trigger that raises it — several
+	// of these fire from more than one place (Reload from the empty magazine and
+	// from a level trigger both), and a trigger-named tag would have to be
+	// renamed the first time a second call site appeared.
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Move);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Look);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Jump);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Sprint);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_SprintLowersGun);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Fire);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Aim);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Melee);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Reload);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_SteadfastConvert);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Interact);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Inventory);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Equip);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_WeaponSwap);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_AbilitySlicer);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_AbilityRead);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_AbilityLunge);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Reckoning);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hint_Collect);
+
 	// ── Weapon perks (WEAPON_PERK_TABLES.md) ─────────────────────────────────
 	// Rolled at drop onto FGothicItemInstance::WeaponPerks, three per Resonant or
 	// Pure weapon — one from each bucket. The bucket parents are declared so a

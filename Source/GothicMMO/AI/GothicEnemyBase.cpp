@@ -724,7 +724,7 @@ void AGothicEnemyBase::DestroyCorpse()
 
 void AGothicEnemyBase::SpawnLootDrop()
 {
-    if (!HasAuthority() || !LootTable)
+    if (!HasAuthority() || !LootTable || bSuppressLootDrop)
     {
         return;
     }

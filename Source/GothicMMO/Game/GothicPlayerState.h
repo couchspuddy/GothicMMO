@@ -10,6 +10,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerState.h"
 #include "AbilitySystemInterface.h"
+#include "GameplayTagContainer.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "GothicPlayerState.generated.h"
 
@@ -96,9 +97,36 @@ public:
         return Value;
     }
 
+    /**
+     * Tutorial hints this player has already been shown, for the whole session.
+     *
+     * Here for the same reason CachedSuperMeterOnDeath is here: the hint manager
+     * is a component on the PAWN, and the pawn is destroyed on every death. A
+     * seen-set held on the pawn would re-teach a revived player how to walk.
+     *
+     * NOT replicated. Hints are drawn on the owning client and raised there, so
+     * the only copy that matters is the one on the machine doing the drawing;
+     * pushing it to the server would buy nothing and cost a replicated TSet.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Hints")
+    bool HasSeenTutorialHint(FGameplayTag HintTag) const { return SeenTutorialHints.Contains(HintTag); }
+
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Hints")
+    void MarkTutorialHintSeen(FGameplayTag HintTag) { SeenTutorialHints.Add(HintTag); }
+
+    /** Test affordance — re-arms every hint without restarting the session. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Hints")
+    void ClearSeenTutorialHints() { SeenTutorialHints.Reset(); }
+
+    const TSet<FGameplayTag>& GetSeenTutorialHints() const { return SeenTutorialHints; }
+
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 protected:
+    /** See HasSeenTutorialHint. Owning-client state; deliberately unreplicated. */
+    UPROPERTY(Transient)
+    TSet<FGameplayTag> SeenTutorialHints;
+
     /** Authority writes this through SetDowned only. See IsDowned for why it replicates. */
     UPROPERTY(ReplicatedUsing = OnRep_IsDowned, BlueprintReadOnly, Category = "Gothic|Downed")
     bool bIsDowned = false;
