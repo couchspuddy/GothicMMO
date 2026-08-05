@@ -9,7 +9,7 @@ Work in this project is managed through a roster of subagents; the main session 
 - **Budget discipline**: max 3 concurrent agents; every brief carries a scope fence (single deliverable, stop-and-report-partial at ~15 min / ~30 tool calls); batch >5 similar MCP calls through `editor_toolset ProgrammaticToolset`; prefer fresh agents with distilled briefs over long resume chains.
 - **Fix discipline**: one fix-and-retest loop per mechanic, then a dedicated diagnosis run — never patch blind twice. Tuned values come from in-code/in-editor measurements, never from reasoning; agents must challenge briefed values that contradict measurements.
 - **Verification discipline**: implementation is not done until PIE-verified on a FRESH session (running PIE keeps pre-edit Blueprint classes on spawned actors). Editor-side changes verify by post-save re-read (CDO edits silently revert without compile+save; level saves can return true while writing nothing — check `is_dirty` AND file mtime).
-- **C++ changes** ship as draft PRs from isolated worktrees (spawn file-editing agents with `isolation: "worktree"`); the user merges. Never push to main except when the user explicitly orders a commit/push of content work.
+- **C++ changes** ship as draft PRs from isolated worktrees (spawn file-editing agents with `isolation: "worktree"`). **PRs are ALWAYS merged by the user after review (ruled 2026-08-05 — no standing merge authorization exists).** The build cycle ends at "built clean, tree-identity verified against the integration branch, ready for review"; post-merge mechanics (pull, cleanup, relaunch) resume after the user merges. Direct commits of instructed content/docs work remain authorized, build-gated where applicable, always reported.
 
 ## Where the state lives
 
