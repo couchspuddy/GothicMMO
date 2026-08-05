@@ -51,4 +51,13 @@ public:
 	 */
 	UPROPERTY(EditInstanceOnly, Category = "Gothic|Spawner")
 	FName PackID = NAME_None;
+
+	/**
+	 * When true, every enemy this point spawns has its loot drop suppressed.
+	 * Wave enemies spawn from the CDO and can't be hand-edited like placed
+	 * instances, so the spawn point carries the flag (same reasoning as PackID).
+	 * Default false — Eagle's Landing reinforcement waves are unchanged.
+	 */
+	UPROPERTY(EditInstanceOnly, Category = "Gothic|Spawner")
+	bool bSuppressLootDrop = false;
 };

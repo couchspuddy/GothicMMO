@@ -39,6 +39,49 @@ namespace GothicTags
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Kill_Confirmed, "Event.Kill.Confirmed",
 		"Sent to the killer's ASC from GothicAttributeSet on a confirmed kill. Drives Not At All.");
 
+	// ── Tutorial hints ───────────────────────────────────────────────────────
+	// The DevComment on each is the TRIGGER — where the hint is raised from —
+	// because the copy itself lives on the hint manager's HintCopy map where the
+	// user can redline it, and duplicating it here would guarantee the two drift.
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Move, "Hint.Move",
+		"Opening beat. Raised by the hint manager's opener timer if the player has not moved yet.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Look, "Hint.Look",
+		"Opening beat. Raised by the opener timer if the player has not looked yet.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Jump, "Hint.Jump",
+		"Opening beat. Raised by the opener timer once Move and Look are done with.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Sprint, "Hint.Sprint",
+		"Opening beat. Raised by the opener timer, last of the four.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_SprintLowersGun, "Hint.SprintLowersGun",
+		"Raised the first time the player sprints — teaches the opportunity cost, not the key.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Fire, "Hint.Fire",
+		"Level-driven (AGothicHintTrigger). No C++ trigger — firing needs a target in front of you.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Aim, "Hint.Aim",
+		"Level-driven (AGothicHintTrigger).");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Melee, "Hint.Melee",
+		"Level-driven (AGothicHintTrigger) — placed where the fight closes to melee range.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Reload, "Hint.Reload",
+		"Raised when the magazine empties (AGothicPlayerCharacter::ConsumeRound). Dismissed by a manual reload.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_SteadfastConvert, "Hint.SteadfastConvert",
+		"Raised the first time Steadfast reaches its ceiling — the resource is there to be spent.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Interact, "Hint.Interact",
+		"Raised the first time any interactable raises the HUD's interact prompt.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Inventory, "Hint.Inventory",
+		"Raised on the first item collected (UGothicInventoryComponent::OnItemAdded).");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Equip, "Hint.Equip",
+		"Raised on the first equip (UGothicInventoryComponent::OnItemEquipped).");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_WeaponSwap, "Hint.WeaponSwap",
+		"Raised when a SECOND weapon slot becomes armed — there is nothing to swap to before that.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_AbilitySlicer, "Hint.AbilitySlicer",
+		"Level-driven (AGothicHintTrigger).");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_AbilityRead, "Hint.AbilityRead",
+		"Level-driven (AGothicHintTrigger).");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_AbilityLunge, "Hint.AbilityLunge",
+		"Level-driven (AGothicHintTrigger).");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Reckoning, "Hint.Reckoning",
+		"Raised when SuperMeter first reaches full. The Glen's hint trigger fills the meter so this is always reachable.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hint_Collect, "Hint.Collect",
+		"Level-driven (AGothicHintTrigger) — placed on the first meditation encounter.");
+
 	// ── Weapon perks (WEAPON_PERK_TABLES.md) ─────────────────────────────────
 	// The DevComments are the doc's effect column verbatim, because the catalog
 	// asset that will carry the real magnitudes does not exist yet — until it is

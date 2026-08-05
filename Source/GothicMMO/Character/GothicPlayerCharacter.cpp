@@ -14,6 +14,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "UI/GothicHUD.h"
+#include "UI/GothicHintManagerComponent.h"
 #include "AI/GothicSteadfastComponent.h"
 #include "AI/GothicCombatStateComponent.h"
 #include "UI/GothicHUDWidget.h"
@@ -123,6 +124,12 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     // Create the input handler component
     InputHandler = CreateDefaultSubobject<UGothicInputHandlerComponent>(TEXT("InputHandler"));
 
+    // Tutorial hints. A default subobject rather than a BP-added component so
+    // every player pawn has one whether or not BP_GothicPlayerCharacter is
+    // touched — the hint call sites in this file dereference it unconditionally,
+    // and a hint system that is only present when a designer remembered to add
+    // it is a hint system that silently stops existing.
+    HintManager = CreateDefaultSubobject<UGothicHintManagerComponent>(TEXT("HintManager"));
 }
 
 void AGothicPlayerCharacter::BeginPlay()
@@ -593,6 +600,56 @@ void AGothicPlayerCharacter::BindHUDAttributeDelegates()
             {
                 GothicHUD->UpdateSuperMeter(Data.NewValue, AttributeSet->GetMaxSuperMeter());
             }
+
+            // Reckoning is teachable the moment it is spendable, and not before —
+            // telling a player about a super they cannot fire is telling them
+            // about a locked door. Edge-latched: SuperMeter sits pinned at max
+            // until it is spent, and this delegate fires on every clamped write.
+            if (AttributeSet)
+            {
+                const float MaxSuper = AttributeSet->GetMaxSuperMeter();
+                const bool bNowFull = MaxSuper > 0.f && Data.NewValue >= MaxSuper;
+
+                if (bNowFull && !bSuperMeterWasFull && HintManager)
+                {
+                    HintManager->ShowHint(GothicTags::Hint_Reckoning);
+                }
+                bSuperMeterWasFull = bNowFull;
+            }
+        });
+
+    // Steadfast delegate. Added late — the attribute has filled since the first
+    // build with nothing reading it, so the player was asked to spend a resource
+    // the HUD never showed them. Drives the pip row AND the conversion hint.
+    SteadfastChangedHandle = AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
+        UGothicAttributeSet::GetSteadfastAttribute()).AddLambda(
+        [this](const FOnAttributeChangeData& Data)
+        {
+            if (!IsLocallyControlled()) return;
+
+            APlayerController* PC = Cast<APlayerController>(GetController());
+            if (!PC) return;
+
+            AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());
+            if (GothicHUD && AttributeSet)
+            {
+                GothicHUD->UpdateSteadfast(Data.NewValue, AttributeSet->GetMaxSteadfast());
+            }
+
+            // The hint fires when the bar CAPS, not when it starts filling: a full
+            // bar is the first moment holding reload is unambiguously worth it,
+            // and it is also the first moment further fill is being wasted.
+            if (AttributeSet)
+            {
+                const float MaxSteadfast = AttributeSet->GetMaxSteadfast();
+                const bool bNowFull = MaxSteadfast > 0.f && Data.NewValue >= MaxSteadfast;
+
+                if (bNowFull && !bSteadfastWasFull && HintManager)
+                {
+                    HintManager->ShowHint(GothicTags::Hint_SteadfastConvert);
+                }
+                bSteadfastWasFull = bNowFull;
+            }
         });
 
     UE_LOG(LogTemp, Verbose,
@@ -612,6 +669,7 @@ void AGothicPlayerCharacter::UnbindHUDAttributeDelegates()
         HealthChangedHandle.Reset();
         SelahChangedHandle.Reset();
         SuperMeterChangedHandle.Reset();
+        SteadfastChangedHandle.Reset();
         BoundHUDAttributeASC.Reset();
         return;
     }
@@ -635,6 +693,13 @@ void AGothicPlayerCharacter::UnbindHUDAttributeDelegates()
         ASC->GetGameplayAttributeValueChangeDelegate(
             UGothicAttributeSet::GetSuperMeterAttribute()).Remove(SuperMeterChangedHandle);
         SuperMeterChangedHandle.Reset();
+    }
+
+    if (SteadfastChangedHandle.IsValid())
+    {
+        ASC->GetGameplayAttributeValueChangeDelegate(
+            UGothicAttributeSet::GetSteadfastAttribute()).Remove(SteadfastChangedHandle);
+        SteadfastChangedHandle.Reset();
     }
 
     BoundHUDAttributeASC.Reset();
@@ -989,6 +1054,15 @@ void AGothicPlayerCharacter::OnMove(const FInputActionValue& Value)
         AddMovementInput(ForwardDir, MoveVec.Y);
         AddMovementInput(RightDir,   MoveVec.X);
     }
+
+    // Placed AFTER the gates above on purpose: a Move event swallowed by the
+    // cursor gate or the Selah lock is not the player moving, and counting it
+    // would suppress the opener for a player who never actually walked. The
+    // deadzone check keeps a stick at rest from counting as movement.
+    if (HintManager && !MoveVec.IsNearlyZero())
+    {
+        HintManager->NotifyMoveInput();
+    }
 }
 
 void AGothicPlayerCharacter::OnLook(const FInputActionValue& Value)
@@ -996,6 +1070,11 @@ void AGothicPlayerCharacter::OnLook(const FInputActionValue& Value)
     const FVector2D LookVec = Value.Get<FVector2D>();
     AddControllerYawInput(LookVec.X);
     AddControllerPitchInput(LookVec.Y);
+
+    if (HintManager && !LookVec.IsNearlyZero())
+    {
+        HintManager->NotifyLookInput();
+    }
 
     // Recover only what the player has NOT already pulled back themselves. Look
     // input opposing the outstanding kick is the player compensating manually;
@@ -1031,6 +1110,17 @@ void AGothicPlayerCharacter::SetSprinting(bool bNewSprinting)
 
     bIsSprinting = bNewSprinting;
     SyncSprintTag();
+
+    // The opportunity cost, taught on the first sprint and never again. Fired on
+    // the START edge only — this function is the single funnel for every sprint
+    // path, so the stop edge would double it. Answering it is impossible by
+    // definition (the hint IS the consequence), so it always runs its full
+    // duration; no NotifyHintActionPerformed pairs with it.
+    if (bIsSprinting && HintManager)
+    {
+        HintManager->ShowHint(GothicTags::Hint_Sprint);
+        HintManager->ShowHint(GothicTags::Hint_SprintLowersGun);
+    }
 
     // A sprint abandons any Steadfast hold in progress. The hold is a gun action
     // and the sprint just took the gun away, so leaving its timer running would
@@ -1316,11 +1406,24 @@ void AGothicPlayerCharacter::ConsumeRound()
         // path to CurrentMagazine = 0 (InitFromData, and the slot-clearing branch
         // of OnEquipmentChanged) assigns the field directly and never reaches
         // here, so a weapon swap or an unequip cannot masquerade as an empty gun.
-        if (Slot.CurrentMagazine == 0 && Slot.WeaponData && Slot.WeaponData->bAutoReloadWhenEmpty)
+        if (Slot.CurrentMagazine == 0)
         {
-            // Nothing below may touch Slot: the reload fires a Blueprint event
-            // that could resize WeaponSlots out from under this reference.
-            TryAutoReload();
+            // The magazine emptying is the teachable moment for reload, whether or
+            // not this weapon auto-reloads: an auto-reloading gun still leaves the
+            // player wondering what just happened, and a manual one leaves them
+            // holding a dead trigger. Raised BEFORE TryAutoReload, because that
+            // call can re-enter Blueprint and must be the last thing here.
+            if (HintManager)
+            {
+                HintManager->ShowHint(GothicTags::Hint_Reload);
+            }
+
+            if (Slot.WeaponData && Slot.WeaponData->bAutoReloadWhenEmpty)
+            {
+                // Nothing below may touch Slot: the reload fires a Blueprint event
+                // that could resize WeaponSlots out from under this reference.
+                TryAutoReload();
+            }
         }
     }
 }
@@ -1592,6 +1695,18 @@ void AGothicPlayerCharacter::OnReloadReleased()
     if (!bWasHeld)
     {
         ReloadActiveWeapon();
+
+        // A manual reload answers the reload hint — cut it short rather than
+        // making the player read instructions they have already followed.
+        if (HintManager)
+        {
+            HintManager->NotifyHintActionPerformed(GothicTags::Hint_Reload);
+        }
+    }
+    else if (HintManager)
+    {
+        // A completed hold answers the Steadfast hint the same way.
+        HintManager->NotifyHintActionPerformed(GothicTags::Hint_SteadfastConvert);
     }
 }
 
@@ -2031,14 +2146,31 @@ void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
         return;
     }
 
-    ActiveWeaponIndex = NewIndex;
+    // Refuse BEFORE committing the index. The old order set ActiveWeaponIndex,
+    // then discovered the slot was empty, then blanked the weapon mesh and
+    // returned — leaving the player pointed at an empty slot with nothing in
+    // their hands and no way back except pressing another slot key.
+    //
+    // That was survivable while every slot was filled at spawn. It is not now:
+    // the progression starts SIDEARM-ONLY, so slots 2 and 3 are legitimately
+    // empty until the Piece is found in Palewood and the Rig is gifted in
+    // Hearth, and pressing 2 on the way there disarmed the player mid-fight.
     const UGothicWeaponData* NewWeapon = WeaponSlots[NewIndex].WeaponData;
-
     if (!NewWeapon)
     {
-        UE_LOG(LogTemp, Warning, TEXT("SwapWeapon: Slot %d has no WeaponData assigned"), NewIndex);
-        WeaponMeshComponent->SetStaticMesh(nullptr);
+        // Verbose, not Warning: with an intentionally empty slot this is a player
+        // pressing a key that does nothing yet, not a misconfiguration.
+        UE_LOG(LogTemp, Verbose, TEXT("SwapWeapon: Slot %d has no WeaponData — keeping slot %d"),
+            NewIndex, ActiveWeaponIndex);
         return;
+    }
+
+    ActiveWeaponIndex = NewIndex;
+
+    // A completed swap answers the swap hint.
+    if (HintManager)
+    {
+        HintManager->NotifyHintActionPerformed(GothicTags::Hint_WeaponSwap);
     }
 
     // A swap abandons any in-progress conversion — the cost was tied to the old weapon's tier
@@ -2131,6 +2263,14 @@ void AGothicPlayerCharacter::ToggleInventory()
     if (!PC)
     {
         return;
+    }
+
+    // Opening the inventory answers both the inventory hint and the equip hint —
+    // the equip hint's only instruction is "open the inventory and equip it", and
+    // a player who is already looking at the screen does not need to be told to.
+    if (HintManager)
+    {
+        HintManager->NotifyHintActionPerformed(GothicTags::Hint_Inventory);
     }
 
     AGothicHUD* GothicHUD = Cast<AGothicHUD>(PC->GetHUD());

@@ -26,6 +26,7 @@ class UStaticMeshComponent;
 class UInputMappingContext;
 class UInputAction;
 class UGothicInputHandlerComponent;
+class UGothicHintManagerComponent;
 class UGothicAbilitySet;
 class UGothicInventoryWidget;
 class UGA_TheLovedAndTheLost;
@@ -518,6 +519,14 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
     void PushAmmoToHUD() const;
 
+    /**
+     * The tutorial hint latch. Always valid — created as a default subobject.
+     * Blueprint and level actors reach hints through this rather than through
+     * the HUD, so the seen-set is consulted before anything is drawn.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Hints")
+    UGothicHintManagerComponent* GetHintManager() const { return HintManager; }
+
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons")
     TArray<FGothicWeaponSlot> WeaponSlots;
 
@@ -738,6 +747,10 @@ protected:
     // -------------------------------------------------------------------------
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Input")
     TObjectPtr<UGothicInputHandlerComponent> InputHandler;
+
+    /** Tutorial hints. See GetHintManager and the component's own header. */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Hints")
+    TObjectPtr<UGothicHintManagerComponent> HintManager;
 
     // -------------------------------------------------------------------------
     // Ability Sets — data driven
@@ -974,6 +987,17 @@ private:
     FDelegateHandle HealthChangedHandle;
     FDelegateHandle SelahChangedHandle;
     FDelegateHandle SuperMeterChangedHandle;
+    FDelegateHandle SteadfastChangedHandle;
+
+    /**
+     * Latches so the "resource is full" hints fire on the EDGE, not on every
+     * write at the ceiling. Steadfast and SuperMeter both sit pinned at max for
+     * long stretches, and the attribute delegate fires on every clamped write.
+     * The hint manager's own seen-set would swallow the repeats, but the log
+     * line and the HUD churn would not.
+     */
+    bool bSteadfastWasFull = false;
+    bool bSuperMeterWasFull = false;
 
     // -------------------------------------------------------------------------
     // Stun — making State.Stunned real for the player

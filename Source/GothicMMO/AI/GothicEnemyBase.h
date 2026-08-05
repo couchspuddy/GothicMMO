@@ -211,6 +211,13 @@ public:
     /** Public read access for encounter volume Selah accumulation. */
     float GetSelahAwardAmount() const { return SelahAwardAmount; }
     TSubclassOf<UGameplayEffect> GetSelahGainEffect() const { return SelahGainEffect; }
+
+    /**
+     * Spawner hook — wave-spawned enemies can't be hand-edited in the level, so
+     * the spawn point's loot suppression is stamped here post-spawn. The flag is
+     * only read at death, so post-BeginPlay assignment is safe.
+     */
+    void SetSuppressLootDrop(bool bSuppress) { bSuppressLootDrop = bSuppress; }
     
     /**
      * Multicast RPC — server broadcasts hit feedback to all clients.
@@ -283,9 +290,32 @@ protected:
     /**
      * Loot table for this enemy type. Assign per Blueprint child.
      * On death, RollDrop() picks a weighted random item and spawns a world pickup.
+     *
+     * EditANYWHERE, changed from EditDefaultsOnly. Per-instance override is now
+     * the point: the Palewood progression designates ONE placed Thrall as the
+     * First Blood kill that guarantees the Piece, and it carries
+     * DA_LootTable_PalewoodPiece on the instance rather than in a Blueprint
+     * subclass that would exist solely to hold one asset reference.
+     *
+     * Consequence, and it is a real one: placed instances freeze their overrides
+     * at placement time, so an instance that has ever had this set no longer
+     * inherits changes to its Blueprint's default table. That is the intended
+     * trade for the designated enemy and a hazard for every other placed enemy —
+     * leave it untouched on instances that should follow their class.
      */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy")
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|Enemy")
     TObjectPtr<UGothicLootTable> LootTable;
+
+    /**
+     * When true this enemy never drops loot, regardless of LootTable.
+     *
+     * EditAnywhere on purpose: set it per placed instance. Palewood's tutorial
+     * enemies are meant to teach without paying out — the Piece comes from one
+     * designated kill and nowhere else — and suppressing at the instance keeps
+     * the shared Thrall loot table untouched for the rest of the game.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|Enemy")
+    bool bSuppressLootDrop = false;
 
     /**
      * Halts or resumes this enemy when State.Stunned is gained or lost.
