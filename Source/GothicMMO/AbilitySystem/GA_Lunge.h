@@ -5,7 +5,7 @@
 // the fight by moving through danger rather than away from it.
 //
 // Direction is read from the player's current movement input at activation
-// time. If no input is present, defaults to the character's forward vector.
+// time. If no input is present, it goes where the camera is looking.
 //
 // Blueprint child: BP_GA_Lunge
 //   - Set LungeDistance (default 600 units)
@@ -51,6 +51,18 @@ protected:
     /** How long the traversal takes, in seconds. Shorter = snappier dodge feel. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Lunge")
     float LungeDuration = 0.2f;
+
+    /**
+     * Where the lunge goes.
+     *
+     * True: the player's held movement input, falling back to camera-forward when
+     * nothing is held. False: the legacy read off current velocity, which in the air
+     * is pre-dash momentum and answers to neither the camera nor the stick.
+     *
+     * False reproduces the pre-fix behaviour exactly.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Lunge")
+    bool bDashUsesMovementInputDirection = true;
 
     /**
      * Fraction of the lunge's traversal speed handed back to the character as real
