@@ -71,6 +71,18 @@ UGA_Fire::UGA_Fire()
     // still trace and deal damage.
     ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Dead")));
     ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Stunned")));
+
+    // Sprinting costs you the gun. This is the whole of the fire block — the
+    // trigger is dead while the tag is held, with no queue and no auto-unsprint:
+    // the player releases sprint, and only then does the shot exist.
+    //
+    // Belt and braces only. BP_GA_Fire is a Blueprint child of this class and
+    // serializes its own copy of ActivationBlockedTags, so this default may not
+    // reach the ability the game actually grants — the enforcement that cannot be
+    // lost is the CanActivateAbility check below. Adding State.Sprinting to
+    // BP_GA_Fire's container in the editor is still worth doing, so the block is
+    // visible where a designer looks for it.
+    ActivationBlockedTags.AddTag(GothicTags::State_Sprinting);
 }
 
 bool UGA_Fire::CanActivateAbility(
@@ -93,6 +105,22 @@ bool UGA_Fire::CanActivateAbility(
     // trigger simply does nothing, and the ammo counter does not tick down on a
     // shot the player never got.
     if (Char && Char->IsSelahMomentLocked())
+    {
+        return false;
+    }
+
+    // No shooting out of a sprint, refused for the same reasons and in the same
+    // place — no round spent, no cooldown paid, no queued shot waiting for the
+    // sprint to end.
+    //
+    // Asked of the character directly rather than left to the State.Sprinting
+    // entry in ActivationBlockedTags, because BP_GA_Fire is a Blueprint child and
+    // serializes its own copy of that container: the constructor's tag does not
+    // survive into the granted ability. This override does. The tag is still
+    // applied and still worth having — it is how anything data-driven (a GE, a
+    // future ability's blocked tags, an anim BP) can see the state — but the
+    // guarantee lives here.
+    if (Char && Char->AreGunActionsBlocked())
     {
         return false;
     }

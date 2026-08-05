@@ -18,6 +18,12 @@ namespace GothicTags
 		"Owned for the duration of a melee swing (Hunter's Strike).");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Reckoning, "State.Reckoning",
 		"The Reckoning is active. GA_Fire reads this off the ASC for guaranteed vital hits — the ASC lives on the PlayerState, so the tag is its state, not the pawn's (gotcha #4).");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Sprinting, "State.Sprinting",
+		"The player is sprinting. Applied as a loose tag from AGothicPlayerCharacter::SetSprinting "
+		"on every start path and cleared on every end path (key release, aim, death). Blocks GA_Fire; "
+		"the non-gun ability input path cancels the sprint rather than being blocked by it. "
+		"Loose tags do NOT replicate, and neither does bIsSprinting — this is owning-client state, "
+		"which is where the activation gate has to fire anyway.");
 
 	// ── SetByCaller data channels ────────────────────────────────────────────
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Data_Damage, "Data.Damage",

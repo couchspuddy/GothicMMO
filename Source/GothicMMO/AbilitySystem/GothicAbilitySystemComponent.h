@@ -141,6 +141,19 @@ public:
     void AbilityInputTagPressed(const FGameplayTag& InputTag);
     void AbilityInputTagReleased(const FGameplayTag& InputTag);
 
+private:
+    /**
+     * Sprint's opportunity cost, applied at the ability input choke point: if this
+     * input tag maps to any ability that is NOT the Primary Fire slot, the avatar's
+     * sprint ends before the activation runs. No-op on a non-player avatar.
+     *
+     * Primary Fire is excluded on purpose — the gun is BLOCKED during a sprint
+     * (UGA_Fire::CanActivateAbility), not a way to cancel out of one.
+     */
+    void CancelSprintForNonGunInput(const FGameplayTag& InputTag);
+
+public:
+
     /**
      * How many ability slots currently point at a spec handle. Telemetry only —
      * the GASInit line used to print a weapon-slot count under the name "slots",

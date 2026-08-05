@@ -2,6 +2,7 @@
 
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
+#include "Character/GothicPlayerCharacter.h"  // CancelSprintForAbility — the sprint opportunity cost
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffect.h"
 #include "GothicMMO.h"                      // LogVigilCombat
@@ -263,6 +264,25 @@ float UGothicAbilitySystemComponent::GetCooldownTotalForSlot(EGothicAbilitySlot 
 
 void UGothicAbilitySystemComponent::AbilityInputTagPressed(const FGameplayTag& InputTag)
 {
+    // Sprinting is an opportunity cost, and this is where it is paid.
+    //
+    // Every non-gun ability — Slicer, Read, Lunge, Reckoning, melee, and anything
+    // granted later — breaks the sprint on its way in and then activates normally.
+    // Primary Fire is the one exception: it is BLOCKED by the sprint rather than
+    // cancelling it, so letting it through here would turn a dead trigger into
+    // cancel-and-shoot.
+    //
+    // Done at this choke point rather than per-ability, so a new kit inherits the
+    // rule by existing. The slot comes off the ability CDO rather than the input
+    // tag, because input tags are authored in a data asset and nothing in C++ can
+    // spell-check one.
+    //
+    // Deliberately ahead of the scope lock: this ends up in
+    // SetLooseGameplayTagCount, and a tag change can run delegates that touch the
+    // ability list. Nothing here mutates the list itself, so there is nothing the
+    // lock is protecting.
+    CancelSprintForNonGunInput(InputTag);
+
     ABILITYLIST_SCOPE_LOCK();
     for (FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
     {
@@ -295,6 +315,34 @@ void UGothicAbilitySystemComponent::AbilityInputTagReleased(const FGameplayTag& 
             {
                 AbilitySpecInputReleased(Spec);
             }
+        }
+    }
+}
+
+void UGothicAbilitySystemComponent::CancelSprintForNonGunInput(const FGameplayTag& InputTag)
+{
+    AGothicPlayerCharacter* PlayerChar = Cast<AGothicPlayerCharacter>(GetAvatarActor());
+    if (!PlayerChar)
+    {
+        return; // enemies share this class and never route input through here
+    }
+
+    for (const FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
+    {
+        if (!Spec.Ability || !Spec.GetDynamicSpecSourceTags().HasTagExact(InputTag))
+        {
+            continue;
+        }
+
+        const UGothicGameplayAbility* GothicAbility = Cast<UGothicGameplayAbility>(Spec.Ability);
+
+        // An ability that is not a UGothicGameplayAbility has no slot to read, and
+        // the safe reading of "not the gun" is that it cancels — the alternative
+        // would silently exempt it from the whole rule.
+        if (!GothicAbility || GothicAbility->GetAbilitySlot() != EGothicAbilitySlot::PrimaryFire)
+        {
+            PlayerChar->CancelSprintForAbility();
+            return;
         }
     }
 }
