@@ -2521,6 +2521,12 @@ void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
             GM->RequestRespawn(GetController());
         }
     }
+
+    // The wipe trigger for the commonest case by far: the LAST player still up
+    // dies, so everyone left on the floor loses the only person who could have
+    // reached them. Deliberately last — the respawn above is this player's own,
+    // and the census below is about everybody else's.
+    NotifyPartyStateChanged();
 }
 
 // ---------------------------------------------------------------------------
@@ -2529,49 +2535,53 @@ void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
 
 bool AGothicPlayerCharacter::HasLivingPartyMember() const
 {
+    // The whole body of this function moved to AGothicGameState in PR-5 — see the
+    // header. It is the SAME walk the party-wipe census runs, which is the point:
+    // "somebody is left to pick me up" and "the party has not wiped" are now
+    // provably the same predicate rather than two implementations of it.
     const UWorld* World = GetWorld();
-    const AGameStateBase* GS = World ? World->GetGameState() : nullptr;
+    const AGothicGameState* GS = World ? World->GetGameState<AGothicGameState>() : nullptr;
     if (!GS)
     {
         return false;
     }
 
-    const APlayerState* MyPS = GetPlayerState();
+    return GS->HasFightablePartyMember(GetPlayerState());
+}
 
-    // PlayerArray is every player in the world, which is the whole party until
-    // PR-5 gives parties their own membership. Deliberately simple and read-only:
-    // no caching, no delegate, no state of its own — it is asked once per death,
-    // and a wrong answer that is one frame stale is not a thing that can happen
-    // because the two inputs (health, downed flag) are both authoritative here.
-    //
-    // SEAM FOR PR-5: swap the loop's source from GS->PlayerArray to the party
-    // roster and nothing else in this file changes.
-    for (const APlayerState* PS : GS->PlayerArray)
+void AGothicPlayerCharacter::NotifyPartyStateChanged()
+{
+    if (!HasAuthority())
     {
-        if (!PS || PS == MyPS)
-        {
-            continue;
-        }
-
-        // A spectator, a player mid-travel, a PlayerState whose pawn has not
-        // spawned yet: no pawn means nobody who can walk over and revive us.
-        const AGothicCharacterBase* Char = Cast<AGothicCharacterBase>(PS->GetPawn());
-        if (!Char)
-        {
-            continue;
-        }
-
-        // Exactly the fightability predicate, and for exactly the same reason:
-        // "could an enemy be fighting this player right now" and "is this player
-        // still in the fight to pick me up" are the same question. Reusing it
-        // means the downed fork can never disagree with the AI about who is up.
-        if (AGothicCharacterBase::IsFightableActor(Char))
-        {
-            return true;
-        }
+        return;
     }
 
-    return false;
+    if (AGothicGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AGothicGameMode>() : nullptr)
+    {
+        GM->EvaluatePartyState();
+    }
+}
+
+void AGothicPlayerCharacter::CollapseReviveWindow()
+{
+    if (!HasAuthority() || !IsDowned())
+    {
+        return;
+    }
+
+    // Clear the timer before running its callback by hand: OnReviveWindowExpired
+    // destroys this pawn (through OnDeath → RequestRespawn), and a timer left
+    // armed against it would be firing into the corpse.
+    if (UWorld* World = GetWorld())
+    {
+        World->GetTimerManager().ClearTimer(ReviveWindowTimer);
+    }
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("VigilTimeline|t=%.3f|%s|Downed|COLLAPSED|party wipe took the window"),
+        GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetNameSafe(this));
+
+    OnReviveWindowExpired();
 }
 
 void AGothicPlayerCharacter::EnterDownedState(AActor* Killer)
@@ -2641,6 +2651,12 @@ void AGothicPlayerCharacter::EnterDownedState(AActor* Killer)
         *GetNameSafe(Killer), FMath::Max(1.f, ReviveWindowSeconds));
 
     OnDownedStateChanged(true);
+
+    // Alive → InPeril. This cannot itself produce a wipe — EnterDownedState is
+    // only ever reached when HasLivingPartyMember() said somebody is still up —
+    // but it is the transition that puts the party readout into peril, and the
+    // Blueprint layer hangs off that.
+    NotifyPartyStateChanged();
 }
 
 void AGothicPlayerCharacter::OnReviveWindowExpired()
@@ -2772,6 +2788,11 @@ void AGothicPlayerCharacter::ReviveFromDowned()
         AttributeSet ? AttributeSet->GetHealth() : -1.f);
 
     OnDownedStateChanged(false);
+
+    // InPeril → Alive, once the last body is off the floor. Covers BOTH revive
+    // routes at once, because the channelled revive and Gothic.Revive both end
+    // here — there is no second place to remember.
+    NotifyPartyStateChanged();
 }
 
 void AGothicPlayerCharacter::TriggerFallRespawn()

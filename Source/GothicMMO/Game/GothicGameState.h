@@ -12,8 +12,34 @@
 
 class AGothicEnemyBase;
 class AGothicEncounterVolume;
+class AController;
 class APlayerController;
 class UGothicSelahCollectBarWidget;
+
+/**
+ * How the party as a whole is doing. Replicated, because every client needs the
+ * same answer at the same moment — a wipe vignette that only the host sees is
+ * exactly the class of bug this GameState exists to prevent.
+ *
+ * The ladder is deliberately coarse. "Fightable" is AGothicCharacterBase::
+ * IsFightableActor — alive and not downed — the SAME predicate the enemy AI and
+ * the downed fork already use, so the party readout can never disagree with the
+ * AI about who is still up.
+ */
+UENUM(BlueprintType)
+enum class EGothicPartyState : uint8
+{
+	/** Everyone is up. Also the state of an EMPTY roster: a session with no
+	 *  players in it yet has not wiped, and must not be treated as if it had. */
+	Alive     UMETA(DisplayName = "Party Alive"),
+
+	/** At least one member is fightable and at least one is not — somebody is on
+	 *  the floor with a revive window running and somebody is left to work it. */
+	InPeril   UMETA(DisplayName = "Party In Peril"),
+
+	/** Members exist and NONE of them is fightable. The wipe condition. */
+	Wiped     UMETA(DisplayName = "Party Wiped")
+};
 
 UCLASS()
 class GOTHICMMO_API AGothicGameState : public AGameStateBase
@@ -43,6 +69,76 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Gothic|Checkpoint")
 	void SetCheckpointFromLocation(const FVector& WorldLocation, AActor* IgnoreActor = nullptr);
+
+	// ── Party state (PR-5) ───────────────────────────────────────────────────
+	//
+	// The census lives HERE rather than on the GameMode for two reasons. The
+	// GameMode is server-only, and AGothicPlayerCharacter::HasLivingPartyMember
+	// is BlueprintPure and reachable from a client; and PlayerArray — the roster
+	// this walks — is a GameState member, so putting the walk anywhere else means
+	// reaching across for it. The GameMode owns the DECISION (evaluate, wipe);
+	// this class owns the FACTS.
+
+	/**
+	 * Read-only party readout. Written only by SetPartyState on the authority.
+	 * Blueprint hangs the wipe vignette / "you have fallen" screen off
+	 * OnPartyStateChanged rather than polling this.
+	 */
+	UPROPERTY(ReplicatedUsing = OnRep_PartyState, BlueprintReadOnly, Category = "Gothic|Party")
+	EGothicPartyState PartyState = EGothicPartyState::Alive;
+
+	/**
+	 * Server-side setter. Copies SetSelahCollectPhase exactly — the house idiom
+	 * on this class: guard on authority, write, ForceNetUpdate, then call the
+	 * OnRep DIRECTLY, because the authority never receives its own and a
+	 * listen-server host would otherwise be the one machine in the session that
+	 * never saw the state it is driving.
+	 *
+	 * Idempotent: re-setting the current state does nothing at all, which is what
+	 * lets AGothicGameMode::EvaluatePartyState be called from every transition
+	 * without the wipe firing more than once.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Gothic|Party")
+	void SetPartyState(EGothicPartyState NewState);
+
+	UFUNCTION(BlueprintPure, Category = "Gothic|Party")
+	EGothicPartyState GetPartyState() const { return PartyState; }
+
+	/** Fired on every machine (including the authority) when the party state
+	 *  changes. The wipe screen, the audio sting and the vignette belong here. */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Party")
+	void OnPartyStateChanged(EGothicPartyState NewState);
+
+	/**
+	 * Walks the roster and returns what the party state OUGHT to be right now.
+	 * Pure — it writes nothing; AGothicGameMode::EvaluatePartyState is what turns
+	 * the answer into a stored state and a wipe.
+	 *
+	 * IgnoreController exists for Logout, and it is the whole reason this takes a
+	 * parameter. AGameModeBase::Logout runs BEFORE the exiting controller's
+	 * PlayerState leaves PlayerArray (the removal happens in AController::
+	 * Destroyed → CleanupPlayerState, later), so a census taken during Logout
+	 * still counts the leaver as present — and the disconnect of the last living
+	 * player, which is precisely the edge this PR was written for, would report
+	 * the party as fine.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Gothic|Party")
+	EGothicPartyState ComputePartyState(const AController* IgnoreController = nullptr) const;
+
+	/**
+	 * True if anyone on the roster other than ExcludePS is fightable.
+	 *
+	 * This is the single census AGothicPlayerCharacter::HasLivingPartyMember now
+	 * delegates to (PR-2 left that function as the named seam for exactly this).
+	 * One walk, one definition of "still in the fight" — the downed fork and the
+	 * wipe detector cannot drift apart because there is only one of them.
+	 *
+	 * SEAM FOR REAL PARTIES: when membership stops being "everyone in the world",
+	 * this function and ComputePartyState above are the two places that change.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Gothic|Party")
+	bool HasFightablePartyMember(const APlayerState* ExcludePS = nullptr,
+	                             const AController* IgnoreController = nullptr) const;
 
 	/** Fired on every client when a shared prompt becomes available. Blueprint hooks vignette/audio/UI here. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Selah")
@@ -154,6 +250,9 @@ protected:
 
 	UFUNCTION()
 	void OnRep_ActivePrompt();
+
+	UFUNCTION()
+	void OnRep_PartyState();
 
 	// ── Selah collection fill-bar ────────────────────────────────────────
 	UPROPERTY(ReplicatedUsing = OnRep_SelahCollect, BlueprintReadOnly, Category = "Gothic|Selah")

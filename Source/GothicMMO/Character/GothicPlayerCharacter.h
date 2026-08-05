@@ -284,11 +284,26 @@ public:
      * walks the game state's PlayerArray, which is the closest thing this project
      * has to a party roster.
      *
-     * SEAM FOR PR-5: when real party state exists this is the one function that
-     * should change — "everyone in the world" becomes "everyone in my party".
+     * PR-5 TOOK THE SEAM. The walk moved to AGothicGameState::
+     * HasFightablePartyMember, which is the same roster the party-wipe census
+     * uses; this is now a one-line forward to it. The two questions — "is anyone
+     * left to pick me up" and "has the party wiped" — are answers to the same
+     * census by construction and can no longer drift apart.
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|Downed")
     bool HasLivingPartyMember() const;
+
+    /**
+     * Server-only. Ends the revive window NOW and drops this player through to
+     * the real death — the party wipe's route from downed to dead.
+     *
+     * Goes through the SAME OnReviveWindowExpired the timer drives rather than
+     * duplicating it, so a wipe-killed player is byte-for-byte a bled-out player:
+     * the State.Downed hygiene, the OnDeath banking, and the RequestRespawn at
+     * the tail are all inherited. No-op if not downed.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Downed")
+    void CollapseReviveWindow();
 
     /**
      * Server-only. Brings a downed player back IN PLACE — no new pawn, no
@@ -1176,6 +1191,17 @@ private:
     /** ReviveWindowTimer's callback: nobody came, so fall through to the real
      *  death path with the killer we banked when we went down. */
     void OnReviveWindowExpired();
+
+    /**
+     * Authority-only. Asks the game mode to re-run the party census.
+     *
+     * Called from every transition that can change whether the party is up:
+     * going down, being revived, and dying. The game mode's evaluation is
+     * idempotent and cheap, so this is deliberately over-called rather than
+     * carefully placed — a missed call leaves a party stuck in a state nothing
+     * can move it out of.
+     */
+    void NotifyPartyStateChanged();
 
     FTimerHandle ReviveWindowTimer;
 

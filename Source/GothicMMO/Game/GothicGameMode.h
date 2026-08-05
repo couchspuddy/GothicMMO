@@ -9,6 +9,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "Game/GothicGameState.h"           // EGothicPartyState
 #include "GothicGameMode.generated.h"
 
 UCLASS()
@@ -40,6 +41,50 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|GameMode")
     void RequestRespawn(AController* DeadController);
 
+    // -------------------------------------------------------------------------
+    // Party wipe (PR-5)
+    //
+    // A wipe is "every party member is dead-or-downed at the same moment". When
+    // it happens the whole party respawns together at the checkpoint, and the
+    // revive windows of anyone still on the floor are collapsed into it — the
+    // alternative is a downed player bleeding out alone for thirty seconds with
+    // nobody left in the world who could possibly reach them.
+    //
+    // The census is NOT here. It lives on AGothicGameState (ComputePartyState /
+    // HasFightablePartyMember) so that one walk of the roster serves both the
+    // downed fork's "is anyone left to pick me up" question and this one. What
+    // this class owns is the decision and the execution.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Authority-only. Re-runs the party census, stores the result on the
+     * GameState, and executes the wipe on the TRANSITION into Wiped.
+     *
+     * Cheap and idempotent by design, because it is called from every membership
+     * and state transition there is: EnterDownedState, both revive paths, revive
+     * window expiry, OnDeath, respawn completion, PostLogin and Logout. Calling
+     * it more often than necessary costs one roster walk; missing a call costs a
+     * party stuck in a state nobody can leave.
+     *
+     * IgnoreController is for Logout, where the leaver is still on the roster —
+     * see AGothicGameState::ComputePartyState.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Party")
+    void EvaluatePartyState(AController* IgnoreController = nullptr);
+
+    /**
+     * Authority-only. Runs the wipe: cancel every revive channel, collapse every
+     * revive window (which routes those players through the ordinary death path,
+     * banking what death banks), and let the respawn each of them already asked
+     * for carry them to the checkpoint.
+     *
+     * Normally reached through EvaluatePartyState. Public and BlueprintCallable
+     * so Gothic.ForceWipe can drive the execution path without having to arrange
+     * the census that triggers it.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Party")
+    void ExecutePartyWipe();
+
 protected:
     /**
      * How long (seconds) players wait before respawning.
@@ -55,6 +100,27 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|GameMode")
     int32 MaxPlayers = 16;
 
+    /**
+     * Lateral spacing between simultaneously-spawning players at the checkpoint.
+     *
+     * A wipe puts everybody through the checkpoint teleport on the same frame,
+     * and the checkpoint is a single point — without this they all arrive inside
+     * one another and the capsule depenetration flings them apart. Slot 0 gets
+     * the checkpoint itself; everyone else gets a ring position around it.
+     *
+     * ~2.5 player capsule radii. Big enough that nobody starts overlapping, small
+     * enough that a four-player party still lands as a group rather than a
+     * scatter across the room.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|GameMode",
+              meta = (ClampMin = "0.0"))
+    float PartySpawnRingRadius = 220.f;
+
+    /** Ring positions before the pattern steps out to a wider ring. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|GameMode",
+              meta = (ClampMin = "1"))
+    int32 PartySpawnRingSlots = 6;
+
     // GameModeBase overrides
     /** Reseeds the deterministic RNG stream for this run — see GothicDeterminism.h. */
     virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
@@ -64,6 +130,43 @@ protected:
 
 private:
     void RespawnPlayer(TWeakObjectPtr<AController> ControllerPtr);
+
+    /**
+     * Puts Controller's CURRENT pawn on the checkpoint, spaced off it by that
+     * player's ring slot and nudged out of anything it would have spawned inside.
+     *
+     * Factored out of RespawnPlayer because PostLogin needs the identical
+     * behaviour: a player joining a session that is already deep into the level
+     * used to be dropped at a PlayerStart back at the entrance — the checkpoint
+     * was recorded but nothing ever teleported a NEW arrival to it. No-ops when
+     * no checkpoint has been recorded yet.
+     */
+    void TeleportToCheckpoint(AController* Controller);
+
+    /**
+     * Ring offset for a spawn slot. Slot 0 is the origin itself; every other slot
+     * walks a ring of PartySpawnRingSlots positions, stepping out one radius per
+     * completed ring so an arbitrarily large party never collides with itself.
+     *
+     * Deliberately DETERMINISTIC and index-derived rather than a seeded draw: the
+     * point is that two players never land on the same spot, and a random offset
+     * only makes that unlikely rather than impossible.
+     */
+    FVector GetPartySpawnOffset(int32 SlotIndex) const;
+
+    /** This controller's index in the GameState roster, or 0 if it isn't on it. */
+    int32 GetPartySlotIndex(const AController* Controller) const;
+
+    /**
+     * Re-entry guard for the wipe.
+     *
+     * ExecutePartyWipe collapses revive windows, each of which runs the full
+     * death path, each of which calls back into EvaluatePartyState. Without this
+     * the second player's death would re-enter the wipe that is currently
+     * processing them. Also stops the census churning while the whole party is
+     * dead and waiting on RespawnDelay.
+     */
+    bool bWipeInProgress = false;
 
     /**
      * Controllers with a respawn in flight, and the timer that will fire it.
