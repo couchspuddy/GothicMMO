@@ -17,7 +17,9 @@
 class UGothicHUDWidget;
 class UGothicCrosshairWidget;
 class UGothicQuitMenuWidget;
+class UGothicReviveChannelBarWidget;
 class AGothicEnemyBase;
+class AGothicPlayerState;
 
 /** Internal tracking for a single floating damage number on screen. */
 struct FGothicDamageNumber
@@ -199,6 +201,52 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|HUD|Hints")
     bool HasTutorialHint() const { return !TutorialHintText.IsEmpty(); }
 
+    // -------------------------------------------------------------------------
+    // Revive channel bar
+    //
+    // Widget rather than a canvas draw, unlike the interact prompt above: this one
+    // has real per-frame state (a fill, two names, a break/complete flourish) and a
+    // designer will want to art it, which is exactly the line the Selah collect bar
+    // already sits on the other side of.
+    //
+    // The HUD owns it because the HUD is per-local-player BY CONSTRUCTION — one
+    // AHUD per local PlayerController — so CreateWidget(GetOwningPlayerController())
+    // here cannot make the mistake AGothicGameState::OnRep_SelahCollect had to be
+    // fixed for, where GetFirstPlayerController() gave the listen-server host the
+    // only bar in the game. Nothing in this feature ever asks for player 0.
+    //
+    // Driven from AGothicPlayerCharacter::Tick on the locally-controlled pawn,
+    // reading the replicated channel state off AGothicPlayerState. The HUD does not
+    // poll for itself — it has no opinion about which channel concerns this viewer.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Show the bar, or update it if it is already up. Progress is the SERVER's
+     * 0..1 value — the bar does not run its own clock.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD|Revive")
+    void ShowReviveChannel(AGothicPlayerState* DownedPlayer, AGothicPlayerState* Reviver, float Progress);
+
+    /** Close the bar. bCompleted picks the finished flourish over the broken one. */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD|Revive")
+    void HideReviveChannel(bool bCompleted);
+
+    /** 0..1 of the bar currently up, or 0 when none is. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|HUD|Revive")
+    float GetReviveChannelProgress() const { return ReviveChannelProgress; }
+
+    UFUNCTION(BlueprintPure, Category = "Gothic|HUD|Revive")
+    bool IsReviveChannelShown() const { return bReviveChannelShown; }
+
+    // Blueprint hooks for HUDs that would rather drive their own visuals than
+    // reparent a widget — these fire whether or not ReviveChannelBarClass is set.
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD|Revive")
+    void OnReviveChannelShown(AGothicPlayerState* DownedPlayer, AGothicPlayerState* Reviver);
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD|Revive")
+    void OnReviveChannelUpdated(float Progress);
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD|Revive")
+    void OnReviveChannelHidden(bool bCompleted);
+
     virtual void DrawHUD() override;
 protected:
     void DrawInteractPrompt();
@@ -275,6 +323,20 @@ protected:
     /** The live quit menu, or null when it is closed. */
     UPROPERTY(Transient)
     TObjectPtr<UGothicQuitMenuWidget> ActiveQuitMenu;
+
+    /** Assign WBP_ReviveChannelBar here. Unset means the bar is invisible and only
+     *  the OnReviveChannel* events fire — the feature still works, it just has no
+     *  default presentation until the widget exists. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|HUD|Revive")
+    TSubclassOf<UGothicReviveChannelBarWidget> ReviveChannelBarClass;
+
+    /** The live revive bar. Kept across a channel's whole life; the widget removes
+     *  ITSELF after its dismiss delay, so this can hold a detached widget briefly. */
+    UPROPERTY(Transient)
+    TObjectPtr<UGothicReviveChannelBarWidget> ActiveReviveChannelBar;
+
+    float ReviveChannelProgress = 0.f;
+    bool bReviveChannelShown = false;
 
     // -------------------------------------------------------------------------
     // Active widget instances
