@@ -673,6 +673,42 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
     void PushAmmoToHUD() const;
 
+    // ── Ammo persistence across pawns ────────────────────────────────────────
+    // WeaponSlots are pawn state and the pawn does not survive death, so a
+    // respawned player used to come back on full magazines: the init path runs
+    // FGothicWeaponSlot::InitFromData, which refills. The bank lives on
+    // AGothicPlayerState (see CacheAmmo there for why, and for how the downed
+    // fork and level travel both land on this same restore).
+
+    /** RAW per-slot counts for every slot holding an ammo-using weapon. */
+    TArray<FGothicAmmoSlotSnapshot> CaptureAmmoSnapshot() const;
+
+    /**
+     * Writes a banked snapshot back into WeaponSlots, clamped to each slot's
+     * EFFECTIVE capacities — the perks that move those ceilings (Deep Reserves,
+     * Extended Magazine) live on the equipped copy, and the copy in the slot at
+     * restore time is the one whose limits apply, not the one that was banked.
+     * Slots that are empty, ammo-less, or absent from the snapshot are untouched.
+     */
+    void ApplyAmmoSnapshot(const TArray<FGothicAmmoSlotSnapshot>& Snapshot);
+
+    /**
+     * Owner-only catch-up for the restore, which happens on the server.
+     *
+     * A remote client's WeaponSlots are computed on its own machine (the array is
+     * not replicated) and its own InitGASFromPlayerState refills them, so pushing
+     * only the HUD numbers would leave the client's slots and its display
+     * disagreeing the moment it fired. This writes the slots and then draws.
+     *
+     * Stashed as well as applied: the client's pawn may not have run its own init
+     * pass when this arrives, and that pass would refill over the top — so the
+     * tail of InitGASFromPlayerState replays whatever is pending. The stash is
+     * pawn state and dies with the pawn, which is the whole point; nothing has to
+     * clear it on respawn.
+     */
+    UFUNCTION(Client, Reliable)
+    void Client_RestoreAmmo(const TArray<FGothicAmmoSlotSnapshot>& Snapshot);
+
     /**
      * The tutorial hint latch. Always valid — created as a default subobject.
      * Blueprint and level actors reach hints through this rather than through
@@ -1123,6 +1159,11 @@ protected:
 private:
     bool bHUDReady = false;
     bool bInventoryBound = false;
+
+    /** Owning-client only. See Client_RestoreAmmo for why this is kept rather
+     *  than applied once, and why nothing clears it. */
+    UPROPERTY(Transient)
+    TArray<FGothicAmmoSlotSnapshot> PendingClientAmmoRestore;
 
     // -------------------------------------------------------------------------
     // Which ASC the ability sets actually went into.

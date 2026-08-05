@@ -490,7 +490,43 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
                 }
             }
         }
+        // ── The ammo restore, and it must be AFTER the sync loop ─────────────
+        // InitFromData up there refills every magazine to capacity and every
+        // reserve to its starting value. That is right for a first spawn and
+        // wrong for a respawn, so the banked counts are replayed over the top of
+        // it — put this before the loop and the refill simply overwrites it,
+        // which is the whole failure this PR exists to fix.
+        //
+        // Authority-only because that is where the bank is written and where the
+        // authoritative slots live. The owning client's own copy of the array is
+        // caught up by the RPC below; see Client_RestoreAmmo.
+        if (HasAuthority())
+        {
+            if (PS->HasCachedAmmo())
+            {
+                const TArray<FGothicAmmoSlotSnapshot> Banked = PS->ConsumeCachedAmmo();
+                ApplyAmmoSnapshot(Banked);
+
+                // Send the CLAMPED result, not the raw bank: the client would
+                // otherwise clamp against its own view of the slot and the two
+                // could disagree while equipment replication is still catching up.
+                Client_RestoreAmmo(CaptureAmmoSnapshot());
+            }
+        }
+        else if (PendingClientAmmoRestore.Num() > 0)
+        {
+            // The client half of the same ordering hazard. The RPC can land
+            // before this pawn has ever run its own init pass, and that pass
+            // refills through InitFromData exactly like the server's does — so
+            // whatever the server sent is replayed here, at the same seam.
+            ApplyAmmoSnapshot(PendingClientAmmoRestore);
+        }
+
         RefreshWeaponVisuals(ActiveWeaponIndex);
+
+        // The numbers changed under the HUD on both machines. Local-only inside,
+        // so this is a no-op on a server pass for a remote pawn.
+        PushAmmoToHUD();
     }
 
     LogGASInitComplete();
@@ -1983,6 +2019,61 @@ void AGothicPlayerCharacter::PushAmmoToHUD() const
         Slot.GetEffectiveMaxReserve());
 }
 
+TArray<FGothicAmmoSlotSnapshot> AGothicPlayerCharacter::CaptureAmmoSnapshot() const
+{
+    TArray<FGothicAmmoSlotSnapshot> Snapshot;
+
+    for (int32 i = 0; i < WeaponSlots.Num(); ++i)
+    {
+        const FGothicWeaponSlot& Slot = WeaponSlots[i];
+
+        // Ammo-less weapons hold 0/0 by construction (InitFromData zeroes them),
+        // so banking them would only add rows the restore has to skip anyway.
+        if (!Slot.WeaponData || !Slot.WeaponData->bUsesAmmo)
+        {
+            continue;
+        }
+
+        FGothicAmmoSlotSnapshot& Entry = Snapshot.AddDefaulted_GetRef();
+        Entry.SlotIndex = i;
+        Entry.Magazine  = Slot.CurrentMagazine;
+        Entry.Reserve   = Slot.CurrentReserve;
+    }
+
+    return Snapshot;
+}
+
+void AGothicPlayerCharacter::ApplyAmmoSnapshot(const TArray<FGothicAmmoSlotSnapshot>& Snapshot)
+{
+    for (const FGothicAmmoSlotSnapshot& Entry : Snapshot)
+    {
+        if (!WeaponSlots.IsValidIndex(Entry.SlotIndex))
+        {
+            continue;
+        }
+
+        FGothicWeaponSlot& Slot = WeaponSlots[Entry.SlotIndex];
+
+        // The slot's CURRENT weapon decides whether ammo is even a concept here
+        // and what its ceilings are. A player who banked a perked gun and
+        // respawned holding something else must not inherit that gun's numbers.
+        if (!Slot.WeaponData || !Slot.WeaponData->bUsesAmmo)
+        {
+            continue;
+        }
+
+        Slot.CurrentMagazine = FMath::Clamp(Entry.Magazine, 0, Slot.GetEffectiveMagazineCapacity());
+        Slot.CurrentReserve  = FMath::Clamp(Entry.Reserve,  0, Slot.GetEffectiveMaxReserve());
+    }
+}
+
+void AGothicPlayerCharacter::Client_RestoreAmmo_Implementation(const TArray<FGothicAmmoSlotSnapshot>& Snapshot)
+{
+    PendingClientAmmoRestore = Snapshot;
+    ApplyAmmoSnapshot(PendingClientAmmoRestore);
+    PushAmmoToHUD();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Reload — tap to load from reserve, hold to convert Steadfast into reserve
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2504,6 +2595,19 @@ void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
         {
             PS->CacheSuperMeterOnDeath(AttributeSet->GetSuperMeter());
         }
+
+        // Ammo is the same story one layer out: WeaponSlots die with the pawn,
+        // and the replacement pawn's init runs InitFromData over every slot,
+        // which refills the magazine to capacity. Dying was therefore a free
+        // reload — the one thing a death should never hand back.
+        //
+        // Deliberately HERE and not in the downed fork above. Everything before
+        // this point is reversible: a downed player who gets picked up keeps the
+        // pawn they were already holding, so their ammo is never captured and
+        // never rewritten. A downed player whose window expires comes back
+        // through this same function with bReviveWindowExpiring set, falls past
+        // the fork, and banks at the moment their death actually becomes real.
+        PS->CacheAmmo(CaptureAmmoSnapshot());
     }
 
     // This is the line the whole death path was missing. Everything above leaves

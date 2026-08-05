@@ -380,6 +380,36 @@ public:
  * Runtime state for one equipped weapon.
  * The data asset defines the weapon; this struct tracks ammo at runtime.
  */
+/**
+ * One weapon slot's ammo, detached from the slot itself.
+ *
+ * This is what gets banked when a pawn is about to stop existing — death, and
+ * (via the GameInstance) level travel — and replayed into the replacement
+ * pawn's slots. It carries RAW counts, deliberately: Deep Reserves and Extended
+ * Magazine change the effective ceilings, and a player who dies holding a perked
+ * gun and respawns with an unperked one must land under the NEW ceiling rather
+ * than keep a number the new slot cannot hold. The clamp therefore belongs to
+ * the restore (AGothicPlayerCharacter::ApplyAmmoSnapshot), not to the capture.
+ *
+ * SlotIndex rather than a weapon pointer: the slots are positional (0 Sidearm,
+ * 1 Piece, 2 Rig) and the restore re-checks the slot's WeaponData anyway, so
+ * indexing is both sufficient and immune to a data asset being reassigned.
+ */
+USTRUCT(BlueprintType)
+struct FGothicAmmoSlotSnapshot
+{
+    GENERATED_BODY()
+
+    UPROPERTY()
+    int32 SlotIndex = INDEX_NONE;
+
+    UPROPERTY()
+    int32 Magazine = 0;
+
+    UPROPERTY()
+    int32 Reserve = 0;
+};
+
 USTRUCT(BlueprintType)
 struct FGothicWeaponSlot
 {

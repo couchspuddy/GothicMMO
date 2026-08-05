@@ -34,6 +34,7 @@
 #include "CoreMinimal.h"
 #include "Engine/GameInstance.h"
 #include "Items/GothicItemTypes.h"
+#include "Weapons/GothicWeaponData.h"
 #include "GothicGameInstance.generated.h"
 
 class APlayerState;
@@ -65,6 +66,19 @@ struct FGothicTravelSnapshot
     UPROPERTY()
     TArray<FGothicEquippedSlot> EquippedItems;
 
+    /**
+     * Per-slot ammo, banked for the same reason the items are: WeaponSlots live
+     * on the pawn, and the pawn is destroyed with the world. Without this a
+     * travel refilled every magazine — the known gap the travel PR accepted.
+     *
+     * Restored by parking it on the new world's PlayerState rather than writing
+     * slots directly: the restore seam runs BEFORE the slot sync that refills
+     * them, so the only correct place to apply it is the after-sync restore the
+     * death path already owns. See RestoreTravelSnapshot.
+     */
+    UPROPERTY()
+    TArray<FGothicAmmoSlotSnapshot> Ammo;
+
     /** Selah balance, read off and written back through the attribute. */
     UPROPERTY()
     float Selah = 0.f;
@@ -81,6 +95,7 @@ struct FGothicTravelSnapshot
     {
         Items.Reset();
         EquippedItems.Reset();
+        Ammo.Reset();
         Selah = 0.f;
         Silver = 0;
         bHasSnapshot = false;
