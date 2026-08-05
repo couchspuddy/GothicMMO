@@ -44,6 +44,61 @@ import vigil_combat_driver as driver
 _CROSS_FLOOR_DZ = 180.0
 
 
+def _live_player_pawns(world):
+    """Every pawn in THIS world that a PlayerController currently possesses.
+
+    Deliberately NOT GameplayStatics.get_player_pawn(world, 0), which is what
+    the cross-floor check first shipped with and what made it lie: it reported
+    dz=200 against z~=90 -- the untouched default-spawn region -- for a pawn
+    standing on the same floor as both live players at z=290.2. Whatever that
+    route handed back was not a pawn either player was standing in.
+
+    Enumerating the world's own pawns and asking each one for its controller is
+    world-scoped by construction, so it cannot reach across PIE instances, and
+    it reads possession live rather than by player index -- which matters here
+    because respawn re-possesses (see the pawn/PlayerState split: the ASC lives
+    on the PlayerState and outlives the pawn).
+
+    Pawns that read is_alive() == False are dropped; a corpse is not a floor
+    reference. An unreadable is_alive() is NOT treated as dead -- the pawn stays
+    a candidate rather than silently vanishing from the comparison.
+    """
+    out = []
+    for pawn in common.all_pawns(world):
+        controller = common.try_read(lambda p=pawn: p.get_controller())
+        if not isinstance(controller, unreal.PlayerController):
+            continue
+        if common.try_read(lambda p=pawn: bool(p.is_alive()), default=True) is False:
+            continue
+        out.append(pawn)
+    return out
+
+
+def _nearest_live_player(world, location):
+    """(pawn, pawn_location, distance, candidate_count) nearest `location`.
+
+    Nearest by 3D distance, so a co-op pair split across two storeys is
+    referenced against whichever one the spawn actually landed near. The count
+    goes back in the payload so a reader can tell "one player, obviously that
+    one" from "picked one of three".
+
+    Returns (None, None, None, 0) when no live player pawn resolves in this
+    world, which the caller must report as an absence -- never as a dz of zero.
+    """
+    best = (None, None, None)
+    candidates = _live_player_pawns(world)
+    for pawn in candidates:
+        pawn_loc = common.try_read(lambda p=pawn: p.get_actor_location())
+        if pawn_loc is None:
+            continue
+        dist = ((pawn_loc.x - location.x) ** 2
+                + (pawn_loc.y - location.y) ** 2
+                + (pawn_loc.z - location.z) ** 2) ** 0.5
+        if best[2] is None or dist < best[2]:
+            best = (pawn, pawn_loc, dist)
+    return best + (len(candidates),)
+
+
 def _parse_steps(steps_json):
     try:
         steps = json.loads(steps_json)
@@ -573,7 +628,16 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
             its requested Z. Re-read the location from a probe a beat later if
             the settled floor is what you need.
 
-            `dz_to_player` is the vertical separation from the player pawn, and
+            `dz_to_player` is the vertical separation from the NEAREST live
+            player pawn in the spawn world, measured at spawn time, and
+            `dz_reference` names that player and gives both Z values so the
+            number can be re-derived by hand instead of trusted. When no live
+            player resolves -- before possession completes, or with everyone
+            dead -- `dz_to_player` and `warning` are both absent and
+            `dz_unavailable` says why; the check never falls back to a stale or
+            default-spawn reference, which is exactly how it once reported a
+            same-floor spawn as cross-floor.
+
             `warning` fires past _CROSS_FLOOR_DZ. That tripwire exists because a
             fight staged across two storeys looks completely normal in every
             other reading -- the enemy aggroes, closes horizontally, and plays
@@ -585,14 +649,34 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                              no_collision_fail=no_collision_fail)
 
         spawned_loc = common.try_read(lambda: actor.get_actor_location())
-        player = common.try_read(
-            lambda: unreal.GameplayStatics.get_player_pawn(world, 0))
 
         dz = None
-        if spawned_loc is not None and player is not None:
-            player_loc = common.try_read(lambda: player.get_actor_location())
-            if player_loc is not None:
+        dz_reference = None
+        dz_unavailable = None
+        if spawned_loc is None:
+            dz_unavailable = (
+                "The spawned pawn's location could not be read, so there is "
+                "nothing to difference against. No cross-floor judgement made.")
+        else:
+            player, player_loc, distance, considered = _nearest_live_player(
+                world, spawned_loc)
+            if player is None:
+                dz_unavailable = (
+                    "No live player pawn resolves in the spawn world (%s), so "
+                    "dz_to_player and the cross-floor check are both omitted "
+                    "rather than guessed. This is the expected reading before "
+                    "possession completes or after every player has died."
+                    % common.world_path(world))
+            else:
                 dz = round(spawned_loc.z - player_loc.z, 1)
+                dz_reference = {
+                    "player": player.get_name(),
+                    "player_z": round(player_loc.z, 1),
+                    "spawn_z": round(spawned_loc.z, 1),
+                    "distance_3d": round(distance, 1),
+                    "players_considered": considered,
+                    "world": common.world_path(world),
+                }
 
         payload = {
             "spawned": actor.get_name(),
@@ -604,18 +688,24 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
             # scripts that read `location` keep working.
             "location": [x, y, z],
             "dz_to_player": dz,
+            # Shows its work: which player the number was measured against and
+            # both Z values, so dz can be re-derived by hand from the payload.
+            "dz_reference": dz_reference,
             "controller": common.try_read(
                 lambda: actor.get_controller().get_name()),
             "note": "Use the spawned name as an actor label in scenarios.",
         }
 
+        if dz_unavailable is not None:
+            payload["dz_unavailable"] = dz_unavailable
+
         if dz is not None and abs(dz) > _CROSS_FLOOR_DZ:
             payload["warning"] = (
-                "CROSS-FLOOR SPAWN: this pawn is %.1fuu above/below the player "
+                "CROSS-FLOOR SPAWN: this pawn is %.1fuu above/below %s "
                 "(threshold %.0f). Melee cannot connect between storeys and the "
                 "enemy will close horizontally and whiff forever. Confirm this "
                 "is deliberate before reading anything into the encounter."
-                % (dz, _CROSS_FLOOR_DZ))
+                % (dz, dz_reference["player"], _CROSS_FLOOR_DZ))
 
         return common.as_json(payload)
 
