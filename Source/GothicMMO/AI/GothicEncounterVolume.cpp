@@ -306,30 +306,41 @@ TArray<AGothicEnemyBase*> AGothicEncounterVolume::SpawnWaveFromPoints(
 
         for (int32 i = 0; i < Count; ++i)
         {
-            // The first enemy always takes the point itself, so a count of 1
-            // behaves exactly as it did before this became a multi-spawn.
+            // The first enemy takes the point itself; the rest scatter around it.
             FVector SpawnLocation = Origin;
             if (i > 0 && Scatter > 0.f)
             {
                 const FVector2D Offset = FMath::RandPointInCircle(Scatter);
                 SpawnLocation = Origin + FVector(Offset.X, Offset.Y, 0.f);
+            }
 
-                // Project back to walkable ground. Without this, a scatter disc
-                // that overhangs the Encounter 2 balcony or a plaza wall drops
-                // enemies into geometry, where they either fall out of the world
-                // or stand unreachable and the encounter can never complete.
-                if (NavSys)
+            // Project back to walkable ground. Without this, a scatter disc
+            // that overhangs the Encounter 2 balcony or a plaza wall drops
+            // enemies into geometry, where they either fall out of the world
+            // or stand unreachable and the encounter can never complete.
+            //
+            // Index 0 is projected too, and used to not be. A spawn point
+            // authored slightly off the floor it belongs to — above a mezzanine
+            // it should be under, or floating over a stairwell — placed its
+            // first enemy verbatim, on the wrong storey, fighting a player it
+            // could never reach. The projection is the only thing that decides
+            // which floor a wave lands on, so it must run for every enemy.
+            if (NavSys)
+            {
+                // Extent must not collapse when Scatter is 0 (the index-0 /
+                // no-scatter case): a zero-width query box finds nothing and
+                // every spawn would silently fall back to the raw Origin.
+                const float QueryExtentXY = FMath::Max(Scatter, 100.f);
+
+                FNavLocation Projected;
+                if (NavSys->ProjectPointToNavigation(
+                        SpawnLocation, Projected, FVector(QueryExtentXY, QueryExtentXY, 300.f)))
                 {
-                    FNavLocation Projected;
-                    if (NavSys->ProjectPointToNavigation(
-                            SpawnLocation, Projected, FVector(Scatter, Scatter, 300.f)))
-                    {
-                        SpawnLocation = Projected.Location;
-                    }
-                    else
-                    {
-                        SpawnLocation = Origin;
-                    }
+                    SpawnLocation = Projected.Location;
+                }
+                else
+                {
+                    SpawnLocation = Origin;
                 }
             }
 

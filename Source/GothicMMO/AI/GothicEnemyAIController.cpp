@@ -13,6 +13,7 @@
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BrainComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Character.h"
 #include "NavigationSystem.h"
@@ -46,6 +47,44 @@ namespace
 
     /** Named so nothing else's RestartLogic can resume a leap by accident. */
     const TCHAR* GLeapPauseReason = TEXT("GothicLeapFlight");
+
+    /**
+     * Vertical extent of an actor, as [feet, head] in world Z.
+     *
+     * Capsule-derived wherever there is a capsule, because that is the only
+     * number that stays true across the project's 4x range of creature sizes.
+     * The fallback is the collision bounding box, which is right for anything
+     * that is not a character; a zero-extent actor degrades to a point, which
+     * the caller's overlap test still handles correctly.
+     */
+    void GetVerticalSpan(const AActor& Actor, float& OutFeetZ, float& OutHeadZ)
+    {
+        const float CentreZ = Actor.GetActorLocation().Z;
+        float HalfHeight = 0.f;
+
+        if (const ACharacter* AsCharacter = Cast<ACharacter>(&Actor))
+        {
+            if (const UCapsuleComponent* Capsule = AsCharacter->GetCapsuleComponent())
+            {
+                // SCALED, not the authored value: the Bestial Lucid's capsule is
+                // 253 authored at actor scale 1.5, so her real half-height is
+                // 379.5 and her origin rides that far above the floor she is
+                // standing on. Reading the unscaled number would put her "feet"
+                // 126uu in the air and cost her the melee gate on flat ground.
+                HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+            }
+        }
+
+        if (HalfHeight <= 0.f)
+        {
+            FVector BoundsOrigin, BoundsExtent;
+            Actor.GetActorBounds(/*bOnlyCollidingComponents=*/true, BoundsOrigin, BoundsExtent);
+            HalfHeight = BoundsExtent.Z;
+        }
+
+        OutFeetZ = CentreZ - HalfHeight;
+        OutHeadZ = CentreZ + HalfHeight;
+    }
 }
 
 AGothicEnemyAIController::AGothicEnemyAIController()
@@ -369,9 +408,50 @@ bool AGothicEnemyAIController::IsTargetInAttackRange() const
     // the 3D distance read 327uu, past a 200uu MeleeAttackRange, and this
     // function returned false in 100% of sampled combat ticks.
     //
-    // Creature capsule heights must never change combat reach. Floors are
-    // separated by navigation and line of sight, not by this number.
-    const float DistanceToTarget = FVector::Dist2D(OwnerPawn->GetActorLocation(), Target->GetActorLocation());
+    // Creature capsule heights must never change combat reach, so the reach
+    // itself stays horizontal — but the old version of this comment went on to
+    // claim floors were "separated by navigation and line of sight, not by this
+    // number", and nothing anywhere enforced that. A target on the mezzanine
+    // directly above an enemy has a small XY separation, so this returned true
+    // on every tick and the enemy swung into the ceiling indefinitely: measured
+    // at 19 consecutive whiffs with the pair 92.5uu apart horizontally and
+    // 199.9uu apart vertically.
+    //
+    // The fix is a second, independent bound rather than a 3D distance — a 3D
+    // check is exactly the capsule-height coupling described above.
+    //
+    // It is NOT a threshold on |dZ| between origins either, and that is the
+    // whole subtlety. Origins sit at capsule centres, so origin dZ scales with
+    // creature size: the Bestial Lucid's scaled half-height is 379.5, meaning
+    // she and a player standing on the same flat floor are ~290uu apart in
+    // origin Z — further apart than the ~200uu of a genuine storey. No single
+    // number can separate those two cases.
+    //
+    // What actually distinguishes them is whether the two bodies overlap
+    // vertically at all. Feet-to-head spans:
+    //   same floor, boss vs player  — boss span [0, 759], player [0, 180]:
+    //                                 deeply overlapping, gap far negative.
+    //   one storey, measured case   — player head 180.2, enemy feet 200.1:
+    //                                 a gap of +19.9 of clear air between them.
+    // So the discriminator is the SIGN of the gap, not its magnitude, and
+    // MeleeVerticalSlack only has to absorb stairs and slopes — hence its
+    // small default, well under the 19.9 the measured cross-floor case must
+    // still be rejected by.
+    float OwnerFeetZ, OwnerHeadZ, TargetFeetZ, TargetHeadZ;
+    GetVerticalSpan(*OwnerPawn, OwnerFeetZ, OwnerHeadZ);
+    GetVerticalSpan(*Target, TargetFeetZ, TargetHeadZ);
+
+    // Negative when the spans overlap, positive when there is clear air between.
+    const float VerticalGap = FMath::Max(OwnerFeetZ, TargetFeetZ) - FMath::Min(OwnerHeadZ, TargetHeadZ);
+    if (VerticalGap > MeleeVerticalSlack)
+    {
+        return false;
+    }
+
+    const FVector OwnerLocation  = OwnerPawn->GetActorLocation();
+    const FVector TargetLocation = Target->GetActorLocation();
+
+    const float DistanceToTarget = FVector::Dist2D(OwnerLocation, TargetLocation);
     return DistanceToTarget <= MeleeAttackRange;
 }
 

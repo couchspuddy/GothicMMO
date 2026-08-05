@@ -147,6 +147,11 @@ public:
      * Measured HORIZONTALLY (XY only). Capsule half-heights differ per creature
      * and put a permanent floor under any 3D pawn-to-pawn distance; see the
      * implementation.
+     *
+     * The horizontal reach is paired with a separate vertical test — the two
+     * bodies' capsule spans must overlap, within MeleeVerticalSlack — so a
+     * target on another floor cannot satisfy this gate. The two checks are
+     * deliberately not collapsed into one 3D distance.
      */
     UFUNCTION(BlueprintPure, Category = "Gothic|AI")
     bool IsTargetInAttackRange() const;
@@ -278,6 +283,35 @@ protected:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|AI|Attack")
     float MeleeAttackRange = 200.f;
+
+    /**
+     * How much clear vertical air (cm) may sit between the two bodies and the
+     * melee gate still pass.
+     *
+     * MeleeAttackRange is horizontal on purpose (see above), but nothing was
+     * bounding Z at all, and the old claim that "floors are separated by
+     * navigation and line of sight" was never enforced by anything: an enemy
+     * under a mezzanine with the player directly above it passed the attack
+     * gate on every tick and swung into the ceiling forever, because the XY
+     * separation was small and the tree had no other reason to disengage.
+     * Measured on the Rotunda mezzanine: 19 consecutive whiffs, the pair 92.5uu
+     * apart horizontally and 199.9uu apart vertically (220.3 in 3D).
+     *
+     * The check compares feet-to-head SPANS, not origin dZ, because origins sit
+     * at capsule centres and a threshold on origin dZ cannot survive this
+     * project's creature sizes: the Bestial Lucid's scaled half-height is 379.5
+     * (253 authored, actor scale 1.5), so she and a player on the same flat
+     * floor are ~290uu apart in origin Z — more than the ~200uu of a real
+     * storey. Same-floor pairs of ANY size overlap vertically; a storey apart
+     * leaves genuine clear air (+19.9uu in the measured case).
+     *
+     * So this value is small by design: it exists for stairs, slopes and a
+     * pawn mid-step, not to encode a floor height. Raising it past ~20 starts
+     * re-admitting the cross-floor case this fixes. EditAnywhere so a specific
+     * encounter can be corrected on the instance without a re-place.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|AI|Attack")
+    float MeleeVerticalSlack = 15.f;
 
     /**
      * Distance the enemy holds from the target before attacking (cm),
