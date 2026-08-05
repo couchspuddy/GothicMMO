@@ -32,6 +32,18 @@ import vigil_pie_probe as probe
 import vigil_combat_driver as driver
 
 
+# Vertical separation (uu) past which a spawn is called out as cross-floor.
+#
+# 180 sits above the largest same-floor origin dZ a spawn can innocently
+# produce -- actor locations are capsule centres, and the biggest half-height
+# gap in the project is player 88 vs Bestial Lucid 253 = 165 -- and below the
+# ~200 of one Rotunda storey. It is a HARNESS heuristic on origin dZ, not the
+# gameplay rule: the melee gate itself compares capsule spans
+# (AGothicEnemyAIController::IsTargetInAttackRange). Deliberately noisy rather
+# than silent; a false warning costs a glance, a missed one costs a diagnosis.
+_CROSS_FLOOR_DZ = 180.0
+
+
 def _parse_steps(steps_json):
     try:
         steps = json.loads(steps_json)
@@ -549,19 +561,63 @@ class VigilCombatDrive(unreal.ToolsetDefinition):
                 is how you find out a spawn point is inside a wall.
 
         Returns:
-            JSON with the spawned actor's name, to use as an actor label.
+            JSON with the spawned actor's name, to use as an actor label, plus
+            where the pawn ACTUALLY landed and how it sits relative to the
+            player vertically.
+
+            `location_requested` is what you asked for; `location_spawned` is
+            where the pawn is once the spawn resolved, which already differs
+            when depenetration pushed the capsule out of geometry. It is read
+            in the same frame -- this toolset never blocks a tick -- so gravity
+            has NOT settled yet and a pawn spawned in the air still reads at
+            its requested Z. Re-read the location from a probe a beat later if
+            the settled floor is what you need.
+
+            `dz_to_player` is the vertical separation from the player pawn, and
+            `warning` fires past _CROSS_FLOOR_DZ. That tripwire exists because a
+            fight staged across two storeys looks completely normal in every
+            other reading -- the enemy aggroes, closes horizontally, and plays
+            its attack -- while landing nothing, and a full diagnosis pass has
+            already been spent on exactly that setup.
         """
         world = common.require_world()
         actor = driver.spawn(world, class_path, (x, y, z), (0.0, yaw, 0.0),
                              no_collision_fail=no_collision_fail)
-        return common.as_json({
+
+        spawned_loc = common.try_read(lambda: actor.get_actor_location())
+        player = common.try_read(
+            lambda: unreal.GameplayStatics.get_player_pawn(world, 0))
+
+        dz = None
+        if spawned_loc is not None and player is not None:
+            player_loc = common.try_read(lambda: player.get_actor_location())
+            if player_loc is not None:
+                dz = round(spawned_loc.z - player_loc.z, 1)
+
+        payload = {
             "spawned": actor.get_name(),
             "class": common.try_read(lambda: actor.get_class().get_name()),
+            "location_requested": [x, y, z],
+            "location_spawned": common.vec(spawned_loc)
+                                if spawned_loc is not None else None,
+            # Retained under its original key so existing callers and scenario
+            # scripts that read `location` keep working.
             "location": [x, y, z],
+            "dz_to_player": dz,
             "controller": common.try_read(
                 lambda: actor.get_controller().get_name()),
             "note": "Use the spawned name as an actor label in scenarios.",
-        })
+        }
+
+        if dz is not None and abs(dz) > _CROSS_FLOOR_DZ:
+            payload["warning"] = (
+                "CROSS-FLOOR SPAWN: this pawn is %.1fuu above/below the player "
+                "(threshold %.0f). Melee cannot connect between storeys and the "
+                "enemy will close horizontally and whiff forever. Confirm this "
+                "is deliberate before reading anything into the encounter."
+                % (dz, _CROSS_FLOOR_DZ))
+
+        return common.as_json(payload)
 
     @toolset_registry.tool_call
     @staticmethod

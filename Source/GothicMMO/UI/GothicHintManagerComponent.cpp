@@ -44,7 +44,7 @@ UGothicHintManagerComponent::UGothicHintManagerComponent()
         { GothicTags::Hint_SprintLowersGun,  NSLOCTEXT("GothicHints", "SprintCost",  "Sprinting lowers your gun — you cannot fire while running") },
         { GothicTags::Hint_Fire,             NSLOCTEXT("GothicHints", "Fire",        "LMB — fire") },
         { GothicTags::Hint_Aim,              NSLOCTEXT("GothicHints", "Aim",         "Hold RMB — steady your aim") },
-        { GothicTags::Hint_Melee,            NSLOCTEXT("GothicHints", "Melee",       "V — strike what is already on you") },
+        { GothicTags::Hint_Melee,            NSLOCTEXT("GothicHints", "Melee",       "F — strike what is already on you") },
         { GothicTags::Hint_Reload,           NSLOCTEXT("GothicHints", "Reload",      "R — reload") },
         { GothicTags::Hint_SteadfastConvert, NSLOCTEXT("GothicHints", "Steadfast",   "Hold R — convert Steadfast to ammo") },
         { GothicTags::Hint_Interact,         NSLOCTEXT("GothicHints", "Interact",    "E — interact") },
@@ -53,7 +53,7 @@ UGothicHintManagerComponent::UGothicHintManagerComponent()
         { GothicTags::Hint_WeaponSwap,       NSLOCTEXT("GothicHints", "WeaponSwap",  "1 2 3 — change weapons") },
         { GothicTags::Hint_AbilitySlicer,    NSLOCTEXT("GothicHints", "Slicer",      "Q — throw the Slicer") },
         { GothicTags::Hint_AbilityRead,      NSLOCTEXT("GothicHints", "Read",        "C — Read the Accursed for its vital point") },
-        { GothicTags::Hint_AbilityLunge,     NSLOCTEXT("GothicHints", "Lunge",       "F — lunge") },
+        { GothicTags::Hint_AbilityLunge,     NSLOCTEXT("GothicHints", "Lunge",       "V — lunge") },
         { GothicTags::Hint_Reckoning,        NSLOCTEXT("GothicHints", "Reckoning",   "G — unleash your Reckoning") },
         { GothicTags::Hint_Collect,          NSLOCTEXT("GothicHints", "Collect",     "E — take the Selah the dead left behind") },
     };

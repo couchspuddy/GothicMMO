@@ -422,11 +422,35 @@ def _perceived_by(perception, sense_cls, what):
 
 
 def _actor_rows(pawn, actors):
-    return [{
-        "actor": common.try_read(lambda a=a: a.get_name()),
-        "class": common.try_read(lambda a=a: a.get_class().get_name()),
-        "distance": common.try_read(lambda a=a: round(pawn.get_distance_to(a), 1)),
-    } for a in actors]
+    """One row per perceived actor, with distance reported in BOTH measures.
+
+    `distance_3d` is AActor::GetDistanceTo -- straight-line, including Z. It is
+    kept (and is what the old bare `distance` key held) because perception
+    radii really are 3D. But every combat RANGE in this project is horizontal:
+    MeleeAttackRange, PreferredEngageDistance and the leash all use Dist2D,
+    because actor locations sit at capsule centres and a 3D read silently
+    charges you the capsule half-height difference.
+
+    A single field labelled "distance" therefore cannot be compared against a
+    tuning value without knowing which kind it is -- that mislabel cost a full
+    diagnosis pass, where a pair two storeys apart read as plausibly in range.
+    Both measures plus the raw `dz` are emitted so no reader has to guess: use
+    `dist2d` against any range property, `dz` to detect a floor separation.
+    """
+    def _row(a):
+        pl, al = pawn.get_actor_location(), a.get_actor_location()
+        dx, dy, dz = al.x - pl.x, al.y - pl.y, al.z - pl.z
+        return {
+            "actor": common.try_read(lambda: a.get_name()),
+            "class": common.try_read(lambda: a.get_class().get_name()),
+            # Legacy key, retained so existing readers keep working. Same value
+            # as distance_3d -- prefer the explicit names below.
+            "distance": common.try_read(lambda: round(pawn.get_distance_to(a), 1)),
+            "distance_3d": common.try_read(lambda: round(pawn.get_distance_to(a), 1)),
+            "dist2d": common.try_read(lambda: round(math.sqrt(dx * dx + dy * dy), 1)),
+            "dz": common.try_read(lambda: round(dz, 1)),
+        }
+    return [_row(a) for a in actors]
 
 
 def _perceived_block(pawn, perception, what):
