@@ -283,6 +283,28 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
     void ApplyRecoilKick();
 
+    /**
+     * Pause after the last shot before the muzzle starts coming back down.
+     *
+     * Short on purpose: it exists so sustained fire climbs instead of fighting its
+     * own recovery mid-burst, not to make the gun feel sticky. Every shot restamps
+     * it, so recovery only begins once the player stops firing.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons",
+              meta = (ClampMin = "0.0"))
+    float RecoilRecoveryDelay = 0.08f;
+
+    /**
+     * How fast the muzzle returns, as an exponential rate on the outstanding kick.
+     * 12.0 walks ~95% of a kick back in roughly 0.25s, fast off the top and easing
+     * into the resting position — the gun settling rather than the camera panning.
+     *
+     * 0.0 reproduces the pre-fix behaviour: recoil is applied and never recovered.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons",
+              meta = (ClampMin = "0.0"))
+    float RecoilRecoveryRate = 12.f;
+
     /** Returns the active weapon's data asset for stat lookups. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Weapons")
     const UGothicWeaponData* GetActiveWeaponData() const;
@@ -969,6 +991,26 @@ private:
 
     /** Resolve the granted Loved-and-the-Lost passive instance, or null. */
     const UGA_TheLovedAndTheLost* FindLovedAndLost() const;
+
+    // -------------------------------------------------------------------------
+    // Recoil recovery
+    // -------------------------------------------------------------------------
+
+    /**
+     * Pitch kick applied by ApplyRecoilKick and not yet returned — in the same
+     * units ApplyPitchInput takes, so recovery goes back out through the same call
+     * and picks up whatever scaling the kick did. Negative, matching RecoilPitch.
+     *
+     * Reduced by the player's own downward look input, so pulling the gun back on
+     * target does not then get double-corrected by the automatic recovery.
+     */
+    float PendingRecoilPitch = 0.f;
+
+    /** World time of the most recent kick, for RecoilRecoveryDelay. */
+    float LastRecoilKickTime = -1.f;
+
+    /** Walks PendingRecoilPitch back to zero. Local-only; called from Tick. */
+    void TickRecoilRecovery(float DeltaTime);
 
     // -------------------------------------------------------------------------
     // Reload hold state
