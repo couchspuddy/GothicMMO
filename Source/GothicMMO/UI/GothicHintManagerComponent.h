@@ -61,8 +61,12 @@ public:
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
     /**
-     * Raise a hint. No-ops if the tag has already been seen this session, if the
-     * tag has no copy authored, or if this is not the locally controlled pawn.
+     * Raise a hint. No-ops if the current map is not in HintEnabledMaps, if the
+     * tag has already been seen this session, if the tag has no copy authored,
+     * or if this is not the locally controlled pawn.
+     *
+     * This is the single chokepoint for the map gate — every raise in the
+     * project reaches the screen through here, so no call site tests the zone.
      *
      * Marks the tag seen at ENQUEUE time, not at display time. A hint that is
      * queued behind two others has already been earned; re-raising it while it
@@ -114,13 +118,34 @@ public:
     static FString KeyDisplayName(const FKey& Key);
 
     // -------------------------------------------------------------------------
-    // Opener input flags — set from the pawn's input handlers so the opener
-    // timer can tell "hasn't been taught" from "already worked it out".
+    // First-input notifications — called from the pawn's input handlers so a
+    // Move/Look hint raised by a trigger volume dismisses the moment the player
+    // demonstrates the thing rather than sitting out its full duration.
     // -------------------------------------------------------------------------
     void NotifyMoveInput();
     void NotifyLookInput();
 
+    /**
+     * True if hints are allowed to appear in the level this pawn spawned into.
+     * Resolved once in BeginPlay from HintEnabledMaps; see the property's note.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Hints")
+    bool AreHintsEnabled() const { return bHintsEnabled; }
+
 protected:
+    /**
+     * Levels in which tutorial hints are allowed to fire, by short map name
+     * (no /Game path, no PIE prefix). Empty means "nowhere" rather than
+     * "everywhere": a hint system that silently re-enables itself on every new
+     * level is exactly the failure this gate exists to stop.
+     *
+     * Palewood is the tutorial zone and the only place the teaching beats are
+     * authored, so it is the only default entry. Adding a second zone is a data
+     * edit on BP_GothicPlayerCharacter, not a recompile.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|Hints")
+    TArray<FString> HintEnabledMaps = { TEXT("L_Palewood") };
+
     /**
      * Hint copy, keyed by tag. EditDefaultsOnly and FText so the user can redline
      * every line in BP_GothicPlayerCharacter without a recompile — which is the
@@ -140,18 +165,6 @@ protected:
     UPROPERTY(EditDefaultsOnly, Category = "Gothic|Hints")
     float HintGap = 0.35f;
 
-    /** Delay after BeginPlay before the first movement opener is considered. */
-    UPROPERTY(EditDefaultsOnly, Category = "Gothic|Hints|Openers")
-    float OpenerFirstDelay = 2.f;
-
-    /** Gap between consecutive movement openers. */
-    UPROPERTY(EditDefaultsOnly, Category = "Gothic|Hints|Openers")
-    float OpenerInterval = 6.f;
-
-    /** Set false to silence the Move/Look/Jump/Sprint opener sequence entirely. */
-    UPROPERTY(EditDefaultsOnly, Category = "Gothic|Hints|Openers")
-    bool bRunMovementOpeners = true;
-
 private:
     /** Pulls the next hint off the queue and puts it on the HUD. */
     void DisplayNextHint();
@@ -161,9 +174,6 @@ private:
 
     /** Clears the HUD slot and schedules the next hint after HintGap. */
     void DismissCurrentHint();
-
-    /** One step of the Move/Look/Jump/Sprint opener sequence. */
-    void TickMovementOpeners();
 
     AGothicHUD* GetOwningHUD() const;
 
@@ -189,11 +199,15 @@ private:
     FGameplayTag CurrentHintTag;
 
     FTimerHandle HintTimerHandle;
-    FTimerHandle OpenerTimerHandle;
 
-    /** How many openers have fired. Indexes the Move/Look/Jump/Sprint sequence. */
-    int32 OpenerStep = 0;
+    /**
+     * Resolved once in BeginPlay rather than tested per call: the map cannot
+     * change under a live pawn — a level transition destroys it — so a per-raise
+     * GetCurrentLevelName would be a string compare buying nothing.
+     */
+    bool bHintsEnabled = false;
 
+    /** First-input latches, so the early dismissal fires once and not per frame. */
     bool bHasMoved = false;
     bool bHasLooked = false;
 
