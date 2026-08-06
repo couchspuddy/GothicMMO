@@ -12,6 +12,7 @@
 #include "UI/GothicHUD.h"
 
 #include "GameFramework/PlayerController.h"
+#include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
 
 UGothicHintManagerComponent::UGothicHintManagerComponent()
@@ -77,17 +78,19 @@ void UGothicHintManagerComponent::BeginPlay()
         SeenHints = PS->GetSeenTutorialHints();
     }
 
-    BindInventoryDelegates();
+    // The zone gate. GetCurrentLevelName strips the PIE "UEDPIE_0_" prefix, so
+    // the same comparison holds in PIE, standalone and a cooked build.
+    const FString CurrentMap = UGameplayStatics::GetCurrentLevelName(this);
+    bHintsEnabled = HintEnabledMaps.ContainsByPredicate(
+        [&CurrentMap](const FString& Allowed) { return Allowed.Equals(CurrentMap, ESearchCase::IgnoreCase); });
 
-    if (bRunMovementOpeners)
-    {
-        GetWorld()->GetTimerManager().SetTimer(
-            OpenerTimerHandle,
-            this,
-            &UGothicHintManagerComponent::TickMovementOpeners,
-            OpenerFirstDelay,
-            false);
-    }
+    UE_LOG(LogVigilCombat, Log, TEXT("Hint|map=%s|hints %s"),
+        *CurrentMap, bHintsEnabled ? TEXT("enabled") : TEXT("disabled"));
+
+    // Bound regardless of the gate. The bind is a retry loop that costs nothing
+    // when it succeeds, and the delegates land on ShowHint, which is where the
+    // gate is actually enforced — keeping one chokepoint rather than two.
+    BindInventoryDelegates();
 }
 
 void UGothicHintManagerComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -95,7 +98,6 @@ void UGothicHintManagerComponent::EndPlay(const EEndPlayReason::Type EndPlayReas
     if (UWorld* World = GetWorld())
     {
         World->GetTimerManager().ClearTimer(HintTimerHandle);
-        World->GetTimerManager().ClearTimer(OpenerTimerHandle);
         World->GetTimerManager().ClearTimer(InventoryBindRetryHandle);
     }
 
@@ -167,6 +169,18 @@ void UGothicHintManagerComponent::ResetSeenHints()
 void UGothicHintManagerComponent::ShowHint(FGameplayTag HintTag)
 {
     if (!HintTag.IsValid() || !IsLocalPlayerPawn())
+    {
+        return;
+    }
+
+    // The zone gate lives here and nowhere else. Every raise in the project —
+    // the pawn's Reckoning/Steadfast/Sprint/Reload beats, the HUD's, the
+    // inventory delegates below, and AGothicHintTrigger's ShowHintByTag — funnels
+    // through this one function, so the gate costs no caller a line.
+    //
+    // Returns WITHOUT marking the tag seen: outside Palewood the hint was never
+    // shown, and latching it here would burn it for a later visit.
+    if (!bHintsEnabled)
     {
         return;
     }
@@ -267,7 +281,10 @@ void UGothicHintManagerComponent::DismissCurrentHint()
 
 void UGothicHintManagerComponent::NotifyHintActionPerformed(FGameplayTag HintTag)
 {
-    if (!HintTag.IsValid())
+    // Safe to call outside a hint-enabled map — the queue is empty and nothing
+    // is on screen there, so this is a no-op either way. Stated rather than
+    // relied on, so the callers in the pawn need no gate of their own.
+    if (!HintTag.IsValid() || !bHintsEnabled)
     {
         return;
     }
@@ -286,7 +303,13 @@ void UGothicHintManagerComponent::NotifyHintActionPerformed(FGameplayTag HintTag
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Movement openers
+// First-input dismissal
+//
+// Move/Look/Jump/Sprint were once raised by a timer chain that ran on BeginPlay
+// in every level. They now come from AGothicHintTrigger volumes placed along the
+// Palewood opening, which teach in the order the ground actually presents the
+// problem. What survives here is the dismissal half: once the player moves or
+// looks, the corresponding hint is answered and comes down early.
 // ═══════════════════════════════════════════════════════════════════════════
 
 void UGothicHintManagerComponent::NotifyMoveInput()
@@ -304,46 +327,6 @@ void UGothicHintManagerComponent::NotifyLookInput()
     {
         bHasLooked = true;
         NotifyHintActionPerformed(GothicTags::Hint_Look);
-    }
-}
-
-void UGothicHintManagerComponent::TickMovementOpeners()
-{
-    // One retriggering timer walking a fixed four-step sequence, rather than four
-    // scheduled timers: the steps are conditional on input the player may perform
-    // at any point, and four independent timers would have to be cancelled
-    // individually to stop a hint the player pre-empted.
-    switch (OpenerStep)
-    {
-    case 0:
-        if (!bHasMoved) { ShowHint(GothicTags::Hint_Move); }
-        break;
-    case 1:
-        if (!bHasLooked) { ShowHint(GothicTags::Hint_Look); }
-        break;
-    case 2:
-        // Jump and sprint have no "has the player done it" flag to check — they
-        // are one-shot actions rather than continuous input, and a player who
-        // jumps once in the first two seconds does not need never to be told.
-        ShowHint(GothicTags::Hint_Jump);
-        break;
-    case 3:
-        ShowHint(GothicTags::Hint_Sprint);
-        break;
-    default:
-        return; // sequence exhausted; timer is not rescheduled
-    }
-
-    ++OpenerStep;
-
-    if (OpenerStep <= 3)
-    {
-        GetWorld()->GetTimerManager().SetTimer(
-            OpenerTimerHandle,
-            this,
-            &UGothicHintManagerComponent::TickMovementOpeners,
-            OpenerInterval,
-            false);
     }
 }
 
