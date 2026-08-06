@@ -9,6 +9,12 @@
 #include "Kismet/GameplayStatics.h"
 #include "Game/GothicGameState.h"
 #include "Game/GothicDeterminism.h"
+#include "GothicMMO.h"                          // LogVigilCombat
+#include "HAL/IConsoleManager.h"                // Gothic.ForceWipeCheck / Gothic.ForceWipe
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/PlayerState.h"
+#include "GameFramework/GameStateBase.h"
+#include "Engine/World.h"
 
 AGothicGameMode::AGothicGameMode()
 {
@@ -57,7 +63,26 @@ void AGothicGameMode::PostLogin(APlayerController* NewPlayer)
                 GS->SetCheckpointFromLocation(NewPawn->GetActorLocation());
             }
         }
+        else
+        {
+            // THE LATE-JOINER BUG. The branch above only ever SEEDS the
+            // checkpoint; a player arriving into a session that has already
+            // pushed several encounters deep fell straight through it and was
+            // left standing on whatever PlayerStart FindPlayerStart picked —
+            // which is back at the level entrance, alone, with the party a map
+            // away. Nothing in the project teleported a NEW arrival to the
+            // checkpoint; only respawns got that.
+            //
+            // Same call the respawn path makes, so a late joiner and a
+            // respawning player land the same way, spaced by the same ring.
+            TeleportToCheckpoint(NewPlayer);
+        }
     }
+
+    // A join changes party membership, so the readout has to move with it — most
+    // obviously the case where the party had wiped and the state must fall back
+    // out of Wiped now that somebody upright is present.
+    EvaluatePartyState();
 }
 
 void AGothicGameMode::Logout(AController* Exiting)
@@ -72,6 +97,18 @@ void AGothicGameMode::Logout(AController* Exiting)
     }
 
     Super::Logout(Exiting);
+
+    // THE FORGOTTEN EDGE. A wipe is not only "everyone died" — it is also "the
+    // last person who could have revived you closed the game". Without this a
+    // downed player left alone by a disconnect sits on the floor for the rest of
+    // their window and then bleeds out as if nobody had ever been coming, which
+    // reads as the game having forgotten about them.
+    //
+    // Exiting is passed as the ignore: their PlayerState is STILL in PlayerArray
+    // at this point (it leaves later, in AController::Destroyed →
+    // CleanupPlayerState), so a census that counted them would find the party
+    // perfectly healthy and do nothing.
+    EvaluatePartyState(Exiting);
 
     // TODO: Save player progression data here.
 }
@@ -98,7 +135,19 @@ AActor* AGothicGameMode::FindPlayerStart_Implementation(AController* Player, con
         {
             return A.GetName() < B.GetName();
         });
-        return PlayerStarts[0];
+
+        // ...but PINNED PER PLAYER, not per session. Returning PlayerStarts[0]
+        // unconditionally meant every player in a multiplayer session spawned on
+        // the same actor. Solo that is invisible; with two players it is a pair of
+        // capsules depenetrating out of each other on the first frame, and a party
+        // wipe — which restarts EVERYONE at once — makes it a certainty rather
+        // than a race.
+        //
+        // Slot-indexed and wrapped, so it stays fully deterministic: player 0
+        // still gets exactly the start it always got, and every measurement taken
+        // against the solo baseline is unchanged.
+        const int32 Slot = GetPartySlotIndex(Player);
+        return PlayerStarts[Slot % PlayerStarts.Num()];
     }
 
     // Simple random selection for prototype.
@@ -162,17 +211,285 @@ void AGothicGameMode::RespawnPlayer(TWeakObjectPtr<AController> ControllerPtr)
     RestartPlayer(Controller);
 
     // Solo Contract: teleport to last Selah checkpoint instead of random PlayerStart.
-    APawn* NewPawn = Controller->GetPawn();
+    TeleportToCheckpoint(Controller);
+
+    // A pawn came back up, so the party readout has to follow it out of Wiped (or
+    // out of InPeril, if this was the last one still down). This is the ONLY way
+    // a wipe ends — nothing else clears the state.
+    EvaluatePartyState();
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoint placement
+// ---------------------------------------------------------------------------
+
+int32 AGothicGameMode::GetPartySlotIndex(const AController* Controller) const
+{
+    const AGameStateBase* GS = GetGameState<AGameStateBase>();
+    APlayerState* PS = Controller ? Controller->PlayerState : nullptr;
+    if (!GS || !PS)
+    {
+        return 0;
+    }
+
+    // Falls back to slot 0 for a controller not on the roster — a spectator, or a
+    // pawn possessed by AI. Slot 0 is the unoffset checkpoint itself, which is the
+    // right answer for "I don't know where you belong".
+    const int32 Index = GS->PlayerArray.IndexOfByKey(PS);
+    return (Index == INDEX_NONE) ? 0 : Index;
+}
+
+FVector AGothicGameMode::GetPartySpawnOffset(int32 SlotIndex) const
+{
+    if (SlotIndex <= 0 || PartySpawnRingRadius <= 0.f)
+    {
+        return FVector::ZeroVector;
+    }
+
+    const int32 Slots     = FMath::Max(1, PartySpawnRingSlots);
+    const int32 Adjusted  = SlotIndex - 1;              // slot 0 sits on the point
+    const int32 Ring      = Adjusted / Slots;           // 0 = first ring out
+    const int32 PosInRing = Adjusted % Slots;
+
+    const float Angle  = (2.f * PI) * (static_cast<float>(PosInRing) / static_cast<float>(Slots));
+    const float Radius = PartySpawnRingRadius * static_cast<float>(Ring + 1);
+
+    return FVector(FMath::Cos(Angle) * Radius, FMath::Sin(Angle) * Radius, 0.f);
+}
+
+void AGothicGameMode::TeleportToCheckpoint(AController* Controller)
+{
+    APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
     AGothicGameState* GS = GetGameState<AGothicGameState>();
 
-    if (NewPawn && GS && !GS->CheckpointLocation.IsZero())
+    if (!Pawn || !GS || GS->CheckpointLocation.IsZero())
     {
-        // Lifted clear of the floor, for the same reason TriggerFallRespawn does
-        // it: a checkpoint recorded at floor level drops the capsule into the
-        // geometry it was standing on.
-        FVector RespawnLocation = GS->CheckpointLocation;
-        RespawnLocation.Z += 100.f;
+        return;
+    }
 
-        NewPawn->SetActorLocation(RespawnLocation, false, nullptr, ETeleportType::TeleportPhysics);
+    // Lifted clear of the floor, for the same reason TriggerFallRespawn does it:
+    // a checkpoint recorded at floor level drops the capsule into the geometry it
+    // was standing on. The checkpoint is stored UNLIFTED precisely so each reader
+    // does this once — see AGothicGameState::SetCheckpointFromLocation.
+    FVector RespawnLocation = GS->CheckpointLocation + GetPartySpawnOffset(GetPartySlotIndex(Controller));
+    RespawnLocation.Z += 100.f;
+
+    // The ring keeps players off each other; this keeps the ring off the world. An
+    // offset that lands inside a pillar or through a wall is the obvious failure
+    // of spacing players out from a single recorded point, and FindTeleportSpot is
+    // the engine's own answer to it — it nudges the capsule out of anything it
+    // would be encroaching, including the teammates already placed this frame.
+    // On failure it leaves RespawnLocation untouched and we teleport anyway: a
+    // slightly overlapping player still depenetrates, a player left standing at
+    // the old PlayerStart does not.
+    if (UWorld* World = GetWorld())
+    {
+        FVector AdjustedLocation = RespawnLocation;
+        if (World->FindTeleportSpot(Pawn, AdjustedLocation, Pawn->GetActorRotation()))
+        {
+            RespawnLocation = AdjustedLocation;
+        }
+    }
+
+    Pawn->SetActorLocation(RespawnLocation, false, nullptr, ETeleportType::TeleportPhysics);
+}
+
+// ---------------------------------------------------------------------------
+// Party wipe
+// ---------------------------------------------------------------------------
+
+void AGothicGameMode::EvaluatePartyState(AController* IgnoreController)
+{
+    AGothicGameState* GS = GetGameState<AGothicGameState>();
+    if (!GS)
+    {
+        return;
+    }
+
+    // Mid-wipe the census is meaningless — every player is dead by construction
+    // and would simply re-report Wiped into the wipe that is already running.
+    if (bWipeInProgress)
+    {
+        return;
+    }
+
+    const EGothicPartyState Previous = GS->GetPartyState();
+    const EGothicPartyState Current  = GS->ComputePartyState(IgnoreController);
+
+    // Stored BEFORE the wipe executes, so anything the wipe re-enters reads the
+    // new state rather than the one it is replacing.
+    GS->SetPartyState(Current);
+
+    if (Current != Previous)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("VigilTimeline|t=%.3f|GameMode|Party|%s->%s"),
+            GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f,
+            *UEnum::GetValueAsString(Previous), *UEnum::GetValueAsString(Current));
+    }
+
+    // On the TRANSITION only. Re-entering Wiped from Wiped would restart the wipe
+    // on every death the wipe itself causes.
+    //
+    // OPEN DESIGN QUESTION, DELIBERATELY NOT ANSWERED HERE: the Rotunda endgame is
+    // specified as "max aggression + sealed zones, NO wipe", which — read strictly
+    // — means the boss encounter wants a party wipe to mean something other than
+    // "everybody respawns at the checkpoint". Nothing in the arena or encounter
+    // code currently carries a flag this could consult, so this PR wipes uniformly
+    // and the exemption is left as future work. The hook, when it exists, is one
+    // condition on this line.
+    if (Current == EGothicPartyState::Wiped && Previous != EGothicPartyState::Wiped)
+    {
+        ExecutePartyWipe();
     }
 }
+
+void AGothicGameMode::ExecutePartyWipe()
+{
+    UWorld* World = GetWorld();
+    AGothicGameState* GS = World ? GetGameState<AGothicGameState>() : nullptr;
+    if (!GS || bWipeInProgress)
+    {
+        return;
+    }
+
+    TGuardValue<bool> WipeGuard(bWipeInProgress, true);
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("VigilTimeline|t=%.3f|GameMode|PartyWipe|BEGIN|players=%d"),
+        World->GetTimeSeconds(), GS->PlayerArray.Num());
+
+    // The roster is walked into a local array first. Collapsing a revive window
+    // runs the full death path, which destroys and respawns pawns and can in
+    // principle touch PlayerArray — iterating it directly while doing that is the
+    // shape of a crash nobody wants to find in a wipe.
+    TArray<AGothicPlayerCharacter*> Members;
+    Members.Reserve(GS->PlayerArray.Num());
+    for (const APlayerState* PS : GS->PlayerArray)
+    {
+        if (AGothicPlayerCharacter* Char = PS ? Cast<AGothicPlayerCharacter>(PS->GetPawn()) : nullptr)
+        {
+            Members.Add(Char);
+        }
+    }
+
+    // Channels first. A channel whose reviver has just died would be caught by
+    // TickReviveChannel within a tenth of a second anyway, but the bodies it
+    // points at are about to be destroyed, and a wipe should not leave a "someone
+    // is reviving you" bar replicated across the transition.
+    for (AGothicPlayerCharacter* Char : Members)
+    {
+        if (IsValid(Char))
+        {
+            Char->CancelReviveChannel(TEXT("party-wipe"));
+        }
+    }
+
+    // Then the windows. CollapseReviveWindow goes through the SAME
+    // OnReviveWindowExpired the timer drives, so a wipe-killed downed player is
+    // indistinguishable from one who bled out: same tag hygiene, same OnDeath,
+    // same banking, same RequestRespawn. Players who were already dead rather than
+    // downed have a respawn pending from their own OnDeath and need nothing here —
+    // RequestRespawn refuses a second one regardless.
+    for (AGothicPlayerCharacter* Char : Members)
+    {
+        if (IsValid(Char) && Char->IsDowned())
+        {
+            Char->CollapseReviveWindow();
+        }
+    }
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("VigilTimeline|t=%.3f|GameMode|PartyWipe|END|respawns_pending=%d"),
+        World->GetTimeSeconds(), PendingRespawns.Num());
+}
+
+// ---------------------------------------------------------------------------
+// Gothic.ForceWipeCheck / Gothic.ForceWipe — debug console commands
+//
+// The natural transitions cover the real cases, but neither of the two that
+// matter most is convenient to stage: "the last living player disconnects"
+// needs a client to actually leave, and the execution path is otherwise only
+// reachable by getting a whole party onto the floor at once. ForceWipeCheck
+// re-runs the census and prints it player by player, so a verification run can
+// see WHY the party is or is not wiped; ForceWipe drives ExecutePartyWipe
+// directly, so the respawn half can be proved without arranging the census.
+// ---------------------------------------------------------------------------
+#if !UE_BUILD_SHIPPING
+static AGothicGameMode* GothicWipeCmdGameMode(UWorld* World, const TCHAR* CmdName)
+{
+    AGothicGameMode* GM = World ? World->GetAuthGameMode<AGothicGameMode>() : nullptr;
+    if (!GM)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("%s: no authoritative AGothicGameMode in this world — run this on the server."),
+            CmdName);
+    }
+    return GM;
+}
+
+static void GothicForceWipeCheckConsoleCommand(UWorld* World)
+{
+    AGothicGameMode* GM = GothicWipeCmdGameMode(World, TEXT("Gothic.ForceWipeCheck"));
+    if (!GM)
+    {
+        return;
+    }
+
+    AGothicGameState* GS = GM->GetGameState<AGothicGameState>();
+    if (!GS)
+    {
+        UE_LOG(LogVigilCombat, Warning, TEXT("Gothic.ForceWipeCheck: no game state in this world."));
+        return;
+    }
+
+    // The per-player readout is the point. A wipe that did not fire is nearly
+    // always one player the census still counts as up, and this says which.
+    for (int32 Index = 0; Index < GS->PlayerArray.Num(); ++Index)
+    {
+        const APlayerState* PS = GS->PlayerArray[Index];
+        const APawn* Pawn = PS ? PS->GetPawn() : nullptr;
+        const AGothicCharacterBase* Char = Cast<const AGothicCharacterBase>(Pawn);
+
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Gothic.ForceWipeCheck: [%d] '%s' pawn=%s alive=%d downed=%d fightable=%d"),
+            Index, PS ? *PS->GetPlayerName() : TEXT("<null>"), *GetNameSafe(Pawn),
+            Char ? Char->IsAlive() : 0, Char ? Char->IsDowned() : 0,
+            AGothicCharacterBase::IsFightableActor(Pawn) ? 1 : 0);
+    }
+
+    UE_LOG(LogVigilCombat, Warning,
+        TEXT("Gothic.ForceWipeCheck: stored=%s computed=%s — evaluating."),
+        *UEnum::GetValueAsString(GS->GetPartyState()),
+        *UEnum::GetValueAsString(GS->ComputePartyState()));
+
+    GM->EvaluatePartyState();
+}
+
+static void GothicForceWipeConsoleCommand(UWorld* World)
+{
+    if (AGothicGameMode* GM = GothicWipeCmdGameMode(World, TEXT("Gothic.ForceWipe")))
+    {
+        UE_LOG(LogVigilCombat, Warning, TEXT("Gothic.ForceWipe: executing a party wipe unconditionally."));
+
+        // The state is set first because ExecutePartyWipe deliberately does not set
+        // it — EvaluatePartyState owns that — and a forced wipe should still show
+        // the same replicated readout a natural one does.
+        if (AGothicGameState* GS = GM->GetGameState<AGothicGameState>())
+        {
+            GS->SetPartyState(EGothicPartyState::Wiped);
+        }
+        GM->ExecutePartyWipe();
+    }
+}
+
+static FAutoConsoleCommandWithWorld GGothicForceWipeCheckCmd(
+    TEXT("Gothic.ForceWipeCheck"),
+    TEXT("Gothic.ForceWipeCheck — print the party census player by player and re-run the wipe evaluation. Debug only."),
+    FConsoleCommandWithWorldDelegate::CreateStatic(&GothicForceWipeCheckConsoleCommand));
+
+static FAutoConsoleCommandWithWorld GGothicForceWipeCmd(
+    TEXT("Gothic.ForceWipe"),
+    TEXT("Gothic.ForceWipe — execute a party wipe unconditionally, ignoring the census. Debug only."),
+    FConsoleCommandWithWorldDelegate::CreateStatic(&GothicForceWipeConsoleCommand));
+#endif // !UE_BUILD_SHIPPING

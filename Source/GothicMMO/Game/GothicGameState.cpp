@@ -2,9 +2,12 @@
 
 #include "Game/GothicGameState.h"
 #include "AI/GothicEncounterVolume.h"
+#include "Character/GothicCharacterBase.h"     // IsFightableActor — the party census predicate
 #include "UI/GothicSelahCollectBarWidget.h"
 #include "Net/UnrealNetwork.h"
+#include "GameFramework/Controller.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/PlayerState.h"
 #include "Blueprint/UserWidget.h"
 #include "Engine/World.h"
 
@@ -17,6 +20,107 @@ void AGothicGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(AGothicGameState, SelahNames);
 	DOREPLIFETIME(AGothicGameState, SelahCollectPhase);
 	DOREPLIFETIME(AGothicGameState, SelahCollectDuration);
+	DOREPLIFETIME(AGothicGameState, PartyState);
+}
+
+// ---------------------------------------------------------------------------
+// Party state — the census and its replicated readout
+// ---------------------------------------------------------------------------
+
+void AGothicGameState::SetPartyState(EGothicPartyState NewState)
+{
+	if (!HasAuthority() || PartyState == NewState)
+	{
+		return;
+	}
+
+	PartyState = NewState;
+	ForceNetUpdate();
+
+	// Authority doesn't get its own OnRep — fire it directly, exactly as
+	// SetSelahCollectPhase does, so the listen-server host and standalone PIE see
+	// the transition on the same frame a remote client would.
+	OnRep_PartyState();
+}
+
+void AGothicGameState::OnRep_PartyState()
+{
+	OnPartyStateChanged(PartyState);
+}
+
+EGothicPartyState AGothicGameState::ComputePartyState(const AController* IgnoreController) const
+{
+	int32 Counted   = 0;
+	int32 Fightable = 0;
+
+	for (const APlayerState* PS : PlayerArray)
+	{
+		if (!PS)
+		{
+			continue;
+		}
+
+		// The leaver. See the header: during Logout they are still on the roster.
+		if (IgnoreController && PS->GetOwningController() == IgnoreController)
+		{
+			continue;
+		}
+
+		// Spectators are not party members and must not hold a wipe open.
+		if (PS->IsOnlyASpectator())
+		{
+			continue;
+		}
+
+		++Counted;
+
+		if (AGothicCharacterBase::IsFightableActor(PS->GetPawn()))
+		{
+			++Fightable;
+		}
+	}
+
+	// An empty roster is NOT a wipe. Between InitGame and the first PostLogin
+	// there is nobody to have wiped, and reporting Wiped there would fire the
+	// whole respawn path against zero players before the session had begun.
+	if (Counted == 0)
+	{
+		return EGothicPartyState::Alive;
+	}
+
+	if (Fightable == 0)
+	{
+		return EGothicPartyState::Wiped;
+	}
+
+	return (Fightable < Counted) ? EGothicPartyState::InPeril : EGothicPartyState::Alive;
+}
+
+bool AGothicGameState::HasFightablePartyMember(const APlayerState* ExcludePS,
+                                               const AController* IgnoreController) const
+{
+	for (const APlayerState* PS : PlayerArray)
+	{
+		if (!PS || PS == ExcludePS || PS->IsOnlyASpectator())
+		{
+			continue;
+		}
+
+		if (IgnoreController && PS->GetOwningController() == IgnoreController)
+		{
+			continue;
+		}
+
+		// A spectator, a player mid-travel, a PlayerState whose pawn has not
+		// spawned yet: no pawn means nobody who can walk over and pick anyone up.
+		// IsFightableActor handles the null itself.
+		if (AGothicCharacterBase::IsFightableActor(PS->GetPawn()))
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void AGothicGameState::SetCheckpointFromLocation(const FVector& WorldLocation, AActor* IgnoreActor)
