@@ -3,6 +3,7 @@
 #include "Game/GothicGameInstance.h"
 
 #include "Game/GothicPlayerState.h"
+#include "Character/GothicPlayerCharacter.h"
 #include "Items/GothicInventoryComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 
@@ -32,6 +33,15 @@ void UGothicGameInstance::CaptureTravelSnapshot(APlayerState* PlayerState)
     if (const UGothicAttributeSet* Attributes = PS->GetGothicAttributeSet())
     {
         TravelSnapshot.Selah = Attributes->GetSelah();
+    }
+
+    // Ammo comes off the PAWN — it is the only place WeaponSlots exist. A
+    // PlayerState without one (mid-travel, spectating) simply banks no ammo,
+    // and the restore then leaves the fresh slots as InitFromData made them,
+    // which is the old behaviour rather than a broken one.
+    if (const AGothicPlayerCharacter* Player = Cast<AGothicPlayerCharacter>(PS->GetPawn()))
+    {
+        TravelSnapshot.Ammo = Player->CaptureAmmoSnapshot();
     }
 
     TravelSnapshot.bHasSnapshot = true;
@@ -80,6 +90,16 @@ bool UGothicGameInstance::RestoreTravelSnapshot(APlayerState* PlayerState)
         // a value the player already owned, not a new grant, and GE_InitStats has
         // already run by the time the restore seam is reached.
         Attributes->SetSelah(TravelSnapshot.Selah);
+    }
+
+    // Park the ammo on the PlayerState instead of writing slots here. This
+    // function is called from InitGASFromPlayerState BEFORE the weapon-slot sync
+    // that refills every magazine, so anything written now would be erased a few
+    // lines later. The PlayerState bank is consumed AFTER that sync, by the same
+    // restore the death path uses — one seam, both journeys.
+    if (TravelSnapshot.Ammo.Num() > 0)
+    {
+        PS->CacheAmmo(TravelSnapshot.Ammo);
     }
 
     UE_LOG(LogTemp, Log, TEXT("GothicGameInstance: travel snapshot restored — %d carried, %d equipped, %.0f Selah, %d Silver"),

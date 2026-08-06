@@ -12,6 +12,7 @@
 #include "AbilitySystemInterface.h"
 #include "GameplayTagContainer.h"
 #include "AbilitySystem/GothicAttributeSet.h"
+#include "Weapons/GothicWeaponData.h"
 #include "GothicPlayerState.generated.h"
 
 
@@ -160,6 +161,45 @@ public:
         return Value;
     }
 
+    // ── Banked ammo ──────────────────────────────────────────────────────────
+    // Here for exactly the reason CachedSuperMeterOnDeath is here: WeaponSlots
+    // live on the PAWN, the pawn is destroyed on death, and the replacement
+    // pawn's init path calls FGothicWeaponSlot::InitFromData — which refills
+    // every magazine to capacity. Without a bank, dying was a free reload.
+    //
+    // Two producers, one consumer. Death banks it in
+    // AGothicPlayerCharacter::OnDeath_Implementation (alongside the SuperMeter,
+    // which is also why the downed fork is handled correctly for free — a downed
+    // player has not reached that line, so a revive-in-place never touches ammo,
+    // and a downed player whose window expires re-enters death and banks then).
+    // Level travel banks it through UGothicGameInstance::RestoreTravelSnapshot,
+    // which parks its ammo here so both paths share one restore.
+    //
+    // NOT replicated. The bank is server-side state consumed by a server-side
+    // restore; the owning client is caught up by
+    // AGothicPlayerCharacter::Client_RestoreAmmo, because WeaponSlots are
+    // unreplicated pawn state and a client's own slots are computed locally.
+
+    /** True while a banked snapshot is waiting for the next pawn's init. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|PlayerState")
+    bool HasCachedAmmo() const { return bHasCachedAmmo; }
+
+    /** Server-only. Parks per-slot RAW magazine/reserve counts for the next pawn. */
+    void CacheAmmo(const TArray<FGothicAmmoSlotSnapshot>& InAmmo)
+    {
+        CachedAmmo = InAmmo;
+        bHasCachedAmmo = true;
+    }
+
+    /** Returns the banked snapshot and clears it — call once, right after restoring it. */
+    TArray<FGothicAmmoSlotSnapshot> ConsumeCachedAmmo()
+    {
+        TArray<FGothicAmmoSlotSnapshot> Out = MoveTemp(CachedAmmo);
+        CachedAmmo.Reset();
+        bHasCachedAmmo = false;
+        return Out;
+    }
+
     /**
      * Tutorial hints this player has already been shown, for the whole session.
      *
@@ -236,4 +276,12 @@ protected:
     
     // GothicPlayerState.h — add to protected section
     float CachedSuperMeterOnDeath = -1.f;
+
+    /** See HasCachedAmmo. An empty array is a legal snapshot (no ammo weapons),
+     *  so the flag rather than Num() is what says one is pending. */
+    UPROPERTY(Transient)
+    TArray<FGothicAmmoSlotSnapshot> CachedAmmo;
+
+    UPROPERTY(Transient)
+    bool bHasCachedAmmo = false;
 };
