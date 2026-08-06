@@ -9,6 +9,7 @@
 #include "UI/GothicHintManagerComponent.h"
 
 #include "Components/BoxComponent.h"
+#include "GameFramework/PlayerState.h"
 
 AGothicHintTrigger::AGothicHintTrigger()
 {
@@ -16,8 +17,8 @@ AGothicHintTrigger::AGothicHintTrigger()
 
     // Replicated so the server-side SuperMeter fill has an actor to run on in a
     // listen-server session. The trigger itself carries no replicated state —
-    // bHasFired is per-machine on purpose, because the hint half must latch on
-    // the client that draws it and the fill half on the authority.
+    // LatchedPlayers is per-machine on purpose, because the hint half must latch
+    // on the client that draws it and the fill half on the authority.
     bReplicates = true;
 
     TriggerBox = CreateDefaultSubobject<UBoxComponent>(TEXT("TriggerBox"));
@@ -61,11 +62,18 @@ void AGothicHintTrigger::OnTriggerBeginOverlap(
         return;
     }
 
-    if (bTriggerOnce && bHasFired)
+    // Per-player latch. The key is resolved once and reused for the test and the
+    // add, so a player whose PlayerState arrives between the two cannot latch
+    // under one key and be tested under the other.
+    AActor* LatchKey = LatchKeyFor(Player);
+    if (bTriggerOnce)
     {
-        return;
+        if (LatchedPlayers.Contains(LatchKey))
+        {
+            return;
+        }
+        LatchedPlayers.Add(LatchKey);
     }
-    bHasFired = true;
 
     // Server half. Runs before the hint so that on a listen-server host — where
     // both halves run on the same machine — the meter is already full when the
@@ -84,6 +92,22 @@ void AGothicHintTrigger::OnTriggerBeginOverlap(
             Hints->ShowHint(HintTag);
         }
     }
+}
+
+AActor* AGothicHintTrigger::LatchKeyFor(AGothicPlayerCharacter* Player)
+{
+    // The PlayerState is the identity that outlives the pawn, so latching on it
+    // is what makes a gate stay consumed across a death — the same reasoning that
+    // put SeenTutorialHints on the PlayerState rather than on the hint manager.
+    //
+    // Falls back to the pawn because the PlayerState is not guaranteed resolved
+    // at the moment of an overlap: these gates sit on the Palewood spawn line and
+    // fire at t=0, before possession has necessarily replicated. A pawn-keyed
+    // latch is still a per-PLAYER latch — it just does not survive that player's
+    // respawn, and both paths behind it tolerate a second run (the hint manager's
+    // seen-set swallows the repeat, and the fill writes the same ceiling twice).
+    APlayerState* PS = Player->GetPlayerState();
+    return PS ? static_cast<AActor*>(PS) : static_cast<AActor*>(Player);
 }
 
 void AGothicHintTrigger::FillSuperMeter(AGothicPlayerCharacter* Player)
