@@ -9,7 +9,7 @@
       "args": ["orca_qwen_bridge.py"],
       "env": {
         "ORCA_BASE_URL": "http://localhost:11434/v1",
-        "ORCA_MODEL_NAME": "qwen2.5-coder:14b"
+        "ORCA_MODEL_NAME": "qwen2.5-coder:7b"
       }
     }
   }
