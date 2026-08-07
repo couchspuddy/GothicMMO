@@ -1,10 +1,16 @@
 {
-	"mcpServers":
-	{
-		"unreal-mcp":
-		{
-			"type": "http",
-			"url": "http://127.0.0.1:8000/mcp"
-		}
-	}
+  "mcpServers": {
+    "unreal-mcp": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp"
+    },
+    "qwen-agent": {
+      "command": "C:\\Users\\ninja\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
+      "args": ["orca_qwen_bridge.py"],
+      "env": {
+        "ORCA_BASE_URL": "http://localhost:11434/v1",
+        "ORCA_MODEL_NAME": "qwen2.5-coder:14b"
+      }
+    }
+  }
 }
