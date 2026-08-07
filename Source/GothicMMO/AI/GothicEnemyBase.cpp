@@ -179,6 +179,12 @@ void AGothicEnemyBase::BeginPlay()
             FGameplayTag::RequestGameplayTag(FName("State.Stunned")),
             EGameplayTagEventType::NewOrRemoved)
             .AddUObject(this, &AGothicEnemyBase::HandleStunTagChanged);
+
+        // Make State.Read.Marked visible on the enemy wearing it.
+        AbilitySystemComponent->RegisterGameplayTagEvent(
+            FGameplayTag::RequestGameplayTag(FName("State.Read.Marked")),
+            EGameplayTagEventType::NewOrRemoved)
+            .AddUObject(this, &AGothicEnemyBase::HandleReadMarkTagChanged);
     }
 
     // Face the target, turn smoothly. Set in BeginPlay rather than the
@@ -852,4 +858,28 @@ void AGothicEnemyBase::HandleStunTagChanged(const FGameplayTag CallbackTag, int3
 
     UE_LOG(LogTemp, Verbose, TEXT("Stun[%s]: %s"),
         *GetName(), bStunned ? TEXT("halted") : TEXT("resumed"));
+}
+
+void AGothicEnemyBase::HandleReadMarkTagChanged(const FGameplayTag CallbackTag, int32 NewCount)
+{
+    if (!VitalPointComponent)
+    {
+        return;
+    }
+
+    // No HasAuthority gate — see the header. Dedicated servers have no DMI to
+    // light anyway (CreateVitalMaterials is skipped there), so the setter is a
+    // no-op on them rather than a special case here.
+    if (NewCount > 0)
+    {
+        // Seed at the vital rather than the actor origin: the mark and the aim
+        // tell are the same spot on the body, and the component re-pushes this
+        // every frame from the same source.
+        VitalPointComponent->SetReadHighlight(
+            VitalPointComponent->GetCurrentVitalWorldLocation());
+    }
+    else
+    {
+        VitalPointComponent->ClearReadHighlight();
+    }
 }
