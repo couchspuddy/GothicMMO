@@ -23,6 +23,8 @@
 
 class UCameraComponent;
 class UStaticMeshComponent;
+class USkeletalMeshComponent;
+class UAnimationAsset;
 class UInputMappingContext;
 class UInputAction;
 class UGothicInputHandlerComponent;
@@ -137,6 +139,58 @@ public:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
     bool bHideBodyInFirstPerson = true;
+
+    // -------------------------------------------------------------------------
+    // First-person arms viewmodel
+    //
+    // A skeletal mesh parented to the camera and visible ONLY to the owning
+    // player — the hands/arms the player sees holding the gun. It lives in C++,
+    // next to the systems that drive it, on purpose: the last viewmodel was
+    // UWeaponMesh, a Blueprint-side component the C++ layer knew nothing about,
+    // and it shipped without recoil, with the wrong visibility flags, and ended
+    // its life as undeletable orphaned data that had to be neutralized in place.
+    //
+    // Note the pleasant property of owner-only-see + camera child: every pawn's
+    // arms render only on its OWNER's machine, and a camera child cannot move
+    // relative to the camera. That means the possession-race handling the weapon
+    // attach needs (ReapplyActiveWeaponAttachment from PossessedBy/OnRep_*) is
+    // NOT needed here — the component is inert for everyone else by construction,
+    // and there is no locality-dependent attachment target to get wrong.
+    //
+    // Scope is deliberately spatial parenting + visibility + one optional looping
+    // idle pose: no animation blueprint, no procedural sway/bob, no weapon-grip
+    // IK, no ADS pose. The single pose exists only because an unposed skeletal
+    // mesh renders as a T-pose through the player's face (see ArmsIdlePose).
+    // -------------------------------------------------------------------------
+
+    /**
+     * Where the arms sit relative to the camera: +X forward, +Y right, +Z up.
+     * Chosen to sit a humanoid mesh's hands near the existing camera weapon at
+     * CameraWeaponOffset (30,12,-12). EDITOR-TUNE-ME by eye once a mesh is
+     * assigned — the right value depends entirely on the mesh's own pivot. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
+    FVector ArmsOffset = FVector(20.f, 0.f, -25.f);
+
+    /** Arms orientation relative to the camera. Starting value only —
+     *  EDITOR-TUNE-ME once the arms mesh is assigned. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
+    FRotator ArmsRotation = FRotator(0.f, -90.f, 0.f);
+
+    /**
+     * A single looping pose for the arms mesh. THE ONE HOOK beyond pure
+     * parenting, and here is why it earns its place: no dedicated FP-arms asset
+     * exists in this project or the 5.8 template (surveyed), so the editor pass
+     * will assign a full-body mesh (SKM_Manny_Simple or a Paragon kit). An
+     * unposed skeletal mesh renders as a T-pose — through the player's face. A
+     * single looping pose is the minimum for the feature to be visually
+     * meaningful.
+     *
+     * This is data-driven single-node playback (SetAnimationMode(SingleNode) +
+     * PlayAnimation, looping), NOT animation logic: no ABP, no state machine, no
+     * per-frame code. Leave it null and the mesh simply renders in its ref pose.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
+    TObjectPtr<UAnimationAsset> ArmsIdlePose;
 
     // -------------------------------------------------------------------------
     // Weapon pose: sprint and fire kick
@@ -820,6 +874,11 @@ protected:
     // -------------------------------------------------------------------------
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
     TObjectPtr<UStaticMeshComponent> WeaponMeshComponent;
+
+    // First-person arms — skeletal mesh parented to the camera, owner-only-see.
+    // See the ArmsOffset/ArmsIdlePose block above for the full rationale.
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
+    TObjectPtr<USkeletalMeshComponent> FirstPersonArmsMesh;
 
     /**
      * Re-parent the weapon and apply the relative transform that matches whichever
