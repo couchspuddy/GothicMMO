@@ -181,13 +181,29 @@ public:
     // ── Read highlight ────────────────────────────────────────────────────
 
     /**
-     * Parks the overlay's Read parameter off-world so the highlight is dark.
+     * Lights the overlay's Read channel at WorldPos and latches it on.
      *
-     * Its counterpart SetReadHighlight() and the bReadHighlightActive flag were
-     * removed: nothing had called them since the Read redesign, so the flag was
-     * write-only and the setter was an unreachable entry point sitting on a
-     * material parameter. This half survives because it is genuinely called —
-     * on init, to establish the off state of the overlay material.
+     * This half was removed in the July redesign as an unreachable entry point;
+     * it comes back because AGothicEnemyBase now drives it from the lifetime of
+     * State.Read.Marked. Purely cosmetic — nothing downstream reads the flag.
+     *
+     * The overlay slot is NOT touched here. ReadPointWorldPos is a second glow
+     * channel inside the SAME material the vital marker uses, which is the whole
+     * reason it exists: calling SetOverlayMaterial for the Read mark would
+     * replace the amber "where to aim" tell with it.
+     *
+     * WorldPos seeds the first frame only. While the latch is up, TickComponent
+     * re-pushes the CURRENT vital location every frame, so the mark rides a
+     * moving, animating enemy the same way the vital glow does. Today's only
+     * caller marks the current vital, so the two agree; a future caller wanting
+     * an independent point would need the tick refresh to become conditional.
+     */
+    void SetReadHighlight(const FVector& WorldPos);
+
+    /**
+     * Parks the overlay's Read parameter off-world so the highlight is dark and
+     * drops the latch. Called on init to establish the off state, on tag loss,
+     * and on death.
      */
     void ClearReadHighlight();
 
@@ -345,6 +361,23 @@ public:
     UPROPERTY(EditDefaultsOnly, Category = "Gothic|VitalPoint|Material")
     FName ReadPosParamName = FName("ReadPointWorldPos");
 
+    /** Material parameter name for the Read mark's tint. */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|VitalPoint|Material")
+    FName ReadColorParamName = FName("ReadGlowColor");
+
+    /**
+     * Tint pushed into ReadGlowColor when the DMI is created.
+     *
+     * Deliberately low alpha: the Read mark is a "this one is marked" whisper,
+     * not a second waypoint, and it shares the mesh with the amber vital glow —
+     * a loud Read mark would read as the aim tell and send players at the wrong
+     * pixel. Alpha is the ONLY lever available for that: GlowRadius and
+     * GlowIntensity in M_VitalOverlay are single scalars feeding BOTH glows, so
+     * dimming the Read by shrinking either would shrink the vital marker with it.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Gothic|VitalPoint|Material")
+    FLinearColor ReadGlowColor = FLinearColor(0.45f, 0.62f, 0.95f, 0.12f);
+
     /**
      * Base material for the vital overlay. Create a simple translucent
      * emissive material (M_VitalOverlay) and assign it here in the
@@ -392,6 +425,13 @@ protected:
     /** Dynamic Material Instances created for the mesh overlay glow. */
     UPROPERTY()
     TObjectPtr<UMaterialInstanceDynamic> OverlayDMI;
+
+    /**
+     * True while the Read mark is lit. Not replicated and not authoritative —
+     * every machine derives it from its own view of State.Read.Marked, and the
+     * enemy ASC replicates that tag to clients under Minimal replication.
+     */
+    bool bReadHighlightActive = false;
 
     // ── Internal ─────────────────────────────────────────────────────────────
 

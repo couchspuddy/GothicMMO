@@ -10,6 +10,22 @@
 #include "TimerManager.h"
 #include "GothicMMO.h"
 
+namespace
+{
+    /**
+     * The overlay's position parameters are Vector params, so they travel as
+     * FLinearColor. W is unused by the shader; it is set to 1 purely so a
+     * parameter dump reads as "live" rather than as a zeroed struct.
+     */
+    FORCEINLINE FLinearColor ToParamVector(const FVector& Pos)
+    {
+        return FLinearColor(Pos.X, Pos.Y, Pos.Z, 1.f);
+    }
+
+    /** Both glow channels read this as "nowhere" — no pixel is ever within radius. */
+    const FLinearColor GOffWorldParam(0.f, 0.f, -99999.f, 0.f);
+}
+
 UGothicVitalPointComponent::UGothicVitalPointComponent()
 {
     PrimaryComponentTick.bCanEverTick = true;
@@ -92,13 +108,19 @@ void UGothicVitalPointComponent::TickComponent(float DeltaTime, ELevelTick TickT
     // follows the bone through animation
     if (OverlayDMI)
     {
-        // The overlay's only job is "shoot here" -- it tracks the CURRENT vital
-        // and nothing else. It used to also paint the predicted next vital via
-        // ReadPointWorldPos, from when The Read was a telegraph; that path had
-        // no callers left after the redesign, so the parameter sat off-world
-        // permanently. Removed along with the per-frame Warning log that sat
-        // inside this branch and would have spammed every tick had it ever run.
+        // The overlay's first job is "shoot here" -- the CURRENT vital.
         UpdateVitalMaterialPosition();
+
+        // Its second is "this one is marked". ReadPointWorldPos sat off-world
+        // permanently after the Read redesign left it callerless; it is lit
+        // again for the lifetime of State.Read.Marked. Re-pushed per frame from
+        // the same source as the vital glow so the mark tracks a moving,
+        // animating enemy instead of freezing where the mark was applied.
+        if (bReadHighlightActive)
+        {
+            OverlayDMI->SetVectorParameterValue(ReadPosParamName,
+                ToParamVector(GetCurrentVitalWorldLocation()));
+        }
     }
 
 #if WITH_EDITOR
@@ -698,12 +720,15 @@ void UGothicVitalPointComponent::HandleOwnerDeath()
         ShimmerComponent = nullptr;
     }
 
-    // Clear the mesh overlay so corpses don't glow
+    // Clear the mesh overlay so corpses don't glow. The latch drops with it —
+    // a corpse still carrying State.Read.Marked (the mark outlives a kill that
+    // lands inside its 4s) must not have the tick re-light it.
+    bReadHighlightActive = false;
+
     if (OverlayDMI)
     {
-        const FLinearColor OffWorld(0.f, 0.f, -99999.f, 0.f);
-        OverlayDMI->SetVectorParameterValue(VitalPosParamName, OffWorld);
-        OverlayDMI->SetVectorParameterValue(ReadPosParamName, OffWorld);
+        OverlayDMI->SetVectorParameterValue(VitalPosParamName, GOffWorldParam);
+        OverlayDMI->SetVectorParameterValue(ReadPosParamName, GOffWorldParam);
     }
 
     if (GetWorld() && ShiftTimerHandle.IsValid())
@@ -721,8 +746,15 @@ void UGothicVitalPointComponent::CreateVitalMaterials()
     OverlayDMI = UMaterialInstanceDynamic::Create(VitalOverlayMaterial, this);
     if (OverlayDMI)
     {
+        // The ONE overlay slot, shared by both tells. The Read mark rides the
+        // ReadPointWorldPos channel of this same material rather than claiming
+        // a slot of its own — a second SetOverlayMaterial would evict the vital
+        // glow, which is the tell the player actually aims with.
         CachedMesh->SetOverlayMaterial(OverlayDMI);
 
+        // Tint is per-instance so "slight" is tunable per enemy tier without
+        // reauthoring M_VitalOverlay. Pushed once — only the position moves.
+        OverlayDMI->SetVectorParameterValue(ReadColorParamName, ReadGlowColor);
 
         // Initialize — vital is live, Read defaults to off-world
         UpdateVitalMaterialPosition();
@@ -734,15 +766,27 @@ void UGothicVitalPointComponent::UpdateVitalMaterialPosition()
 {
     if (!OverlayDMI) return;
 
-    const FVector Pos = GetCurrentVitalWorldLocation();
     OverlayDMI->SetVectorParameterValue(VitalPosParamName,
-        FLinearColor(Pos.X, Pos.Y, Pos.Z, 1.f));
+        ToParamVector(GetCurrentVitalWorldLocation()));
+}
+
+void UGothicVitalPointComponent::SetReadHighlight(const FVector& WorldPos)
+{
+    // Latch first: an enemy whose Blueprint never assigned VitalOverlayMaterial
+    // has no DMI at all, and there is nothing to light. Setting the flag anyway
+    // costs nothing and keeps the on/off state honest if a DMI ever appears.
+    bReadHighlightActive = true;
+
+    if (!OverlayDMI) return;
+
+    OverlayDMI->SetVectorParameterValue(ReadPosParamName, ToParamVector(WorldPos));
 }
 
 void UGothicVitalPointComponent::ClearReadHighlight()
 {
+    bReadHighlightActive = false;
+
     if (!OverlayDMI) return;
 
-    OverlayDMI->SetVectorParameterValue(ReadPosParamName,
-        FLinearColor(0.f, 0.f, -99999.f, 0.f));
+    OverlayDMI->SetVectorParameterValue(ReadPosParamName, GOffWorldParam);
 }

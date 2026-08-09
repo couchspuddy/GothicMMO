@@ -329,6 +329,22 @@ protected:
     UFUNCTION()
     void HandleStunTagChanged(const FGameplayTag CallbackTag, int32 NewCount);
 
+    /**
+     * Lights or darkens this enemy's Read mark as State.Read.Marked comes and goes.
+     *
+     * Cosmetic only, and deliberately driven off the TAG rather than a timer of
+     * its own: GE_ReadMark (target) and GE_ReadState (caster's HUD proc icon) are
+     * both 4.0s duration today, and a third clock would be one more thing that
+     * can disagree with them. Binding to the tag's lifetime keeps the glow, the
+     * mark and the icon in sync by construction — including early removal.
+     *
+     * Runs on every machine, unlike HandleStunTagChanged: this changes nothing
+     * authoritative, and a mark only the server can see is not a tell. The enemy
+     * ASC replicates in Minimal mode, which still carries granted tags to clients.
+     */
+    UFUNCTION()
+    void HandleReadMarkTagChanged(const FGameplayTag CallbackTag, int32 NewCount);
+
     // SelahAwardRadius (500uu) and AwardSelahToNearbyEmbers() lived here. The
     // per-kill award was replaced by encounter-based collection; the function had
     // no callers and was not BlueprintCallable, so nothing could reach it. Both
