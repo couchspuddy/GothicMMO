@@ -171,18 +171,17 @@ void AGothicPlayerCharacter::BeginPlay()
         Slot.InitFromData();
     }
 
-    // Show the starting weapon mesh
-    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex))
-    {
-        const UGothicWeaponData* StartWeapon = WeaponSlots[ActiveWeaponIndex].WeaponData;
-        if (StartWeapon && WeaponMeshComponent)
-        {
-            WeaponMeshComponent->SetStaticMesh(StartWeapon->WeaponMesh);
-            WeaponMeshComponent->SetRelativeScale3D(StartWeapon->MeshScale);
-        }
-
-        ApplyWeaponAttachment(StartWeapon);
-    }
+    // Show the starting weapon mesh through the single visuals seam rather than
+    // setting the static mesh by hand here. RefreshWeaponVisuals sets the mesh, its
+    // scale, and the attachment in one place — the same call every equip and swap
+    // already routes through — and is null-safe on an empty slot or mesh-less data.
+    //
+    // The ATTACHMENT it applies is locality-dependent (camera for the local player,
+    // hand socket for a remote), and BeginPlay runs BEFORE possession on clients and
+    // respawned pawns, so IsLocallyControlled() is false here and the local gun would
+    // land on the hand socket. That is corrected by re-running the attachment from
+    // PossessedBy / OnRep_Controller once locality is actually known.
+    RefreshWeaponVisuals(ActiveWeaponIndex);
 
     // A constructor SetOwnerNoSee is overridden by whatever the Blueprint serialized
     // on the inherited mesh, and the Blueprint had it off — which is the entire reason
@@ -240,12 +239,44 @@ void AGothicPlayerCharacter::PossessedBy(AController* NewController)
 {
     Super::PossessedBy(NewController);
     InitGASFromPlayerState();
+
+    // The server half of the possession race. BeginPlay attached the weapon while
+    // IsLocallyControlled() was still false (BeginPlay precedes possession on
+    // respawned pawns — the same ordering that forces lazy ASC resolution in
+    // GothicSteadfastComponent), which routes the listen-server host's own gun to the
+    // hand socket instead of the camera. InitGASFromPlayerState above already re-runs
+    // the visuals when the PlayerState is present, but it early-returns and retries
+    // when the PlayerState has not yet resolved; re-attaching here closes that gap
+    // unconditionally now that the controller is known.
+    ReapplyActiveWeaponAttachment();
 }
 
 void AGothicPlayerCharacter::OnRep_PlayerState()
 {
     Super::OnRep_PlayerState();
     InitGASFromPlayerState();
+}
+
+void AGothicPlayerCharacter::OnRep_Controller()
+{
+    Super::OnRep_Controller();
+
+    // The client half of the possession race. On the owning client the pawn spawns
+    // and runs BeginPlay before its Controller replicates in, so the weapon was
+    // attached as a remote's (hand socket, hidden by SetOnlyOwnerSee) rather than to
+    // the camera. This is the moment IsLocallyControlled() first becomes true on the
+    // client; re-run the attachment so the local player's gun snaps to the camera
+    // mount. Mirrors the lazy-resolution pattern components use for the same
+    // BeginPlay-precedes-possession disease.
+    ReapplyActiveWeaponAttachment();
+}
+
+void AGothicPlayerCharacter::ReapplyActiveWeaponAttachment()
+{
+    if (WeaponSlots.IsValidIndex(ActiveWeaponIndex))
+    {
+        ApplyWeaponAttachment(WeaponSlots[ActiveWeaponIndex].WeaponData);
+    }
 }
 
 void AGothicPlayerCharacter::InitGASFromPlayerState()
