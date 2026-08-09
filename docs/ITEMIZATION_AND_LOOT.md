@@ -129,11 +129,19 @@ Defense     =  8 + 0.5 × GearScore        ( 8 at fresh → 33 at cap)
 ### Application — Damage Multiplies Off the Stats
 
 ```
-CoreDamage = max(1, Raw + BaseAP_attacker − BaseDef_defender)
+CoreDamage  = max(1, Raw + BaseAP_attacker − BaseDef_defender)
 
-Outgoing   = CoreDamage × (AttackPower / BaseAP)      — attacker's ratio
-Incoming   = CoreDamage × (BaseDef / Defense)         — defender's ratio
+FinalDamage = CoreDamage × (AttackPower / BaseAP)      — attacker's ratio
+                         × (BaseDef / Defense)         — defender's ratio
 ```
+
+Both ratios multiply the SAME core, in one pass — the attacker's gear and the
+defender's gear are never applied to separate quantities. This is what
+`UGothicAttributeSet::PostGameplayEffectExecute` computes as
+`CoreDamage * AttackRatio * DefenseRatio`. Today exactly one ratio is ever ≠ 1
+(enemies carry no gear, so a player's shot sees DefenseRatio 1.0 and an enemy's
+hit sees AttackRatio 1.0), which is why the composition has never been visible
+in play; it starts mattering the moment enemy-side gear scaling lands.
 
 `Raw` is the weapon/ability damage after its own multipliers (weapon tier,
 archetype bonus, vital ×2.5 — all upstream, unchanged). `BaseAP`/`BaseDef` are
