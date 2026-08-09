@@ -223,8 +223,39 @@ void AGothicPlayerCharacter::BeginPlay()
         FirstPersonArmsMesh->SetRelativeLocationAndRotation(ArmsOffset, ArmsRotation);
         if (ArmsIdlePose)
         {
+            // Drive the idle as a single looping node — but NOT through PlayAnimation.
+            // On this component the mesh's serialized AnimationMode is ALREADY
+            // AnimationSingleNode, so SetAnimationMode(SingleNode) sees bNeedChange==false
+            // and short-circuits WITHOUT (re)spawning the UAnimSingleNodeInstance
+            // (USkeletalMeshComponent::SetAnimationMode, UE 5.8). PlayAnimation then calls
+            // SetAnimation, which finds GetSingleNodeInstance()==nullptr and drops the asset
+            // SILENTLY: AnimationData.AnimToPlay stays None and the arms sit in ref pose —
+            // measured twice, hours apart, on the live pawn.
+            //
+            // Fix per engine source: write the single-node payload into the serialized
+            // AnimationData struct first (that is exactly what InitializeAnimScriptInstance
+            // pushes into a freshly spawned instance via AnimationData.Initialize), then
+            // FORCE a reinit so the instance is rebuilt regardless of the bNeedChange branch.
+            FirstPersonArmsMesh->AnimationData.AnimToPlay = ArmsIdlePose;
+            FirstPersonArmsMesh->AnimationData.bSavedLooping = true;
+            FirstPersonArmsMesh->AnimationData.bSavedPlaying = true;
             FirstPersonArmsMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
-            FirstPersonArmsMesh->PlayAnimation(ArmsIdlePose, /*bLooping=*/true);
+            FirstPersonArmsMesh->InitAnim(/*bForceReinit=*/true);
+
+            // Read back the mode AND the asset after the call — the two facts that would
+            // have caught this failing silently through three diagnosis passes.
+            UE_LOG(LogVigilCombat, Verbose,
+                TEXT("VigilTimeline|t=%.3f|%s|ArmsPose|APPLIED|pose=%s|mode=%d|animToPlay=%s"),
+                GASInitTimelineNow(this), *GetName(), *ArmsIdlePose->GetName(),
+                (int32)FirstPersonArmsMesh->GetAnimationMode(),
+                FirstPersonArmsMesh->AnimationData.AnimToPlay
+                    ? *FirstPersonArmsMesh->AnimationData.AnimToPlay->GetName() : TEXT("None"));
+        }
+        else
+        {
+            UE_LOG(LogVigilCombat, Verbose,
+                TEXT("VigilTimeline|t=%.3f|%s|ArmsPose|SKIPPED|reason=null-ArmsIdlePose"),
+                GASInitTimelineNow(this), *GetName());
         }
     }
 
@@ -3477,6 +3508,12 @@ void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
 {
     if (!WeaponMeshComponent || !WeaponSlots.IsValidIndex(SlotIndex))
     {
+        // This is where a missing gun goes quiet: an early return here leaves the last
+        // mesh (or none) on screen with no other symptom. Name which guard tripped.
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|WeaponVisuals|SKIPPED|slot=%d|reason=%s"),
+            GASInitTimelineNow(this), *GetName(), SlotIndex,
+            !WeaponMeshComponent ? TEXT("null-WeaponMeshComponent") : TEXT("invalid-slot-index"));
         return;
     }
 
@@ -3485,6 +3522,11 @@ void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
     {
         WeaponMeshComponent->SetStaticMesh(WeaponData->WeaponMesh);
         WeaponMeshComponent->SetRelativeScale3D(WeaponData->MeshScale);
+
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|WeaponVisuals|APPLIED|slot=%d|mesh=%s"),
+            GASInitTimelineNow(this), *GetName(), SlotIndex,
+            WeaponData->WeaponMesh ? *WeaponData->WeaponMesh->GetName() : TEXT("None"));
 
         // Location and rotation come from here, not from WeaponData directly — which
         // of the two offsets is correct depends on what the weapon is parented to.
@@ -3503,6 +3545,10 @@ void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
     else
     {
         WeaponMeshComponent->SetStaticMesh(nullptr);
+
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|WeaponVisuals|CLEARED|slot=%d|reason=null-WeaponData"),
+            GASInitTimelineNow(this), *GetName(), SlotIndex);
     }
 }
 // ---------------------------------------------------------------------------
