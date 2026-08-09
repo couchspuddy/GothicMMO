@@ -124,6 +124,24 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     WeaponMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     WeaponMeshComponent->SetOnlyOwnerSee(true);  // Only the local player sees their own weapon
 
+    // First-person arms — a skeletal mesh parented to the camera, exactly like the
+    // camera-mounted weapon is meant to be: a child of the camera cannot drift off
+    // the crosshair at any pitch. SetOnlyOwnerSee(true) plus that camera parenting is
+    // why this needs NO possession-race handling — unlike the weapon attach, whose
+    // target flips between camera and hand socket by locality. Every pawn's arms
+    // render only on their own owner's machine, so on every OTHER machine this
+    // component is inert by construction; there is nothing to re-attach once
+    // IsLocallyControlled() resolves. No mesh is assigned in C++ (SkeletalMesh stays
+    // null — renders nothing until the editor pass assigns SKM_Manny_Simple or a
+    // Paragon kit); the relative transform and idle pose are applied in BeginPlay so
+    // Blueprint-tuned ArmsOffset/ArmsRotation take effect.
+    FirstPersonArmsMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("FirstPersonArms"));
+    FirstPersonArmsMesh->SetupAttachment(FirstPersonCamera);
+    FirstPersonArmsMesh->SetOnlyOwnerSee(true);
+    FirstPersonArmsMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    FirstPersonArmsMesh->CastShadow = false;
+    FirstPersonArmsMesh->bCastHiddenShadow = false;
+
     // Create the input handler component
     InputHandler = CreateDefaultSubobject<UGothicInputHandlerComponent>(TEXT("InputHandler"));
 
@@ -190,6 +208,24 @@ void AGothicPlayerCharacter::BeginPlay()
     if (GetMesh() && bHideBodyInFirstPerson)
     {
         GetMesh()->SetOwnerNoSee(true);
+    }
+
+    // Place the first-person arms in camera space from the tunable defaults (so a
+    // Blueprint-edited ArmsOffset/ArmsRotation takes effect rather than the raw
+    // constructor value), and — if an idle pose was assigned — drive it as a single
+    // looping node. The pose is the one hook beyond parenting: the editor pass will
+    // assign a full-body mesh with no ABP, which renders as a T-pose through the
+    // player's face without it. Null-safe on every count: no mesh assigned yet means
+    // PlayAnimation simply has nothing to pose, and a null ArmsIdlePose leaves the
+    // mesh in its ref pose.
+    if (FirstPersonArmsMesh)
+    {
+        FirstPersonArmsMesh->SetRelativeLocationAndRotation(ArmsOffset, ArmsRotation);
+        if (ArmsIdlePose)
+        {
+            FirstPersonArmsMesh->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+            FirstPersonArmsMesh->PlayAnimation(ArmsIdlePose, /*bLooping=*/true);
+        }
     }
 
     // Delay HUD polling until widget is fully constructed
