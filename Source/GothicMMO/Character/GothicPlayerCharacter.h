@@ -44,6 +44,11 @@ public:
     virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
     virtual void PossessedBy(AController* NewController) override;
     virtual void OnRep_PlayerState() override;
+    // Declared bare, without UFUNCTION() — UHT rejects the macro on an override of a
+    // parent UFUNCTION (APawn already marks OnRep_Controller a UFUNCTION). This is the
+    // client-side driver for the weapon-attachment re-run: it fires when the Controller
+    // replicates in, which is when IsLocallyControlled() first becomes true on a client.
+    virtual void OnRep_Controller() override;
     virtual void Tick(float DeltaTime) override;
 
     /**
@@ -825,6 +830,20 @@ protected:
      * RefreshWeaponVisuals route through here rather than each setting their own.
      */
     void ApplyWeaponAttachment(const UGothicWeaponData* WeaponData);
+
+    /**
+     * Re-run ApplyWeaponAttachment for the currently active weapon slot.
+     *
+     * The mesh a weapon carries is locality-independent and set once by
+     * RefreshWeaponVisuals; only the ATTACHMENT target (camera for the local player,
+     * hand socket for a remote) depends on IsLocallyControlled(), which is unreliable
+     * until possession. Called from PossessedBy and OnRep_Controller so the local
+     * player's gun lands on the camera mount once locality is actually known, rather
+     * than sitting on the hand socket it was routed to during BeginPlay. Null-safe:
+     * a no-op when no slot is active, and ApplyWeaponAttachment tolerates a null
+     * WeaponData for an empty slot.
+     */
+    void ReapplyActiveWeaponAttachment();
 
     /** Drive the camera-mounted weapon's sprint pose and fire-kick recovery. Ticked
      *  on the local client only; does nothing when the weapon is hand-socketed. */
