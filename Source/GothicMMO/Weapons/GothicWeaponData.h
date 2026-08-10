@@ -186,6 +186,33 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Fire", meta = (ClampMin = "0.0", UIMax = "3.0"))
     float FireNoiseLoudness = 1.f;
 
+    // ── Aim Assist ───────────────────────────────────────────────────────
+    // Mouse-only bullet magnetism: a near-miss shot inside a small cone bends
+    // onto a nearby enemy so pointing "close enough" lands, WITHOUT moving the
+    // camera or crosshair (the correct PC form of aim assist — it bends the
+    // shot, not the view). Applied server-side on the hitscan trace in
+    // UGA_Fire::PerformFireTrace; a DIRECT hit is never touched. The cosmetic
+    // tracer is Blueprint-side (BP_GA_Fire::SpawnBulletTracer) and is NOT
+    // redirected by this — visual reconciliation is a separate editor-lane task.
+
+    /**
+     * Master toggle for this weapon's bullet magnetism. True by default so
+     * every existing asset gains the assist without a re-author; set false for a
+     * weapon — or a raw-aim preference pass — that should fire dead-straight.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|AimAssist")
+    bool bEnableMagnetism = true;
+
+    /**
+     * Half-angle of the magnetism cone, in degrees, measured from the aim ray.
+     * A shot that misses (or hits only environment) snaps onto the enemy whose
+     * bearing sits tightest inside this angle; a direct hit is left untouched.
+     * 0 disables magnetism for this weapon exactly as bEnableMagnetism = false
+     * does — the cone is authored here and never hardcoded in C++.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|AimAssist", meta = (ClampMin = "0.0", UIMax = "15.0"))
+    float MagnetismAngleDeg = 4.f;
+
     // -------------------------------------------------------------------------
     // Shock — the electrical repeater's two hooks. Both default to off, so every
     // ordinary weapon is unaffected and this stays a property of the one Rig
