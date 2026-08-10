@@ -10,6 +10,7 @@
 #include "Engine/OverlapResult.h"
 #include "NavigationSystem.h"
 #include "AI/NavigationSystemBase.h"
+#include "Navigation/PathFollowingComponent.h"     // EPathFollowingRequestResult members
 
 UGothicBTTask_MoveToOrbit::UGothicBTTask_MoveToOrbit()
 {
