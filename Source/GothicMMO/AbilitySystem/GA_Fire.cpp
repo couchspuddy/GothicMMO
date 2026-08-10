@@ -18,6 +18,7 @@
 #include "Perception/AISense_Hearing.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"                        // TActorIterator — magnetism enemy sweep
 
 namespace
 {
@@ -460,6 +461,69 @@ namespace
         OutImpactPoint = Start + (AimDir * Along);
         return true;
     }
+
+    /**
+     * Bullet magnetism target search — mouse-only aim assist.
+     *
+     * Returns the enemy a near-miss should bend onto: the one whose bearing
+     * from the shot origin sits TIGHTEST to where the player is already aiming
+     * (smallest angle), among those inside the MaxAngleDeg half-cone and within
+     * Range. Tightest-to-aim rather than nearest-body is deliberate — it snaps
+     * to the shot the player most nearly made, so pointing "close enough" reads
+     * as intent honoured rather than the reticle grabbing whatever is closest.
+     *
+     * Dead/downed enemies are filtered by AGothicCharacterBase::IsFightableActor,
+     * the project's single fightable predicate, so magnetism can never pull a
+     * shot onto a corpse. No visibility test: the CALLER re-traces at the chosen
+     * target and lets world geometry block it, so a target behind cover is found
+     * here but the redirected trace still stops at the wall.
+     *
+     * Linear scan over live enemies — no spatial structure by design; the enemy
+     * counts this game fields do not warrant one, and the search runs once per
+     * shot only on the miss path.
+     */
+    AActor* FindMagnetismTarget(
+        const UWorld* World, const AActor* Shooter,
+        const FVector& Start, const FVector& AimDir, float Range, float MaxAngleDeg)
+    {
+        if (!World || MaxAngleDeg <= 0.f)
+        {
+            return nullptr;
+        }
+
+        // Compare cosines rather than angles: a larger dot is a smaller angle, so
+        // the cone edge becomes a single floor the winner must beat.
+        const float CosThreshold = FMath::Cos(FMath::DegreesToRadians(MaxAngleDeg));
+        const float RangeSq = Range * Range;
+
+        AActor* Best = nullptr;
+        float BestDot = CosThreshold;
+
+        for (TActorIterator<AGothicEnemyBase> It(World); It; ++It)
+        {
+            AGothicEnemyBase* Enemy = *It;
+            if (Enemy == Shooter || !AGothicCharacterBase::IsFightableActor(Enemy))
+            {
+                continue;
+            }
+
+            const FVector ToEnemy = Enemy->GetActorLocation() - Start;
+            if (ToEnemy.SizeSquared() > RangeSq)
+            {
+                continue;
+            }
+
+            const FVector Dir = ToEnemy.GetSafeNormal();
+            const float Dot = FVector::DotProduct(AimDir, Dir);
+            if (Dot > BestDot)
+            {
+                BestDot = Dot;
+                Best = Enemy;
+            }
+        }
+
+        return Best;
+    }
 }
 
 void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
@@ -554,18 +618,69 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
 
     const FVector ViewForward = ViewRotation.Vector();
 
-    const FVector AimDir = SpreadDegrees > 0.f
+    // AimDir/End/bHit are not const: bullet magnetism (below) may redirect the
+    // shot onto a near-miss target after the first trace, and everything
+    // downstream — vital adjudication, point-blank recovery, telemetry — must
+    // read the direction the bullet ACTUALLY travelled, not the raw aim.
+    FVector AimDir = SpreadDegrees > 0.f
         ? FMath::VRandCone(ViewForward, FMath::DegreesToRadians(SpreadDegrees))
         : ViewForward;
 
     const FVector Start = ViewLocation;
-    const FVector End   = Start + (AimDir * EffectiveRange);
+    FVector End = Start + (AimDir * EffectiveRange);
 
     FHitResult Hit;
     FCollisionQueryParams Params;
     Params.AddIgnoredActor(Char);
 
-    const bool bHit = World->LineTraceSingleByChannel(Hit, Start, End, ECC_Weapon, Params);
+    bool bHit = World->LineTraceSingleByChannel(Hit, Start, End, ECC_Weapon, Params);
+
+    // ── Bullet magnetism (mouse aim assist) ──────────────────────────────
+    // PC aim assist bends the SHOT, never the camera or crosshair. A shot that
+    // missed, or that hit only environment, is snapped onto the enemy sitting
+    // tightest inside the weapon's magnetism cone — so pointing "close enough"
+    // lands without the reticle ever moving. A shot that already hit a damage
+    // target is left exactly as it was: the assist only rescues shots the raw
+    // aim did not already land.
+    //
+    // "Hit a damage target" is the same discrimination the environment-rejection
+    // below uses — an actor with an ASC. Gated on the weapon data so a weapon
+    // (bEnableMagnetism off, or MagnetismAngleDeg 0) opts out, and so the cone is
+    // authored, never hardcoded here.
+    const bool bHitDamageTarget = bHit && Hit.GetActor()
+        && UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Hit.GetActor()) != nullptr;
+
+    if (!bHitDamageTarget && WeaponData && WeaponData->bEnableMagnetism)
+    {
+        if (AActor* SnapTarget = FindMagnetismTarget(
+                World, Char, Start, AimDir, EffectiveRange, WeaponData->MagnetismAngleDeg))
+        {
+            const FVector SnapDir = (SnapTarget->GetActorLocation() - Start).GetSafeNormal();
+            if (!SnapDir.IsNearlyZero())
+            {
+                // Redirect at the target's pivot and take whatever THIS ray hits.
+                // Geometry still blocks it — a target behind cover is found but the
+                // redirected trace stops at the wall, so magnetism never shoots
+                // through walls. Aiming at the pivot (not a vital) is per brief; a
+                // vitals-first snap is the named follow-up.
+                AimDir = SnapDir;
+                End    = Start + (AimDir * EffectiveRange);
+
+                FHitResult SnapHit;
+                const bool bSnapHit = World->LineTraceSingleByChannel(
+                    SnapHit, Start, End, ECC_Weapon, Params);
+
+                UE_LOG(LogVigilCombat, Verbose,
+                    TEXT("VigilTimeline|t=%.3f|%s|Magnetism|snapTarget=%s|redirectHit=%s|coneDeg=%.2f"),
+                    World->GetTimeSeconds(), *GetNameSafe(Char), *GetNameSafe(SnapTarget),
+                    (bSnapHit && SnapHit.GetActor()) ? *SnapHit.GetActor()->GetName() : TEXT("none"),
+                    WeaponData->MagnetismAngleDeg);
+
+                Hit  = SnapHit;
+                bHit = bSnapHit;
+            }
+        }
+    }
 
     // ── Fire telemetry ───────────────────────────────────────────────────────
     // Exactly one line per fire resolution, miss included, on every path out of
