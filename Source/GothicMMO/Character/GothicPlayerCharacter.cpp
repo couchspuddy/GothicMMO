@@ -2439,6 +2439,56 @@ int32 AGothicPlayerCharacter::GetActiveGearPower() const
     return 0;
 }
 
+void AGothicPlayerCharacter::ApplyLocalHitStop()
+{
+    // Shooter-LOCAL only. The confirmed-hit multicast reaches every client; this
+    // must fire the hitch only on the pawn whose shot it was. A remote proxy has no
+    // business dilating for someone else's hit, and a dedicated-server copy has no
+    // view to feel it.
+    if (!IsLocallyControlled())
+    {
+        return;
+    }
+
+    // "Heavy" is a weapon-data property, never a hardcoded name — a light sidearm
+    // opts out simply by leaving bHeavyWeapon false.
+    const UGothicWeaponData* WeaponData = GetActiveWeaponData();
+    if (!WeaponData || !WeaponData->bHeavyWeapon || WeaponData->HitStopDuration <= 0.f)
+    {
+        return;
+    }
+
+    UWorld* World = GetWorld();
+    if (!World)
+    {
+        return;
+    }
+
+    // The multiplayer-safe part: CustomTimeDilation is PER-ACTOR. It slows only this
+    // pawn's tick (and, being camera-parented, its own view), so only the shooter
+    // feels the micro-pause. Global Set-Global-Time-Dilation would lag the whole
+    // server/co-op session and is deliberately NOT used here.
+    CustomTimeDilation = FMath::Clamp(WeaponData->HitStopTimeDilation, 0.01f, 1.f);
+
+    // The timer manager ticks on the WORLD clock, which per-actor CustomTimeDilation
+    // does not scale, so the restore lands after HitStopDuration of real time no
+    // matter how hard this pawn is dilated. Non-looping; a second hit inside the
+    // window just re-arms it. Bound to this pawn, so it auto-clears on destruction.
+    World->GetTimerManager().SetTimer(
+        HitStopTimerHandle, this, &AGothicPlayerCharacter::EndLocalHitStop,
+        WeaponData->HitStopDuration, /*bLoop=*/ false);
+
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|HitStop|dilation=%.2f|dur=%.3f"),
+        World->GetTimeSeconds(), *GetName(),
+        CustomTimeDilation, WeaponData->HitStopDuration);
+}
+
+void AGothicPlayerCharacter::EndLocalHitStop()
+{
+    CustomTimeDilation = 1.f;
+}
+
 float AGothicPlayerCharacter::GetActiveWeaponTierMultiplier() const
 {
     // WEAPON_ARCHETYPES.md, DECIDED 2026-08-04: a weapon scales by its OWN

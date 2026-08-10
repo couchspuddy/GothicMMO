@@ -812,6 +812,20 @@ void AGothicEnemyBase::MulticastOnHit_Implementation(
         if (DamageInstigator && (DamageInstigator == PC->GetPawn() || DamageInstigator == PC))
         {
             HUD->ShowDamageNumber(HitLocation, DamageAmount, bVitalHit);
+
+            // Hit marker — same shooter-scoped path the damage number rides, so it is
+            // already local to the player who dealt the hit. The crosshair/UMG binds
+            // OnHitConfirmed; C++ only raises it.
+            HUD->NotifyHitConfirmed(bVitalHit);
+
+            // Heavy-weapon hit-stop. Also shooter-local: it reads the shooter pawn's
+            // own active weapon data and dilates only that pawn. Melee and other
+            // MulticastOnHit sources ride this too — a "hit confirmed" signal is
+            // deliberately general, not Fire-only — and each no-ops on a light weapon.
+            if (AGothicPlayerCharacter* Shooter = Cast<AGothicPlayerCharacter>(PC->GetPawn()))
+            {
+                Shooter->ApplyLocalHitStop();
+            }
         }
     }
 }
