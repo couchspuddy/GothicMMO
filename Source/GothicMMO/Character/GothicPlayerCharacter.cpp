@@ -3502,6 +3502,21 @@ void AGothicPlayerCharacter::UpdateFirstPersonWeaponPose(float DeltaTime)
 
     WeaponMeshComponent->SetRelativeLocation(TargetLocation);
     WeaponMeshComponent->SetRelativeRotation((KickQ * SprintQ * BaseQ).Rotator());
+
+    // Procedural lockstep: drive the FP arms with the SAME sprint/kick deltas the
+    // weapon just got, so the hands ride the gun instead of freezing in the BeginPlay
+    // pose. Reuses the already-computed terms; the arms base is ArmsOffset/ArmsRotation
+    // (not the camera-weapon base). Rotation composes with offsets OUTERMOST for the
+    // same camera-space reason as the weapon above — ArmsRotation is yawed -90, so an
+    // Euler add would twist the kick down the arms' local axis. At rest SprintPoseAlpha
+    // and CurrentFireKick* are zero, so this reproduces BeginPlay's transform exactly.
+    if (FirstPersonArmsMesh)
+    {
+        const FVector ArmsDelta = (SprintWeaponOffset * SprintPoseAlpha) + CurrentFireKickLocation;
+        FirstPersonArmsMesh->SetRelativeLocation(ArmsOffset + ArmsDelta);
+        const FQuat ArmsBaseQ = ArmsRotation.Quaternion();
+        FirstPersonArmsMesh->SetRelativeRotation((KickQ * SprintQ * ArmsBaseQ).Rotator());
+    }
 }
 
 void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
