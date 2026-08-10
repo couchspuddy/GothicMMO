@@ -3144,7 +3144,13 @@ void AGothicPlayerCharacter::ApplyRecoilKick()
 
 void AGothicPlayerCharacter::TickRecoilRecovery(float DeltaTime)
 {
-    if (FMath::IsNearlyZero(PendingRecoilPitch, 0.0001f) || RecoilRecoveryRate <= 0.f)
+    // Recovery speed is a per-weapon feel tunable; the pawn's own RecoilRecoveryRate
+    // is the fallback for the no-weapon / melee case. Read fresh each tick so a mid-
+    // recovery swap adopts the new gun's settle rate.
+    const UGothicWeaponData* WeaponData = GetActiveWeaponData();
+    const float RecoveryRate = WeaponData ? WeaponData->RecoilRecoveryRate : RecoilRecoveryRate;
+
+    if (FMath::IsNearlyZero(PendingRecoilPitch, 0.0001f) || RecoveryRate <= 0.f)
     {
         PendingRecoilPitch = 0.f;
         return;
@@ -3169,7 +3175,7 @@ void AGothicPlayerCharacter::TickRecoilRecovery(float DeltaTime)
     // and eases into the resting position, which is what reads as the weapon
     // settling rather than the camera being driven.
     const float Recovered = PendingRecoilPitch *
-        FMath::Clamp(RecoilRecoveryRate * DeltaTime, 0.f, 1.f);
+        FMath::Clamp(RecoveryRate * DeltaTime, 0.f, 1.f);
 
     PC->AddPitchInput(-Recovered);
     PendingRecoilPitch -= Recovered;
@@ -3494,15 +3500,24 @@ void AGothicPlayerCharacter::ApplyWeaponAttachment(const UGothicWeaponData* Weap
 
 void AGothicPlayerCharacter::AddWeaponFireKick()
 {
+    // Per-weapon feel: FireKickScale sizes the visible jolt, FireKickClimb sets how
+    // far sustained fire may stack it. Both fall back to the pawn's baseline (scale 1,
+    // MaxStackedFireKick) when no weapon data is active. FireKickOffset/Rotation stay
+    // the shared base SHAPE of a kick; the scalar sizes it per gun.
+    const UGothicWeaponData* WeaponData = GetActiveWeaponData();
+    const float KickScale = WeaponData ? WeaponData->FireKickScale : 1.f;
+    const float Ceiling = FMath::Max(1.f, WeaponData ? WeaponData->FireKickClimb : MaxStackedFireKick);
+
+    const FVector KickLoc = FireKickOffset * KickScale;
+    const FRotator KickRot = FireKickRotation * KickScale;
+
     // Stack, then clamp. Repeating a single identical hop reads as a looping
     // animation rather than a gun fighting back, but unbounded stacking walks the
     // weapon out of frame on anything with a fast fire rate.
-    CurrentFireKickLocation += FireKickOffset;
-    CurrentFireKickRotation += FireKickRotation;
+    CurrentFireKickLocation += KickLoc;
+    CurrentFireKickRotation += KickRot;
 
-    const float Ceiling = FMath::Max(1.f, MaxStackedFireKick);
-
-    const FVector MaxLoc = FireKickOffset * Ceiling;
+    const FVector MaxLoc = KickLoc * Ceiling;
     CurrentFireKickLocation.X = FMath::Clamp(CurrentFireKickLocation.X,
         FMath::Min(0.f, MaxLoc.X), FMath::Max(0.f, MaxLoc.X));
     CurrentFireKickLocation.Y = FMath::Clamp(CurrentFireKickLocation.Y,
@@ -3510,7 +3525,7 @@ void AGothicPlayerCharacter::AddWeaponFireKick()
     CurrentFireKickLocation.Z = FMath::Clamp(CurrentFireKickLocation.Z,
         FMath::Min(0.f, MaxLoc.Z), FMath::Max(0.f, MaxLoc.Z));
 
-    const FRotator MaxRot = FireKickRotation * Ceiling;
+    const FRotator MaxRot = KickRot * Ceiling;
     CurrentFireKickRotation.Pitch = FMath::Clamp(CurrentFireKickRotation.Pitch,
         FMath::Min(0.f, MaxRot.Pitch), FMath::Max(0.f, MaxRot.Pitch));
     CurrentFireKickRotation.Yaw = FMath::Clamp(CurrentFireKickRotation.Yaw,

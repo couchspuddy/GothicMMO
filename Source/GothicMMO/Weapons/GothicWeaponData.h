@@ -318,6 +318,46 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback")
     float RecoilYawSpread = 0.f;
 
+    // ── Feel character (feel pass) ────────────────────────────────────────
+    // Per-weapon promotions of what used to be one global feel on the pawn, so a
+    // cannon, a bolt-action, and a hosing Gatling read differently in the hand
+    // without a recoil-pattern editor. Each defaults to the pawn's historical
+    // global, so an asset that sets nothing recovers and kicks exactly as it does
+    // today — the pistol baseline is preserved by leaving these alone.
+
+    /**
+     * How fast the aim recovers from RecoilPitch, as an exponential rate on the
+     * outstanding kick (AGothicPlayerCharacter::TickRecoilRecovery). Higher snaps
+     * the muzzle back sharply (a precision crack); lower is a heavy, slow settle
+     * (a cannon). Pairs with RecoilPitch as the aim half of the weapon's character.
+     * 0 leaves the kick applied and never recovered. Default 12 matches the pawn's
+     * historical global rate.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback",
+              meta = (ClampMin = "0.0"))
+    float RecoilRecoveryRate = 12.f;
+
+    /**
+     * Scales the cosmetic in-frame weapon kick (AGothicPlayerCharacter::AddWeaponFireKick)
+     * — the visible jolt/shake of the gun in view, distinct from RecoilPitch which moves
+     * the actual aim. 1.0 is the pawn's baseline kick; raise it for a strong localized
+     * shake, drop it toward 0 for a tight, minimal one. Default 1.0 reproduces today's kick.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback",
+              meta = (ClampMin = "0.0"))
+    float FireKickScale = 1.f;
+
+    /**
+     * Ceiling on accumulated in-frame kick, as a multiple of a single shot, so sustained
+     * fire climbs rather than repeating one hop. High values give a continuous muzzle
+     * climb (a Gatling hosing upward); low values pin the weapon to one hard kick per
+     * shot with no walk (a single-kick cannon). Default 2.5 matches the pawn's historical
+     * global ceiling.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback",
+              meta = (ClampMin = "1.0"))
+    float FireKickClimb = 2.5f;
+
     /**
      * GE applied to the shooter on a LANDED hit with this weapon (GE_SuperMeterGain
      * on every DA_Weapon_*). Read by GA_Fire; a miss builds nothing.
