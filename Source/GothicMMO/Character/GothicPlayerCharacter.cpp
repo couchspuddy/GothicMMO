@@ -2636,8 +2636,36 @@ bool AGothicPlayerCharacter::IsLovedAndLostActive() const
 bool AGothicPlayerCharacter::IsReadActive() const
 {
     return AbilitySystemComponent &&
-        AbilitySystemComponent->HasMatchingGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Read")));
+        AbilitySystemComponent->HasMatchingGameplayTag(GothicTags::State_Read);
+}
+
+void AGothicPlayerCharacter::SetReadMark(UAbilitySystemComponent* NewTargetASC,
+                                         const FActiveGameplayEffectHandle& NewMarkHandle)
+{
+    // Single prey: lift the mark off whoever we last read before recording the new
+    // one. Skipped when it is the SAME enemy (a re-read refreshes the mark rather
+    // than clearing it), and authority-gated because GE_ReadMark lives on the
+    // target's authority — a client here would only try to remove an effect it does
+    // not own. The previous enemy may already be dead: RemoveActiveGameplayEffect on
+    // a stale handle is a safe no-op, and the weak ASC reads back null once it is GC'd.
+    if (HasAuthority())
+    {
+        if (UAbilitySystemComponent* PrevASC = ReadMarkedTargetASC.Get())
+        {
+            if (PrevASC != NewTargetASC && ReadMarkHandle.IsValid())
+            {
+                PrevASC->RemoveActiveGameplayEffect(ReadMarkHandle);
+
+                UE_LOG(LogVigilCombat, Verbose,
+                    TEXT("VigilTimeline|t=%.3f|%s|ReadMark|singlePrey lifted prior mark from %s"),
+                    GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f,
+                    *GetNameSafe(this), *GetNameSafe(PrevASC->GetAvatarActor()));
+            }
+        }
+    }
+
+    ReadMarkedTargetASC = NewTargetASC;
+    ReadMarkHandle      = NewMarkHandle;
 }
 
 bool AGothicPlayerCharacter::IsReckoningActive() const
@@ -2686,6 +2714,19 @@ void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
     // bIsSprinting is false — and the player would come back unable to shoot,
     // with no input that could clear it.
     SetSprinting(false);
+
+    // The Read's caster window (State.Read) is a duration GE on this same
+    // PlayerState ASC, so like State.Sprinting it would ride the remainder of its
+    // duration into the next life and leave the HUD proc icon falsely lit. It
+    // grants no damage — the payoff is on the target's State.Read.Marked — so this
+    // is cosmetic, but it is the same outlives-the-pawn hazard and gets the same
+    // clear. RemoveActiveEffectsWithGrantedTags, not a loose-tag clear: State.Read
+    // is GRANTED by GE_ReadState, and removing the effect is what drops the tag.
+    if (AbilitySystemComponent)
+    {
+        AbilitySystemComponent->RemoveActiveEffectsWithGrantedTags(
+            FGameplayTagContainer(GothicTags::State_Read));
+    }
 
     // ── THE DOWNED FORK ──────────────────────────────────────────────────────
     // Everything below this block is irreversible for a player we mean to keep:

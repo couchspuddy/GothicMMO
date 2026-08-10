@@ -19,6 +19,7 @@
 #include "Character/GothicCharacterBase.h"
 #include "Weapons/GothicWeaponData.h"
 #include "Items/GothicItemTypes.h"
+#include "GameplayEffectTypes.h"          // FActiveGameplayEffectHandle — the Read mark bookkeeping
 #include "GothicPlayerCharacter.generated.h"
 
 class UCameraComponent;
@@ -645,6 +646,19 @@ public:
     /** True while The Read's vital-damage window is up (State.Read) — proc icon. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Passives")
     bool IsReadActive() const;
+
+    /**
+     * Record a freshly applied Read mark and lift the previous one, enforcing The
+     * Read's single-prey cap: marking a new enemy removes the mark from the old.
+     * Called by GA_Read after GE_ReadMark lands on the new target.
+     *
+     * Per-player, so co-op partners' marks stay independent — the removal is keyed
+     * to the exact GE handle this player placed, not a blanket sweep of the tag.
+     * Re-reading the SAME enemy refreshes rather than clears. Authority-guarded:
+     * the mark GE lives on the target's authority (enemy ASC, Minimal mode).
+     */
+    void SetReadMark(UAbilitySystemComponent* NewTargetASC,
+                     const FActiveGameplayEffectHandle& NewMarkHandle);
 
     /** True while The Reckoning's guaranteed-vital state is up (State.Reckoning) — proc icon. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Passives")
@@ -1288,6 +1302,19 @@ private:
     // and re-activates the passives OnDeath cancelled. That flow is unchanged.
     // -------------------------------------------------------------------------
     TWeakObjectPtr<UGothicAbilitySystemComponent> AbilitiesGrantedIntoASC;
+
+    // -------------------------------------------------------------------------
+    // The Read — single prey (SetReadMark)
+    //
+    // The enemy ASC currently wearing THIS player's Read mark, and the handle to
+    // the exact GE_ReadMark that placed it, so a fresh Read can lift the previous
+    // one without disturbing a mark another co-op player placed. Weak: the enemy
+    // can die and be GC'd while we hold this, and a stale handle removes as a safe
+    // no-op. Pawn-side state — the mark is transient and a respawned pawn starts
+    // clean, so nothing here needs OnDeath cleanup (the enemy's mark self-expires).
+    // -------------------------------------------------------------------------
+    TWeakObjectPtr<UAbilitySystemComponent> ReadMarkedTargetASC;
+    FActiveGameplayEffectHandle ReadMarkHandle;
 
     // -------------------------------------------------------------------------
     // GAS init retry — authority only

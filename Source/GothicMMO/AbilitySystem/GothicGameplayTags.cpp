@@ -24,6 +24,16 @@ namespace GothicTags
 		"the non-gun ability input path cancels the sprint rather than being blocked by it. "
 		"Loose tags do NOT replicate, and neither does bIsSprinting — this is owning-client state, "
 		"which is where the activation gate has to fire anyway.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Read, "State.Read",
+		"The Read's CASTER window (GA_Read applies GE_ReadState, a duration GE). Drives the HUD proc "
+		"icon via AGothicPlayerCharacter::IsReadActive and NOTHING else — the damage payoff is gated on "
+		"the TARGET's State.Read.Marked, so this tag on the player buffs nothing. The ASC lives on the "
+		"PlayerState and outlives the pawn (gotcha #4), so it is cleared in OnDeath like State.Sprinting.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Read_Marked, "State.Read.Marked",
+		"Worn by the single enemy a player has Read (GA_Read applies GE_ReadMark, a duration GE that "
+		"self-expires on the target's death). GA_Fire multiplies a VITAL hit on a marked target by its "
+		"ReadVitalDamageMultiplier. The enemy ASC replicates in Minimal mode, so the tag reaches co-op "
+		"clients for the glow (AGothicEnemyBase::HandleReadMarkTagChanged) and the server for the math.");
 
 	// ── SetByCaller data channels ────────────────────────────────────────────
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Data_Damage, "Data.Damage",

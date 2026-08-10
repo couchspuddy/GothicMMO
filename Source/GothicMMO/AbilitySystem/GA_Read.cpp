@@ -2,6 +2,8 @@
 
 #include "AbilitySystem/GA_Read.h"
 #include "GothicMMO.h"                          // ECC_Weapon
+#include "AbilitySystem/GothicGameplayTags.h"   // State_Read, State_Read_Marked
+#include "Character/GothicPlayerCharacter.h"    // SetReadMark — single-prey bookkeeping
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffect.h"
@@ -134,6 +136,16 @@ void UGA_Read::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
             *MarkSpec.Data.Get(), TargetASC, ActivationInfo.GetActivationPredictionKey());
     }
 
+    // Single prey: record this mark and lift the one on whoever we last read. The
+    // Read holds no cross-activation state itself (InstancedPerExecution), so the
+    // bookkeeping lives on the character; SetReadMark no-ops when re-reading the
+    // same enemy and is authority-gated inside. Without this, reading a second
+    // enemy inside GE_ReadMark's window left BOTH marked.
+    if (AGothicPlayerCharacter* PlayerChar = Cast<AGothicPlayerCharacter>(Avatar))
+    {
+        PlayerChar->SetReadMark(TargetASC, MarkHandle);
+    }
+
     // Caster-side window tag, HUD only. Kept so IsReadActive() and its proc icon
     // work unchanged; on its own it now grants no damage.
     FActiveGameplayEffectHandle SelfHandle;
@@ -158,8 +170,8 @@ void UGA_Read::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
     // a successful mark, and applied nothing at all. Assert the observable
     // outcome — the TAG, not the handle — so that failure can never be silent
     // again. Warnings, not ensures: a missed mark must not take the session down.
-    const FGameplayTag ReadTag = FGameplayTag::RequestGameplayTag(FName("State.Read"));
-    const FGameplayTag MarkedTag = FGameplayTag::RequestGameplayTag(FName("State.Read.Marked"));
+    const FGameplayTag ReadTag = GothicTags::State_Read;
+    const FGameplayTag MarkedTag = GothicTags::State_Read_Marked;
 
     if (!MarkHandle.IsValid() || !TargetASC->HasMatchingGameplayTag(MarkedTag))
     {
