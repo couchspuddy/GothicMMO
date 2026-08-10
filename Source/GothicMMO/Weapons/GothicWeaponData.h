@@ -344,6 +344,35 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback", meta = (ClampMin = "0.0"))
     float SuperGainOnHit = 5.f;
 
+    // ── Hit-stop (feel pass) ──────────────────────────────────────────────
+    // A shooter-LOCAL micro-pause on a landed hit that sells impact without audio.
+    // Gated on this flag rather than on weapon names, per the feel-pass brief, so a
+    // designer decides which archetypes are "heavy" in data. Default off: no weapon
+    // hitches until an asset opts in, which keeps every light sidearm untouched.
+
+    /** True for weapons heavy enough to earn a hit-stop on a landed hit. Off = no hitch. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback|HitStop")
+    bool bHeavyWeapon = false;
+
+    /**
+     * Real-time length of the shooter-local hit-stop, in seconds. The feel-pass brief
+     * asks for 0.03–0.05s. Restored on the world clock, so the pawn's own dilation
+     * never stretches it. Ignored unless bHeavyWeapon is true.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback|HitStop",
+              meta = (EditCondition = "bHeavyWeapon", ClampMin = "0.0", ClampMax = "0.2"))
+    float HitStopDuration = 0.04f;
+
+    /**
+     * Actor time-dilation applied to the SHOOTER'S pawn only during the hit-stop
+     * window — lower is a harder freeze. This is per-actor CustomTimeDilation, never
+     * global time dilation: only the shooter feels it, the server and co-op peers are
+     * untouched. Ignored unless bHeavyWeapon is true.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Feedback|HitStop",
+              meta = (EditCondition = "bHeavyWeapon", ClampMin = "0.01", ClampMax = "1.0"))
+    float HitStopTimeDilation = 0.05f;
+
     // ── Perks ────────────────────────────────────────────────────────────
 
     /**

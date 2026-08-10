@@ -355,6 +355,14 @@ void AGothicHUD::ShowDamageNumber(FVector WorldLocation, float DamageAmount, boo
     ActiveDamageNumbers.Add(NewNumber);
 }
 
+void AGothicHUD::NotifyHitConfirmed(bool bIsVital)
+{
+    // Pure signal. The shooter-scoping is the caller's job (MulticastOnHit only
+    // reaches this on the local player who dealt the hit), so there is nothing to
+    // gate here — just raise the event the crosshair/UMG layer binds to.
+    OnHitConfirmed.Broadcast(bIsVital);
+}
+
 void AGothicHUD::DrawHUD()
 {
     Super::DrawHUD();

@@ -38,6 +38,14 @@ struct FEnemyHealthBarEntry
     float LastHitTime = 0.f;
 };
 
+/**
+ * Fired on the SHOOTER'S local client the instant one of their shots is confirmed
+ * landing on a valid target. bIsVital is true for a vital/critical hit. The
+ * procedural crosshair widget (or any UMG) binds this to flash a hit marker — the
+ * C++ side only raises the signal; the visual wiring lives in the editor lane.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FGothicOnHitConfirmed, bool, bIsVital);
+
 UCLASS()
 class GOTHICMMO_API AGothicHUD : public AHUD
 {
@@ -128,6 +136,22 @@ public:
 
     /** Register an enemy to show a HUD-drawn health bar. Called from MulticastOnHit. */
     void RegisterEnemyHealthBar(AGothicEnemyBase* Enemy);
+
+    // -------------------------------------------------------------------------
+    // Hit marker — shooter-local confirmation for the crosshair/UMG layer.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Bindable in BP_GothicHUD or the crosshair widget to flash a hit marker.
+     * Broadcast only on the shooter's client (MulticastOnHit scopes it by
+     * instigator), so it never fires for someone else's hits.
+     */
+    UPROPERTY(BlueprintAssignable, Category = "Gothic|HUD|HitMarker")
+    FGothicOnHitConfirmed OnHitConfirmed;
+
+    /** Broadcasts OnHitConfirmed. Called from the shooter-scoped branch of
+     *  AGothicEnemyBase::MulticastOnHit; the caller guarantees the local scoping. */
+    void NotifyHitConfirmed(bool bIsVital);
 
     /**
      * Show the quit-confirmation screen, or dismiss it if it is already up.
@@ -366,9 +390,9 @@ private:
     // Damage numbers — tuning (EditDefaultsOnly via BP_GothicHUD)
     // -------------------------------------------------------------------------
 
-    /** How long the number stays visible before fully fading. */
+    /** How long the number stays visible before fully fading (feel pass: ~0.8s). */
     UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|DamageNumbers")
-    float DamageNumberDuration = 1.2f;
+    float DamageNumberDuration = 0.8f;
 
     /** Pixels per second the number floats upward. */
     UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|DamageNumbers")
@@ -382,9 +406,9 @@ private:
     UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|DamageNumbers")
     FLinearColor VitalHitColor = FLinearColor(1.f, 0.85f, 0.1f, 1.f);
 
-    /** Scale multiplier for vital hit numbers (1.0 = same as body). */
+    /** Scale multiplier for vital hit numbers (1.0 = same as body; feel pass: 1.5x). */
     UPROPERTY(EditDefaultsOnly, Category = "Gothic|HUD|DamageNumbers")
-    float VitalHitScale = 1.4f;
+    float VitalHitScale = 1.5f;
 
     TArray<FGothicDamageNumber> ActiveDamageNumbers;
 

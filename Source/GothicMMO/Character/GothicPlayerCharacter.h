@@ -539,6 +539,15 @@ public:
     const UGothicWeaponData* GetActiveWeaponData() const;
 
     /**
+     * Shooter-LOCAL hit-stop. Called on the owning client from the confirmed-hit
+     * path (AGothicEnemyBase::MulticastOnHit) when this pawn's shot lands. Reads the
+     * active weapon's bHeavyWeapon / HitStop* tunables and briefly dilates ONLY this
+     * pawn's actor tick — never global time dilation, so co-op peers never stall.
+     * No-op on a remote proxy or a light weapon.
+     */
+    void ApplyLocalHitStop();
+
+    /**
      * Gear Power of the item in the active weapon slot, or 0 when the slot was
      * filled from the Blueprint default loadout rather than a rolled drop.
      * GetActiveWeaponTierMultiplier() is what damage reads; this is the raw
@@ -1505,6 +1514,14 @@ private:
     bool bSelahMomentLock = false;
 
     FTimerHandle SelahMomentLockHandle;
+
+    // ── Hit-stop (feel pass) ─────────────────────────────────────────────
+    /** Restores CustomTimeDilation to 1 at the end of the hit-stop window. */
+    void EndLocalHitStop();
+
+    /** Drives the hit-stop restore. Runs on the world clock, immune to this pawn's
+     *  own CustomTimeDilation, and auto-cleared if the pawn is destroyed mid-stop. */
+    FTimerHandle HitStopTimerHandle;
 
     // ── Aim down sights ──────────────────────────────────────────────────
     void OnADSPressed();
