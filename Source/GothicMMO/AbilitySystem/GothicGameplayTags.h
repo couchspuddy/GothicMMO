@@ -32,6 +32,13 @@ namespace GothicTags
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Reckoning);
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Sprinting);
 
+	// The Read (GA_Read). State_Read is the caster window, State_Read_Marked rides
+	// the single prey. Both existed as string-lookup tags before this — formalised
+	// here per the file's own rule (RequestGameplayTag(FName(...)) is a review
+	// failure). Existing ini/editor definitions of the same names coexist harmlessly.
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Read);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Read_Marked);
+
 	// ── SetByCaller data channels ────────────────────────────────────────────
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Damage);
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Selah);
