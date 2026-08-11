@@ -2828,6 +2828,55 @@ bool AGothicPlayerCharacter::GrantBenchItem(const FString& ItemDefName)
     return true;
 }
 
+void AGothicPlayerCharacter::BenchLookAt(const FVector& WorldPoint)
+{
+    AController* Ctrl = GetController();
+    if (!Ctrl)
+    {
+        UE_LOG(LogVigilCombat, Warning, TEXT("Bench|LookAt|NO-CONTROLLER|pawn=%s"), *GetName());
+        return;
+    }
+
+    // From the CAMERA's world location, deliberately — the camera sits ~170uu up
+    // the capsule, and building the aim from the actor origin instead is the exact
+    // pitch error this command exists to eliminate. Fall back to the eye viewpoint
+    // only if the component is somehow absent, never to the actor location.
+    FVector EyeLoc;
+    if (FirstPersonCamera)
+    {
+        EyeLoc = FirstPersonCamera->GetComponentLocation();
+    }
+    else
+    {
+        FRotator ViewRot;
+        GetActorEyesViewPoint(EyeLoc, ViewRot);
+    }
+
+    const FRotator LookRot = (WorldPoint - EyeLoc).Rotation();
+    Ctrl->SetControlRotation(LookRot);
+
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("Bench|LookAt|pawn=%s|from=%s|to=%s|pitch=%.2f|yaw=%.2f"),
+        *GetName(), *EyeLoc.ToCompactString(), *WorldPoint.ToCompactString(),
+        LookRot.Pitch, LookRot.Yaw);
+}
+
+void AGothicPlayerCharacter::BenchSetControlRotation(float Pitch, float Yaw)
+{
+    AController* Ctrl = GetController();
+    if (!Ctrl)
+    {
+        UE_LOG(LogVigilCombat, Warning, TEXT("Bench|SetRot|NO-CONTROLLER|pawn=%s"), *GetName());
+        return;
+    }
+
+    const FRotator Rot(Pitch, Yaw, 0.f);
+    Ctrl->SetControlRotation(Rot);
+
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("Bench|SetRot|pawn=%s|pitch=%.2f|yaw=%.2f"), *GetName(), Rot.Pitch, Rot.Yaw);
+}
+
 const UGA_TheLovedAndTheLost* AGothicPlayerCharacter::FindLovedAndLost() const
 {
     if (!AbilitySystemComponent)

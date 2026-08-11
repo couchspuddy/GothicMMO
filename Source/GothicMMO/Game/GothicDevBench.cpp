@@ -216,3 +216,52 @@ static FAutoConsoleCommandWithWorld GGothicBenchCycleArmorSetCmd(
     TEXT("Grant + equip every piece of the next full armor set (Salvage <-> Kept). ")
     TEXT("Dev bench only; no-ops elsewhere."),
     FConsoleCommandWithWorldDelegate::CreateStatic(&GothicBenchCycleArmorSet));
+
+/** Gothic.Bench.LookAt <X> <Y> <Z> — aim the camera at a world point (pitch+yaw). */
+static void GothicBenchLookAt(const TArray<FString>& Args, UWorld* World)
+{
+    AGothicPlayerCharacter* Pawn = GothicDevBench::ResolveLocalBenchPawn(World, TEXT("LookAt"));
+    if (!Pawn)
+    {
+        return;
+    }
+    if (Args.Num() < 3)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Bench|LookAt|usage=Gothic.Bench.LookAt <X> <Y> <Z> (world point)."));
+        return;
+    }
+    const FVector WorldPoint(
+        FCString::Atof(*Args[0]), FCString::Atof(*Args[1]), FCString::Atof(*Args[2]));
+    Pawn->BenchLookAt(WorldPoint);
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GGothicBenchLookAtCmd(
+    TEXT("Gothic.Bench.LookAt"),
+    TEXT("Gothic.Bench.LookAt <X> <Y> <Z> — aim the first-person camera at a world ")
+    TEXT("point via control rotation (pitch AND yaw), from the camera's location. ")
+    TEXT("The harness pitch lever for projectile abilities. Dev bench only; no-ops elsewhere."),
+    FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&GothicBenchLookAt));
+
+/** Gothic.Bench.SetRot <Pitch> <Yaw> — raw control-rotation variant of LookAt. */
+static void GothicBenchSetRot(const TArray<FString>& Args, UWorld* World)
+{
+    AGothicPlayerCharacter* Pawn = GothicDevBench::ResolveLocalBenchPawn(World, TEXT("SetRot"));
+    if (!Pawn)
+    {
+        return;
+    }
+    if (Args.Num() < 2)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Bench|SetRot|usage=Gothic.Bench.SetRot <Pitch> <Yaw> (degrees)."));
+        return;
+    }
+    Pawn->BenchSetControlRotation(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]));
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GGothicBenchSetRotCmd(
+    TEXT("Gothic.Bench.SetRot"),
+    TEXT("Gothic.Bench.SetRot <Pitch> <Yaw> — set control rotation to an explicit ")
+    TEXT("pitch/yaw in degrees. Dev bench only; no-ops elsewhere."),
+    FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&GothicBenchSetRot));

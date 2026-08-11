@@ -355,6 +355,22 @@ public:
      */
     bool GrantBenchItem(const FString& ItemDefName);
 
+    /**
+     * Aim the first-person camera at a world point by setting the controller's
+     * control rotation, so BOTH pitch and yaw land. The rotation is built from the
+     * CAMERA component's world location, not the actor's — that offset (the camera
+     * sits ~170uu up the capsule) is exactly the aiming error this closes, and the
+     * reason a scenario "look at actor location" would still miss. This is the
+     * pitch lever the harness has never had: projectile abilities fire raw
+     * camera-forward (GA_Slicer), so without control-rotation pitch there is no way
+     * to point them at a ground enemy from a console/scenario. Bench body.
+     */
+    void BenchLookAt(const FVector& WorldPoint);
+
+    /** Raw variant of BenchLookAt — set control rotation to an explicit pitch/yaw
+     *  (degrees), roll zeroed. Bench body. */
+    void BenchSetControlRotation(float Pitch, float Yaw);
+
     // -------------------------------------------------------------------------
     // Downed fork (multiplayer)
     //
