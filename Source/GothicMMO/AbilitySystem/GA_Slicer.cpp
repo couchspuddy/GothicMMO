@@ -86,6 +86,13 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
         return;
     }
 
+    // Ricochet falloff: the projectile carries the tier for THIS contact (1.0 on
+    // the skill shot, x0.7 per bounce). Damage is otherwise applied exactly as a
+    // single-target hit, so an isolated target's TTK is unchanged.
+    const float FalloffMultiplier =
+        SpawnedProjectile ? SpawnedProjectile->GetCurrentDamageMultiplier() : 1.f;
+    const float ScaledDamage = SlicerDamage * FalloffMultiplier;
+
     UAbilitySystemComponent* TargetASC =
         UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(HitActor);
 
@@ -123,7 +130,7 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
                 {
                     DamageSpec.Data->SetSetByCallerMagnitude(
                         FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
-                        SlicerDamage);
+                        ScaledDamage);
 
                     SourceASC->ApplyGameplayEffectSpecToTarget(*DamageSpec.Data.Get(), TargetASC);
 
@@ -134,7 +141,7 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
                     if (AGothicEnemyBase* HitEnemy = Cast<AGothicEnemyBase>(HitActor))
                     {
                         HitEnemy->MulticastOnHit(
-                            HitActor->GetActorLocation(), false, SlicerDamage,
+                            HitActor->GetActorLocation(), false, ScaledDamage,
                             GetAvatarActorFromActorInfo());
                     }
 
@@ -146,8 +153,11 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
             }
         }
 
-        EndAbility(GetCurrentAbilitySpecHandle(), GetCurrentActorInfo(),
-            GetCurrentActivationInfo(), true, false);
+        // Do NOT end the ability here. A single throw can hit up to MaxBounces+1
+        // enemies; ending on the first contact would tear down the projectile
+        // delegate bindings and kill the chain. The ability ends when the
+        // projectile is destroyed (bounces exhausted / no neighbour / lifetime),
+        // which fires OnSlicerExpired -> HandleSlicerExpired -> EndAbility.
     }
 }
 void UGA_Slicer::HandleSlicerExpired()
