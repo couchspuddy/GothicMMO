@@ -330,6 +330,12 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|DevBench")
     bool IsDevBenchLevel() const;
 
+    // The bench bodies below are plain (non-reflected) C++, so they compile out of
+    // Shipping entirely — declaration and definition both. DevBenchMaps and
+    // IsDevBenchLevel above stay unconditional because UHT reflects them (it does
+    // not honour an #if around a UPROPERTY/UFUNCTION declaration); IsDevBenchLevel
+    // just answers false in Shipping instead.
+#if !UE_BUILD_SHIPPING
     /**
      * Exemplar dev test option — the loadout readback the bench exists to make
      * legible. Logs the equipped kit, gear score, active-weapon tier multiplier
@@ -370,6 +376,7 @@ public:
     /** Raw variant of BenchLookAt — set control rotation to an explicit pitch/yaw
      *  (degrees), roll zeroed. Bench body. */
     void BenchSetControlRotation(float Pitch, float Yaw);
+#endif // !UE_BUILD_SHIPPING
 
     // -------------------------------------------------------------------------
     // Downed fork (multiplayer)

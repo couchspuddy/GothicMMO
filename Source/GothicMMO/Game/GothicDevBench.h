@@ -30,6 +30,11 @@
 class AGothicPlayerCharacter;
 class UWorld;
 
+// Dev-only: the bench and its single exported entry point are absent from
+// Shipping. The sole consumer (GothicDevBench.cpp) is guarded the same way, so
+// nothing references this in a Shipping build.
+#if !UE_BUILD_SHIPPING
+
 namespace GothicDevBench
 {
     /**
@@ -40,3 +45,5 @@ namespace GothicDevBench
      */
     GOTHICMMO_API AGothicPlayerCharacter* ResolveLocalBenchPawn(UWorld* World, const TCHAR* OptionName);
 }
+
+#endif // !UE_BUILD_SHIPPING

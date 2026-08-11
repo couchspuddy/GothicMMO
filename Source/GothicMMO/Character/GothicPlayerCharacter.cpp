@@ -579,6 +579,10 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
             // broke cross-session baselines) is pinned. Everywhere else this is
             // false and the existing rolled path is untouched. GrantStartingItems
             // is one-shot, so a bench respawn keeps the same canonical kit.
+            //
+            // The bench is a dev-only surface: in Shipping the whole canonical
+            // branch is compiled out and only the plain legacy grant remains.
+#if !UE_BUILD_SHIPPING
             const bool bBench = IsDevBenchLevel();
             if (bBench)
             {
@@ -587,6 +591,9 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
                     *GetName(), *UGameplayStatics::GetCurrentLevelName(this));
             }
             Inventory->GrantStartingItems(bBench);
+#else
+            Inventory->GrantStartingItems();
+#endif
         }
 
         // Sync weapon slots with anything already equipped (e.g. after respawn).
@@ -2697,6 +2704,11 @@ float AGothicPlayerCharacter::GetArchetypeDamageBonusPct(EGothicWeaponArchetype 
 
 bool AGothicPlayerCharacter::IsDevBenchLevel() const
 {
+    // Reflected (BlueprintPure), so the symbol stays in every config — UHT will
+    // not honour an #if around the declaration — but the bench itself is dev-only:
+    // in Shipping this always answers false, which routes every caller (the
+    // canonical loadout, any stray Blueprint) onto the plain non-bench path.
+#if !UE_BUILD_SHIPPING
     // GetCurrentLevelName strips the PIE "UEDPIE_0_" prefix, so the compare holds
     // in PIE, standalone and cooked — identical to the hint zone gate. Empty list
     // (or a mismatch) means NOT a bench, which is what keeps every shipping map
@@ -2704,8 +2716,12 @@ bool AGothicPlayerCharacter::IsDevBenchLevel() const
     const FString CurrentMap = UGameplayStatics::GetCurrentLevelName(this);
     return DevBenchMaps.ContainsByPredicate(
         [&CurrentMap](const FString& Allowed) { return Allowed.Equals(CurrentMap, ESearchCase::IgnoreCase); });
+#else
+    return false;
+#endif
 }
 
+#if !UE_BUILD_SHIPPING
 void AGothicPlayerCharacter::DumpBenchLoadout() const
 {
     // Read-only measurement dump. The console command already proved the bench
@@ -2876,6 +2892,7 @@ void AGothicPlayerCharacter::BenchSetControlRotation(float Pitch, float Yaw)
     UE_LOG(LogVigilCombat, Log,
         TEXT("Bench|SetRot|pawn=%s|pitch=%.2f|yaw=%.2f"), *GetName(), Rot.Pitch, Rot.Yaw);
 }
+#endif // !UE_BUILD_SHIPPING
 
 const UGA_TheLovedAndTheLost* AGothicPlayerCharacter::FindLovedAndLost() const
 {

@@ -8,6 +8,13 @@
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 
+// The entire dev bench — the activation gate, the item catalog, and every
+// FAutoConsoleCommand registration — is dev-only and compiles out of Shipping.
+// Nothing here is reflected (free functions + file-static console-command
+// objects), so the whole translation unit can be guarded: in Shipping this file
+// produces no code and registers no commands.
+#if !UE_BUILD_SHIPPING
+
 namespace GothicDevBench
 {
     AGothicPlayerCharacter* ResolveLocalBenchPawn(UWorld* World, const TCHAR* OptionName)
@@ -265,3 +272,5 @@ static FAutoConsoleCommandWithWorldAndArgs GGothicBenchSetRotCmd(
     TEXT("Gothic.Bench.SetRot <Pitch> <Yaw> — set control rotation to an explicit ")
     TEXT("pitch/yaw in degrees. Dev bench only; no-ops elsewhere."),
     FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&GothicBenchSetRot));
+
+#endif // !UE_BUILD_SHIPPING
