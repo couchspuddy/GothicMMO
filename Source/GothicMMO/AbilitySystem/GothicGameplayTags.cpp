@@ -53,6 +53,9 @@ namespace GothicTags
 		"SetByCaller channel for SuperMeter gain on super-gain GEs.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Data_RampMagnitude, "Data.RampMagnitude",
 		"SetByCaller channel for The Loved and The Lost's ramp GE magnitude.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Data_VitalHit, "Data.VitalHit",
+		"SetByCaller flag (1/0) stamped by GA_Fire so the damage choke point knows a hit "
+		"was vital. Read by the flinch and shape passes; consumed by no GE modifier.");
 
 	// ── Events ───────────────────────────────────────────────────────────────
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Kill_Confirmed, "Event.Kill.Confirmed",

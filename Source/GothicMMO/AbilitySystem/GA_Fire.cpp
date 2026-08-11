@@ -918,6 +918,14 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     Spec.Data->SetSetByCallerMagnitude(
         FGameplayTag::RequestGameplayTag(FName("Data.Damage")), FinalDamage);
 
+    // Stamp vital-ness onto the spec so the choke point can branch the flinch and
+    // shape passes on it. GA_Fire is the only site that resolves a vital today, so
+    // it is the only site that sets this; every other damage path leaves it unset,
+    // which the choke point reads as a body hit (default 0). No GE modifier reads
+    // this channel — it is carried purely so PostGameplayEffectExecute can see it.
+    Spec.Data->SetSetByCallerMagnitude(
+        GothicTags::Data_VitalHit, bIsVitalHit ? 1.f : 0.f);
+
     SourceASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
 
     // One line tying the geometry above to the number that went out on the wire.

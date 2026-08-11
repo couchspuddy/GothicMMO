@@ -51,6 +51,15 @@ namespace GothicTags
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_SuperMeter);
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_RampMagnitude);
 
+	// Marks a damage spec as a VITAL hit so the choke point
+	// (UGothicAttributeSet::PostGameplayEffectExecute) can branch on it — the flinch
+	// pass reads it to pick the vital threshold, the shape pass to pick the vital
+	// multiplier. Carried as a 1/0 SetByCaller magnitude rather than a context flag
+	// because nothing subclasses FGameplayEffectContext here; vitals are adjudicated
+	// upstream in GA_Fire (the only site that resolves them today) and the number is
+	// otherwise invisible to the attribute set. No GE consumes it as a modifier.
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_VitalHit);
+
 	// ── Events ───────────────────────────────────────────────────────────────
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Kill_Confirmed);
 

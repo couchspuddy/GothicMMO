@@ -11,6 +11,7 @@
 #include "Engine/Engine.h"
 #include "Character/GothicCharacterBase.h"
 #include "AI/GothicEnemyBase.h"
+#include "AbilitySystem/GothicGameplayTags.h"   // Data_VitalHit
 #include "Game/GothicDeterminism.h"
 #include "GothicMMO.h"
 
@@ -202,6 +203,14 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
             return;
         }
 
+        // Vital-ness rides the spec as a 1/0 SetByCaller (Data.VitalHit), stamped by
+        // GA_Fire — the only site that resolves a vital today. Every other damage
+        // path leaves it unset, which reads here as a body hit. WarnIfNotFound=false
+        // because most specs legitimately never set it. Consumed by the flinch and
+        // shape passes below; no GE modifier reads this channel.
+        const bool bVitalHit = Data.EffectSpec.GetSetByCallerMagnitude(
+            GothicTags::Data_VitalHit, /*WarnIfNotFound=*/false, /*DefaultIfNotFound=*/0.f) > 0.f;
+
         // Damage resolution — ITEMIZATION_AND_LOOT.md, "Application — Damage
         // Multiplies Off the Stats":
         //
@@ -290,6 +299,19 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
                 TargetActor->FindComponentByClass<UGothicVitalPointComponent>())
             {
                 TargetVital->NotifyDamageTaken(FinalDamage);
+            }
+
+            // Flinch adjudication — this is the server-only choke point, and it is
+            // gated on survival: a killed enemy dies, it does not flinch. The body
+            // vs vital threshold and the Boss no-vital-flinch rule live in
+            // EvaluateFlinch; an enemy with no EnemyData no-ops there, so legacy
+            // enemies are unchanged. FinalDamage is the applied health delta.
+            if (NewHealth > 0.f)
+            {
+                if (AGothicEnemyBase* FlinchEnemy = Cast<AGothicEnemyBase>(TargetActor))
+                {
+                    FlinchEnemy->EvaluateFlinch(FinalDamage, bVitalHit);
+                }
             }
         }
 
