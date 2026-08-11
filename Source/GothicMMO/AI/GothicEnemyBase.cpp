@@ -9,6 +9,7 @@
 #include "AI/GothicMeleeHitboxComponent.h"
 #include "AI/GothicVitalPointComponent.h"
 #include "AI/GothicPackSubsystem.h"
+#include "AI/GothicEnemyDataAsset.h"
 #include "UI/GothicHUD.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/World.h"
@@ -143,6 +144,41 @@ FText AGothicEnemyBase::MakeAccursedName(int32 Seed)
 
     return FText::FromString(FString::Printf(TEXT("%s %s"),
         GAccursedFirstNames[FirstIdx], GAccursedSurnames[LastIdx]));
+}
+
+void AGothicEnemyBase::InitializeGAS()
+{
+    // Base first: applies DefaultAttributeEffect and grants startup abilities.
+    // Legacy enemies with no EnemyData stop here, behaving exactly as before.
+    Super::InitializeGAS();
+
+    if (!EnemyData || !AttributeSet)
+    {
+        return;
+    }
+
+    // Authoritative gameplay state — server only, matching Super's own attribute
+    // writes. Clients receive these through the attributes' replication.
+    if (!HasAuthority())
+    {
+        return;
+    }
+
+    // Data asset overrides the base values. Init* writes the BASE directly (no GE),
+    // so the tier's numbers win over whatever DefaultAttributeEffect seeded. Health
+    // starts full at the data-driven MaxHealth.
+    AttributeSet->InitMaxHealth(EnemyData->MaxHealth);
+    AttributeSet->InitHealth(EnemyData->MaxHealth);
+    AttributeSet->InitAttackPower(EnemyData->BaseAttack);
+    AttributeSet->InitDefense(EnemyData->BaseDefense);
+
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|EnemyClassApplied|tier=%d|shape=%d|role=%d|")
+        TEXT("maxhp=%.1f|atk=%.1f|def=%.1f"),
+        GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetNameSafe(this),
+        static_cast<int32>(EnemyData->Tier), static_cast<int32>(EnemyData->Shape),
+        static_cast<int32>(EnemyData->Role),
+        EnemyData->MaxHealth, EnemyData->BaseAttack, EnemyData->BaseDefense);
 }
 
 void AGothicEnemyBase::BeginPlay()
