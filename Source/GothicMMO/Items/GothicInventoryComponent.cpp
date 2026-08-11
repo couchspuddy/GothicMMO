@@ -749,11 +749,13 @@ bool UGothicInventoryComponent::ImbueStar_Authority(const FGuid& InstanceID, flo
     return true;
 }
 
-void UGothicInventoryComponent::GrantStartingItems()
+void UGothicInventoryComponent::GrantStartingItems(bool bCanonicalRolls)
 {
     // Server-authoritative and one-shot. The PlayerState (and this component)
     // survives death, so without the guard every respawn would re-grant a full
-    // kit on top of whatever the player has since equipped.
+    // kit on top of whatever the player has since equipped. The one-shot guard is
+    // also what makes a bench respawn identical: a respawned bench pawn does not
+    // re-grant, so it keeps the canonical kit granted on its first spawn.
     if (bStartingItemsGranted)
     {
         return;
@@ -773,8 +775,9 @@ void UGothicInventoryComponent::GrantStartingItems()
         }
 
         // Roll a real instance so the starting kit has rolled stats like any
-        // drop, then equip it straight into its slot.
-        FGothicItemInstance Instance = Def->RollInstance();
+        // drop, then equip it straight into its slot. On the bench (bCanonicalRolls)
+        // the roll is frozen to midpoints so the kit is identical every session.
+        FGothicItemInstance Instance = Def->RollInstance(bCanonicalRolls);
         if (AddItem(Instance))
         {
             // Already on the authority — go straight to the implementation

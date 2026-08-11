@@ -573,7 +573,20 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
                 GothicGI->RestoreTravelSnapshot(PS);
             }
 
-            Inventory->GrantStartingItems();
+            // On the measurement bench, roll the kit canonically — frozen to
+            // range midpoints, identical every session and every spawn, so the
+            // archetype-damage scalar GA_Fire reads (the base→pre-vital drift that
+            // broke cross-session baselines) is pinned. Everywhere else this is
+            // false and the existing rolled path is untouched. GrantStartingItems
+            // is one-shot, so a bench respawn keeps the same canonical kit.
+            const bool bBench = IsDevBenchLevel();
+            if (bBench)
+            {
+                UE_LOG(LogVigilCombat, Log,
+                    TEXT("Bench|CanonicalLoadout|ENGAGED|pawn=%s|map=%s"),
+                    *GetName(), *UGameplayStatics::GetCurrentLevelName(this));
+            }
+            Inventory->GrantStartingItems(bBench);
         }
 
         // Sync weapon slots with anything already equipped (e.g. after respawn).
@@ -2676,6 +2689,78 @@ float AGothicPlayerCharacter::GetArchetypeDamageBonusPct(EGothicWeaponArchetype 
     const AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
     const UGothicInventoryComponent* Inventory = PS ? PS->GetInventory() : nullptr;
     return Inventory ? Inventory->GetArchetypeDamageBonus(GetArchetypeDamageStat(Archetype)) : 0.f;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Dev measurement bench (L_DEV_FeelBox) — see the header block on DevBenchMaps
+// ═══════════════════════════════════════════════════════════════════════════
+
+bool AGothicPlayerCharacter::IsDevBenchLevel() const
+{
+    // GetCurrentLevelName strips the PIE "UEDPIE_0_" prefix, so the compare holds
+    // in PIE, standalone and cooked — identical to the hint zone gate. Empty list
+    // (or a mismatch) means NOT a bench, which is what keeps every shipping map
+    // and its rolled loadout on the untouched path.
+    const FString CurrentMap = UGameplayStatics::GetCurrentLevelName(this);
+    return DevBenchMaps.ContainsByPredicate(
+        [&CurrentMap](const FString& Allowed) { return Allowed.Equals(CurrentMap, ESearchCase::IgnoreCase); });
+}
+
+void AGothicPlayerCharacter::DumpBenchLoadout() const
+{
+    // Read-only measurement dump. The console command already proved the bench
+    // gate before calling, but re-state the map on the header line so a captured
+    // log is self-describing.
+    const FString CurrentMap = UGameplayStatics::GetCurrentLevelName(this);
+
+    const AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
+    const UGothicInventoryComponent* Inventory = PS ? PS->GetInventory() : nullptr;
+    if (!Inventory)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Bench|DumpLoadout|NO-INVENTORY|pawn=%s|map=%s — PlayerState/inventory not resolved yet."),
+            *GetName(), *CurrentMap);
+        return;
+    }
+
+    // The active weapon and the two scalars GA_Fire multiplies onto its base
+    // damage. ArchetypePct is the exact base→pre-vital drift the bench pins:
+    // pre-vital = base x weaponTier x (1 + ArchetypePct/100).
+    const UGothicWeaponData* ActiveWeapon =
+        WeaponSlots.IsValidIndex(ActiveWeaponIndex) ? WeaponSlots[ActiveWeaponIndex].WeaponData : nullptr;
+    const float WeaponTierMult = GetActiveWeaponTierMultiplier();
+    const float ArchetypePct = ActiveWeapon
+        ? GetArchetypeDamageBonusPct(ActiveWeapon->Archetype) : 0.f;
+
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("Bench|DumpLoadout|pawn=%s|map=%s|activeWeapon=%s|weaponTierMult=x%.3f|archetypePct=%.3f|gearScore=%d"),
+        *GetName(), *CurrentMap,
+        ActiveWeapon ? *ActiveWeapon->WeaponName.ToString() : TEXT("none"),
+        WeaponTierMult, ArchetypePct, Inventory->GetGearScore());
+
+    // One line per equipped slot: identity plus the primary and every secondary
+    // roll, so a diff of two sessions' dumps is exactly the loadout comparison the
+    // bench exists to make trivial. Enum values logged numerically — this is a
+    // developer dump, not player-facing copy.
+    for (const FGothicEquippedSlot& Entry : Inventory->GetEquippedSlots())
+    {
+        const FGothicItemInstance& Item = Entry.Item;
+        FString Secondaries;
+        for (const FGothicStatRoll& Roll : Item.SecondaryStats)
+        {
+            Secondaries += FString::Printf(TEXT("[stat=%d val=%.3f]"),
+                static_cast<int32>(Roll.StatType), Roll.Value);
+        }
+
+        UE_LOG(LogVigilCombat, Log,
+            TEXT("Bench|DumpLoadout|slot=%d|item=%s|tier=%d|primaryStat=%d|primaryVal=%.3f|secondaries=%s"),
+            static_cast<int32>(Entry.Slot),
+            Item.Definition ? *Item.Definition->ItemID.ToString() : TEXT("null"),
+            Item.Definition ? Item.Definition->GearTier : -1,
+            Item.Definition ? static_cast<int32>(Item.Definition->PrimaryStatType) : -1,
+            Item.PrimaryStatValue,
+            Secondaries.IsEmpty() ? TEXT("(none)") : *Secondaries);
+    }
 }
 
 const UGA_TheLovedAndTheLost* AGothicPlayerCharacter::FindLovedAndLost() const
