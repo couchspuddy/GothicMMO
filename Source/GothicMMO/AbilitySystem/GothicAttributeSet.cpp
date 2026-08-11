@@ -263,21 +263,38 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
             ? BaseDefense / CurrentDefense
             : 1.f;
 
+        // Shape modifier — the DEFENDER's body reacting to the blow (Plated shrugs
+        // body shots, Shrouded resists, …). Applied as the OUTERMOST multiplier:
+        // after the frozen additive core and after both gear ratios. Placing it last
+        // keeps it a clean post-mitigation damage-type scalar, so at the 1.0 default
+        // it is provably identical to the pre-shape number to the float, and it never
+        // interacts with the max(1, …) core floor. The vital 2.5x already lives
+        // INSIDE RawDamage (applied upstream in GA_Fire), so the vital shape
+        // multiplier scales the whole post-mitigation, post-vital value. Body vs
+        // vital is selected by the same Data.VitalHit read used by the flinch pass.
+        // 1.0 with no EnemyData, so legacy enemies are unchanged.
+        float ShapeMult = 1.f;
+        if (const AGothicEnemyBase* ShapeEnemy = Cast<AGothicEnemyBase>(TargetActor))
+        {
+            ShapeMult = ShapeEnemy->GetShapeDamageMultiplier(bVitalHit);
+        }
+
         const float CoreDamage  = FMath::Max(1.f, RawDamage + BaseAttackPower - BaseDefense);
-        const float FinalDamage = CoreDamage * AttackRatio * DefenseRatio;
+        const float FinalDamage = CoreDamage * AttackRatio * DefenseRatio * ShapeMult;
 
         // applied=, the counterpart to GA_Fire's sent=. This is the health delta,
         // and it is the only place the two gear ratios are visible -- without it a
         // reader cannot tell a gear-scaled hit from a rebalanced base value.
         UE_LOG(LogVigilCombat, Verbose,
             TEXT("DamageApplied: target=%s raw=%.1f core=%.1f applied=%.1f ")
-            TEXT("(AP %.1f/%.1f=x%.2f Def %.1f/%.1f=x%.2f)"),
+            TEXT("(AP %.1f/%.1f=x%.2f Def %.1f/%.1f=x%.2f Shape=x%.2f vital=%d)"),
             *GetNameSafe(TargetActor),
             RawDamage,
             CoreDamage,
             FinalDamage,
             CurrentAttackPower, BaseAttackPower, AttackRatio,
-            BaseDefense, CurrentDefense, DefenseRatio);
+            BaseDefense, CurrentDefense, DefenseRatio,
+            ShapeMult, bVitalHit ? 1 : 0);
 
         const float NewHealth = FMath::Clamp(GetHealth() - FinalDamage, 0.f, GetMaxHealth());
         SetHealth(NewHealth);

@@ -266,11 +266,18 @@ public:
     EGothicEnemyTier GetEnemyTier() const
     { return EnemyData ? EnemyData->Tier : EGothicEnemyTier::Standard; }
 
-    /** Body shape — queried by the deferred shape-damage pass. Falls back to
-     *  Flesh when no EnemyData is assigned. */
+    /** Body shape. Falls back to Flesh when no EnemyData is assigned. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Enemy|Class")
     EGothicEnemyShape GetEnemyShape() const
     { return EnemyData ? EnemyData->Shape : EGothicEnemyShape::Flesh; }
+
+    /**
+     * Incoming shape damage multiplier for a body/vital hit, read at the damage
+     * choke point. 1.0 with no EnemyData, so legacy enemies take unmodified damage.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Enemy|Class")
+    float GetShapeDamageMultiplier(bool bVital) const
+    { return EnemyData ? EnemyData->GetShapeDamageMultiplier(bVital) : 1.f; }
 
     /**
      * The Behaviour Tree this enemy's Role selects, or null if it has no
