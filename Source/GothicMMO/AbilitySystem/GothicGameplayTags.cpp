@@ -34,6 +34,15 @@ namespace GothicTags
 		"self-expires on the target's death). GA_Fire multiplies a VITAL hit on a marked target by its "
 		"ReadVitalDamageMultiplier. The enemy ASC replicates in Minimal mode, so the tag reaches co-op "
 		"clients for the glow (AGothicEnemyBase::HandleReadMarkTagChanged) and the server for the math.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Reloading, "State.Reloading",
+		"The player is mid-reload — worn for the press-to-release hold (OnReloadPressed → OnReloadReleased "
+		"and every interrupt path). The pack surge decorator (PR #69) reads it on the SERVER to open the "
+		"vulnerability window, so it is applied on the authority ASC and, like State.Sprinting, cleared on "
+		"every end path and on fresh-pawn cleanup (the ASC lives on the PlayerState and outlives the pawn).");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Selah, "State.Selah",
+		"The player is inside a Selah moment (bSelahMomentLock). The pack surge decorator (PR #69) reads it "
+		"on the SERVER. Applied on the authority ASC in TriggerSelahMoment and cleared in EndSelahMomentLock "
+		"and on fresh-pawn cleanup, since the ASC outlives the pawn (gotcha #4).");
 
 	// ── SetByCaller data channels ────────────────────────────────────────────
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Data_Damage, "Data.Damage",
