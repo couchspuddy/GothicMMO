@@ -2763,6 +2763,71 @@ void AGothicPlayerCharacter::DumpBenchLoadout() const
     }
 }
 
+bool AGothicPlayerCharacter::GrantBenchItem(const FString& ItemDefName)
+{
+    AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
+    UGothicInventoryComponent* Inventory = PS ? PS->GetInventory() : nullptr;
+    if (!Inventory)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Bench|Grant|NO-INVENTORY|item=%s — PlayerState/inventory not resolved."),
+            *ItemDefName);
+        return false;
+    }
+
+    // Real named definitions live under /Game/Data/Loot as DA_ItemDef_<Name>. Load
+    // by full object path (Package.Object) so LoadObject resolves the asset itself
+    // rather than the package. A miss is the common operator error — a mistyped
+    // name — so it logs the resolved path to make the fix obvious, and returns
+    // rather than asserting.
+    const FString ObjectPath = FString::Printf(
+        TEXT("/Game/Data/Loot/DA_ItemDef_%s.DA_ItemDef_%s"), *ItemDefName, *ItemDefName);
+    UGothicItemDefinition* Def = LoadObject<UGothicItemDefinition>(nullptr, *ObjectPath);
+    if (!Def)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Bench|Grant|NOT-FOUND|item=%s|path=%s — check the name (Gothic.Bench.ListItems)."),
+            *ItemDefName, *ObjectPath);
+        return false;
+    }
+
+    // Canonical roll so the granted item is byte-identical every session, exactly
+    // like the pinned starting kit. AddItem/EquipItem are authority-only and log
+    // their own refusal on a client — the bench is single-player, so the local
+    // pawn is authority.
+    FGothicItemInstance Instance = Def->RollInstance(/*bCanonical=*/true);
+    if (!Inventory->AddItem(Instance))
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Bench|Grant|ADD-FAILED|item=%s — inventory full or client."), *ItemDefName);
+        return false;
+    }
+
+    // Equip straight into the definition's own slot. This fires OnItemEquipped ->
+    // OnEquipmentChanged, which is what actually arms the weapon slot / applies the
+    // armor stats — the same path a hand-equip takes.
+    Inventory->EquipItem(Instance.InstanceID);
+
+    // For a weapon, put it in the active hand so the press ends "ready to fire".
+    // Armor returns index -1 here and simply stays equipped.
+    bool bSwappedToHand = false;
+    if (Def->IsWeapon())
+    {
+        const int32 WeaponIndex = EquipSlotToWeaponIndex(Def->EquipSlot);
+        if (WeaponSlots.IsValidIndex(WeaponIndex))
+        {
+            SwapWeapon(WeaponIndex);
+            bSwappedToHand = true;
+        }
+    }
+
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("Bench|Grant|OK|item=%s|slot=%d|weapon=%d|inHand=%d|gearScore=%d"),
+        *ItemDefName, static_cast<int32>(Def->EquipSlot),
+        Def->IsWeapon() ? 1 : 0, bSwappedToHand ? 1 : 0, Inventory->GetGearScore());
+    return true;
+}
+
 const UGA_TheLovedAndTheLost* AGothicPlayerCharacter::FindLovedAndLost() const
 {
     if (!AbilitySystemComponent)
