@@ -11,7 +11,7 @@
 // rolls the same way every session, which is the only way a damage measurement
 // taken on Tuesday means anything on Wednesday.
 
-FGothicItemInstance UGothicItemDefinition::RollInstance() const
+FGothicItemInstance UGothicItemDefinition::RollInstance(bool bCanonical) const
 {
 	FGothicItemInstance Instance;
 	Instance.InstanceID = FGuid::NewGuid();
@@ -21,46 +21,78 @@ FGothicItemInstance UGothicItemDefinition::RollInstance() const
 	Instance.bImbued = false;
 	Instance.CurrentStars = 0;
 
-	// Roll star ceiling within range
-	Instance.StarCeiling = FGothicDeterminism::RandRange(MinStarCeiling, MaxStarCeiling);
+	// The canonical bench path takes each range's midpoint instead of a die roll
+	// and never touches FGothicDeterminism — see the header. The midpoint (not
+	// the floor) is chosen so the pinned loadout sits at a representative centre
+	// of every range rather than a degenerate minimum. InstanceID stays a fresh
+	// GUID: it is a per-instance handle, not a stat, and nothing measurement-facing
+	// reads it.
+	auto Pick = [bCanonical](float Min, float Max) -> float
+	{
+		return bCanonical ? (Min + Max) * 0.5f : FGothicDeterminism::FRandRange(Min, Max);
+	};
+
+	// Roll star ceiling within range (canonical: the floor — stars are inert, so
+	// the choice is cosmetic; the floor keeps it stable and legible).
+	Instance.StarCeiling = bCanonical
+		? MinStarCeiling
+		: FGothicDeterminism::RandRange(MinStarCeiling, MaxStarCeiling);
 
 	// Roll primary stat
-	Instance.PrimaryStatValue = FGothicDeterminism::FRandRange(PrimaryStatRange.X, PrimaryStatRange.Y);
+	Instance.PrimaryStatValue = Pick(PrimaryStatRange.X, PrimaryStatRange.Y);
 
-	// Roll secondaries — pick random stats from the pool without repeats
+	// Roll secondaries — random subset without repeats, OR (canonical) the first
+	// SecondaryStatSlots entries of the pool in author order, at their midpoints.
 	if (SecondaryStatSlots > 0 && SecondaryStatPool.Num() > 0)
 	{
-		TArray<int32> AvailableIndices;
-		for (int32 i = 0; i < SecondaryStatPool.Num(); ++i)
-		{
-			AvailableIndices.Add(i);
-		}
-
 		const int32 NumToRoll = FMath::Min(SecondaryStatSlots, SecondaryStatPool.Num());
-		for (int32 i = 0; i < NumToRoll; ++i)
+
+		if (bCanonical)
 		{
-			const int32 PickIdx = FGothicDeterminism::RandRange(0, AvailableIndices.Num() - 1);
-			const int32 PoolIdx = AvailableIndices[PickIdx];
-			AvailableIndices.RemoveAtSwap(PickIdx);
+			for (int32 i = 0; i < NumToRoll; ++i)
+			{
+				const FGothicSecondaryStatRange& Range = SecondaryStatPool[i];
 
-			const FGothicSecondaryStatRange& Range = SecondaryStatPool[PoolIdx];
+				FGothicStatRoll Roll;
+				Roll.StatType = Range.StatType;
+				Roll.Value = Pick(Range.MinValue, Range.MaxValue);
+				Instance.SecondaryStats.Add(Roll);
+			}
+		}
+		else
+		{
+			TArray<int32> AvailableIndices;
+			for (int32 i = 0; i < SecondaryStatPool.Num(); ++i)
+			{
+				AvailableIndices.Add(i);
+			}
 
-			FGothicStatRoll Roll;
-			Roll.StatType = Range.StatType;
-			Roll.Value = FGothicDeterminism::FRandRange(Range.MinValue, Range.MaxValue);
-			Instance.SecondaryStats.Add(Roll);
+			for (int32 i = 0; i < NumToRoll; ++i)
+			{
+				const int32 PickIdx = FGothicDeterminism::RandRange(0, AvailableIndices.Num() - 1);
+				const int32 PoolIdx = AvailableIndices[PickIdx];
+				AvailableIndices.RemoveAtSwap(PickIdx);
+
+				const FGothicSecondaryStatRange& Range = SecondaryStatPool[PoolIdx];
+
+				FGothicStatRoll Roll;
+				Roll.StatType = Range.StatType;
+				Roll.Value = FGothicDeterminism::FRandRange(Range.MinValue, Range.MaxValue);
+				Instance.SecondaryStats.Add(Roll);
+			}
 		}
 	}
 
 	// Perks roll AT DROP, alongside the secondaries and through the same seeded
 	// stream — a measurement run that pins the seed gets the same three perks on
-	// the same weapon every session, exactly as it gets the same stat rolls.
-	RollWeaponPerks(Instance);
+	// the same weapon every session, exactly as it gets the same stat rolls. The
+	// canonical path picks the first eligible perk in each bucket instead.
+	RollWeaponPerks(Instance, bCanonical);
 
 	return Instance;
 }
 
-void UGothicItemDefinition::RollWeaponPerks(FGothicItemInstance& Instance) const
+void UGothicItemDefinition::RollWeaponPerks(FGothicItemInstance& Instance, bool bCanonical) const
 {
 	// Weapons only, Resonant/Pure only. Salvage/Kept/Remembered roll zero perks
 	// per the rarity table — unchanged from ITEMIZATION_AND_LOOT.md.
@@ -97,7 +129,7 @@ void UGothicItemDefinition::RollWeaponPerks(FGothicItemInstance& Instance) const
 			continue;
 		}
 
-		const int32 PickIdx = FGothicDeterminism::RandRange(0, Pool.Num() - 1);
+		const int32 PickIdx = bCanonical ? 0 : FGothicDeterminism::RandRange(0, Pool.Num() - 1);
 		Instance.WeaponPerks.Add(Pool[PickIdx]);
 	}
 

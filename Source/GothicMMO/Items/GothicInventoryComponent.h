@@ -193,9 +193,18 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Inventory")
     TArray<TObjectPtr<UGothicItemDefinition>> StartingItemDefs;
 
-    /** Rolls, adds, and equips each StartingItemDef once, on authority. */
+    /**
+     * Rolls, adds, and equips each StartingItemDef once, on authority.
+     *
+     * bCanonicalRolls is the measurement-bench path (L_DEV_FeelBox): each piece
+     * is rolled through UGothicItemDefinition::RollInstance(true), which freezes
+     * every stat to its range midpoint so the kit — and therefore the archetype
+     * damage scalar GA_Fire reads — is byte-identical every session and every
+     * spawn. Default false leaves every shipping map on the existing rolled path,
+     * untouched. The caller (the pawn) decides, from its DevBenchMaps gate.
+     */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
-    void GrantStartingItems();
+    void GrantStartingItems(bool bCanonicalRolls = false);
 
     /**
      * Refill this (freshly-created) inventory from a UGothicGameInstance travel

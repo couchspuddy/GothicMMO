@@ -151,8 +151,20 @@ public:
      * Star ceiling rolled within [MinStarCeiling, MaxStarCeiling].
      * Primary and secondary stats rolled from configured ranges.
      * Weapon perks rolled when RollsWeaponPerks() — see RollWeaponPerks.
+     *
+     * bCanonical is the measurement-bench path (L_DEV_FeelBox). It produces the
+     * SAME instance every call — every session, every spawn, every seed — by
+     * taking each range's midpoint instead of a die roll, the first
+     * SecondaryStatSlots entries of the pool in order instead of a random subset,
+     * and the first eligible perk in each bucket. It touches FGothicDeterminism
+     * not at all, so it neither depends on nor perturbs vigil.Deterministic: the
+     * bench loadout is fixed regardless of RNG state. This is what pins the
+     * base→pre-vital archetype-damage scalar (GetArchetypeDamageBonus, applied in
+     * GA_Fire) that otherwise drifts run to run. The instance is REAL — it flows
+     * through EquipItem, GE_EquipmentStats and every downstream system exactly
+     * like a rolled drop; only the numbers are frozen.
      */
-    FGothicItemInstance RollInstance() const;
+    FGothicItemInstance RollInstance(bool bCanonical = false) const;
 
 private:
     /**
@@ -165,6 +177,9 @@ private:
      * the doc already flags: six of its Fine-Tune/Verb-B entries are structurally
      * dead, and if curation ever empties a bucket outright the drop must still
      * be a valid item.
+     *
+     * bCanonical picks the first eligible perk in each bucket rather than a random
+     * one, for the deterministic bench path — see RollInstance.
      */
-    void RollWeaponPerks(FGothicItemInstance& Instance) const;
+    void RollWeaponPerks(FGothicItemInstance& Instance, bool bCanonical = false) const;
 };

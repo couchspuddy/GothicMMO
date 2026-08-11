@@ -298,6 +298,49 @@ public:
     void TriggerFallRespawn();
 
     // -------------------------------------------------------------------------
+    // Dev measurement bench (L_DEV_FeelBox)
+    //
+    // The ONE allow-list that governs both bench behaviours: the pinned canonical
+    // loadout (InitGASFromPlayerState → GrantStartingItems(IsDevBenchLevel())) and
+    // the dev test-option console framework (GothicDevBench.cpp gates every option
+    // on IsDevBenchLevel()). A single source keeps the two from ever disagreeing
+    // about where "the bench" is. Same shape as UGothicHintManagerComponent's
+    // HintEnabledMaps, and the same rule: empty means NOWHERE, not everywhere.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Levels in which the measurement bench is active, by short map name (no
+     * /Game path, no PIE prefix). On these maps the starting loadout is rolled
+     * canonically (frozen, identical every session) and the dev test options can
+     * fire; everywhere else both are structurally inert. Default L_DEV_FeelBox.
+     *
+     * A data edit on BP_GothicPlayerCharacter, not a recompile — but note it is
+     * EditDefaultsOnly, so a change here must be re-inherited by any placed pawn.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|DevBench")
+    TArray<FString> DevBenchMaps = { TEXT("L_DEV_FeelBox") };
+
+    /**
+     * True if this pawn's current level is a dev bench (short map name in
+     * DevBenchMaps). Resolved live from UGameplayStatics::GetCurrentLevelName,
+     * which strips the PIE prefix, so the same answer holds in PIE, standalone and
+     * cooked. The map cannot change under a live pawn, so re-resolving per call is
+     * a cheap string compare on a tiny list.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|DevBench")
+    bool IsDevBenchLevel() const;
+
+    /**
+     * Exemplar dev test option — the loadout readback the bench exists to make
+     * legible. Logs the equipped kit, gear score, active-weapon tier multiplier
+     * and the archetype-damage percent (the exact base→pre-vital scalar) to
+     * LogVigilCombat as grep-friendly Bench| lines. Read-only: it measures, it
+     * changes nothing. Driven by Gothic.Bench.DumpLoadout, which gates on
+     * IsDevBenchLevel() before it ever reaches here.
+     */
+    void DumpBenchLoadout() const;
+
+    // -------------------------------------------------------------------------
     // Downed fork (multiplayer)
     //
     // Zero health with at least one other player still up puts you DOWN instead
