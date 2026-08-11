@@ -1533,6 +1533,20 @@ private:
     /** Stops the hold timer and fires OnSteadfastConversionEnded if it had begun. */
     void EndSteadfastHold();
 
+    /** Opens/closes the reload vulnerability window (State.Reloading) that the pack
+     *  surge decorator reads on the SERVER. Reload input runs on the owning client,
+     *  so the owning client routes through ServerSetReloadingHold; a listen-server
+     *  host already has authority and applies the tag directly. */
+    void SetReloadingHold(bool bActive);
+
+    /** Server copy of the reload window — the decorator reads the authority ASC. */
+    UFUNCTION(Server, Reliable)
+    void ServerSetReloadingHold(bool bActive);
+
+    /** Writes State.Reloading count 1/0 onto the authority ASC. Server-side only;
+     *  no-op if the ASC has not resolved yet. */
+    void ApplyReloadingTag(bool bActive);
+
     /** Drives both the initial threshold delay and the repeat interval. */
     FTimerHandle SteadfastHoldTimerHandle;
 

@@ -397,6 +397,13 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         AbilitySystemComponent->SetLooseGameplayTagCount(
             FGameplayTag::RequestGameplayTag(FName("State.Dead")), 0);
 
+        // Same outlives-the-pawn hazard for the two vulnerability windows the pack
+        // surge decorator reads. Both are applied on this authority ASC (reload via
+        // the reload-hold RPC, Selah in TriggerSelahMoment), and a pawn that died
+        // mid-window would otherwise hand a stuck count to its replacement.
+        AbilitySystemComponent->SetLooseGameplayTagCount(GothicTags::State_Reloading, 0);
+        AbilitySystemComponent->SetLooseGameplayTagCount(GothicTags::State_Selah, 0);
+
         // Same hazard, same fix, for the downed flag. A fresh pawn is never
         // downed, and the flag lives on the PlayerState — which survives the pawn
         // that WAS downed. OnReviveWindowExpired already clears it on the way out,
@@ -1348,6 +1355,11 @@ void AGothicPlayerCharacter::SetSprinting(bool bNewSprinting)
     {
         EndSteadfastHold();
         bSteadfastHoldThresholdReached = false;
+
+        // The gun just went down mid-hold — the reload window is abandoned, and the
+        // release that eventually comes is blocked by AreGunActionsBlocked, so it
+        // would never close the window. Close it here.
+        SetReloadingHold(false);
     }
 
     RefreshMovementSpeed();
@@ -1953,6 +1965,16 @@ void AGothicPlayerCharacter::TriggerSelahMoment()
     // this is set (see OnMove and UGA_Fire::CanActivateAbility); menus are not.
     bSelahMomentLock = true;
 
+    // Mirror the lock onto the authority ASC so the pack surge decorator can read it
+    // on the server. TriggerSelahMoment is driven from AGothicEncounterVolume::
+    // FinalizeCollection, which is authority-gated, so this runs server-side; the
+    // ASC outlives the pawn, so EndSelahMomentLock and the fresh-pawn cleanup both
+    // clear it. (State.Dead idiom: absolute SetLooseGameplayTagCount, ASC null-guarded.)
+    if (HasAuthority() && AbilitySystemComponent)
+    {
+        AbilitySystemComponent->SetLooseGameplayTagCount(GothicTags::State_Selah, 1);
+    }
+
     // Kill any momentum already in flight, or a player who was sprinting when the
     // last enemy died keeps sliding through the whole moment.
     if (UCharacterMovementComponent* Move = GetCharacterMovement())
@@ -1974,6 +1996,13 @@ void AGothicPlayerCharacter::TriggerSelahMoment()
 void AGothicPlayerCharacter::EndSelahMomentLock()
 {
     bSelahMomentLock = false;
+
+    // Close the server-side window opened in TriggerSelahMoment. Reached only via the
+    // timer that TriggerSelahMoment set on the authority, so this too runs server-side.
+    if (HasAuthority() && AbilitySystemComponent)
+    {
+        AbilitySystemComponent->SetLooseGameplayTagCount(GothicTags::State_Selah, 0);
+    }
 
     if (UWorld* World = GetWorld())
     {
@@ -2335,6 +2364,12 @@ void AGothicPlayerCharacter::OnReloadPressed()
     bSteadfastConversionFired = false;
     bSteadfastHoldThresholdReached = false;
 
+    // The press-to-release hold IS the reload vulnerability window — reload itself is
+    // instantaneous (ReloadActiveWeapon only moves counts), so there is no separate
+    // reload duration to gate on. Opened here, past the guards so a blocked press
+    // never opens it, and closed on release plus every interrupt path below.
+    SetReloadingHold(true);
+
     GetWorldTimerManager().SetTimer(
         SteadfastHoldTimerHandle,
         this,
@@ -2345,6 +2380,11 @@ void AGothicPlayerCharacter::OnReloadPressed()
 
 void AGothicPlayerCharacter::OnReloadReleased()
 {
+    // A physical key release always closes the vulnerability window, even the
+    // release that lands while sprinting (which returns early below). Cleared ahead
+    // of that guard for exactly that case.
+    SetReloadingHold(false);
+
     // Checked on release as well as press, not only on press: a player who starts
     // the sprint DURING the hold would otherwise release into a tap-reload, since
     // the release handler reloads whenever the threshold was not reached. The
@@ -2418,6 +2458,43 @@ void AGothicPlayerCharacter::EndSteadfastHold()
     {
         bSteadfastConversionFired = false;
         OnSteadfastConversionEnded();
+    }
+}
+
+// The reload vulnerability window (State.Reloading) has to sit on the SERVER ASC —
+// the pack surge decorator reads it on the authority — but reload input is
+// owning-client-only (bound in SetupPlayerInputComponent). So the owning client
+// hands the state to the server over an RPC, the same client-authoritative route
+// ammo already takes. On a listen-server host HasAuthority() is already true and
+// the tag is applied without a round trip. No local copy is kept: the tag has no
+// client-side consumer (unlike State.Sprinting, whose GA_Fire gate is client-side).
+void AGothicPlayerCharacter::SetReloadingHold(bool bActive)
+{
+    if (HasAuthority())
+    {
+        ApplyReloadingTag(bActive);
+    }
+    else
+    {
+        ServerSetReloadingHold(bActive);
+    }
+}
+
+void AGothicPlayerCharacter::ServerSetReloadingHold_Implementation(bool bActive)
+{
+    ApplyReloadingTag(bActive);
+}
+
+void AGothicPlayerCharacter::ApplyReloadingTag(bool bActive)
+{
+    // SetLooseGameplayTagCount to an absolute 1/0 rather than Add/Remove: the ASC
+    // lives on the PlayerState and outlives the pawn, so an absolute write can never
+    // accumulate a stuck count across repeated presses or a death (same idiom as the
+    // State.Dead clear in InitGASFromPlayerState).
+    if (AbilitySystemComponent)
+    {
+        AbilitySystemComponent->SetLooseGameplayTagCount(
+            GothicTags::State_Reloading, bActive ? 1 : 0);
     }
 }
 
@@ -2727,6 +2804,12 @@ void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
         AbilitySystemComponent->RemoveActiveEffectsWithGrantedTags(
             FGameplayTagContainer(GothicTags::State_Read));
     }
+
+    // Death is a reload-window end path like it is a sprint end path: a player who
+    // died mid-hold would otherwise carry State.Reloading on the PlayerState ASC
+    // into the respawn, where no reload input could ever clear it. On the authority
+    // already, so write the tag directly.
+    ApplyReloadingTag(false);
 
     // ── THE DOWNED FORK ──────────────────────────────────────────────────────
     // Everything below this block is irreversible for a player we mean to keep:
@@ -3266,6 +3349,10 @@ void AGothicPlayerCharacter::SwapWeapon(int32 NewIndex)
     // A swap abandons any in-progress conversion — the cost was tied to the old weapon's tier
     EndSteadfastHold();
 
+    // ...and abandons the reload vulnerability window with it: the reload key may
+    // still be held, but the hold that opened the window is over.
+    SetReloadingHold(false);
+
     // ...and abandons the Oversurge streak with it. The streak is a property of
     // sustained fire from one weapon; letting it carry across a swap would mean
     // building it up on the cheap repeater and spending it on a heavy hitter.
@@ -3500,6 +3587,8 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
     if (WeaponIndex == ActiveWeaponIndex)
     {
         EndSteadfastHold();
+        // The active weapon changed under the hold — close the reload window too.
+        SetReloadingHold(false);
         RefreshWeaponVisuals(WeaponIndex);
         PushAmmoToHUD();
     }

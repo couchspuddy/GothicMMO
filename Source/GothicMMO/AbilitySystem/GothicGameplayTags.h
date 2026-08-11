@@ -39,6 +39,12 @@ namespace GothicTags
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Read);
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Read_Marked);
 
+	// Player-side vulnerability windows the pack surge decorator (PR #69) reads on
+	// the server. State_Reloading rides the reload press-to-release hold;
+	// State_Selah rides the Selah-moment lock. Applied on the authority ASC.
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Reloading);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Selah);
+
 	// ── SetByCaller data channels ────────────────────────────────────────────
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Damage);
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Selah);
