@@ -5,11 +5,11 @@
 // it — base attributes from the numbers here, Behaviour Tree from the Role map —
 // so a new enemy variant is a new data asset, not a new C++ branch.
 //
-// Scope (this pass): Tier drives HP/defense; Role drives BT assignment. Shape,
-// and both flinch thresholds, are STORED but not yet evaluated — flinch lives in
-// a later pass, shape damage modifiers in the one after. The fields exist now so
-// the data authored against this asset does not have to be revisited when those
-// systems arrive.
+// Scope: Tier drives HP/defense; Role drives BT assignment (pass 1). The flinch
+// thresholds are evaluated at the damage choke point (pass 2), and the per-Shape
+// incoming-damage multipliers likewise (pass 3). All of the latter default to
+// no-ops (thresholds 0, multipliers 1.0), so an asset authored for pass 1 keeps
+// its exact behaviour until someone tunes the new fields.
 
 #pragma once
 
@@ -35,9 +35,10 @@ enum class EGothicEnemyTier : uint8
 };
 
 /**
- * Material/body class. STORED ONLY this pass — the per-shape incoming-damage
- * modifiers (e.g. Plated shrugging off body shots, Shrouded resisting until
- * revealed) land in a later pass and will read this off the pawn.
+ * Material/body class. The per-shape incoming-damage modifiers (e.g. Plated
+ * shrugging off body shots, Shrouded resisting until revealed) live in
+ * ShapeBodyDamageMultiplier / ShapeVitalDamageMultiplier below and are read at the
+ * damage choke point. Defaults are 1.0 — the mechanism is live, the tuning is not.
  */
 UENUM(BlueprintType)
 enum class EGothicEnemyShape : uint8
@@ -105,20 +106,49 @@ public:
     float BaseDefense = 0.f;
 
     // -------------------------------------------------------------------------
-    // Flinch thresholds — STORED ONLY this pass (flinch eval is a later pass).
-    // Fraction (0..1) of a hit / accumulated poise that trips the reaction.
+    // Flinch thresholds — evaluated at the damage choke point (pass 2). A hit
+    // whose final APPLIED damage meets the threshold trips the reaction; 0 (the
+    // default) never trips. Absolute applied-damage values, not a 0..1 fraction.
     // -------------------------------------------------------------------------
 
-    /** Threshold for a body-shot flinch. Not evaluated yet. */
+    /** Threshold for a body-shot flinch. 0 = never. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy|Flinch",
         meta = (ClampMin = "0.0"))
     float BodyFlinchThreshold = 0.f;
 
-    /** Threshold for a vital-shot flinch. Not evaluated yet, and only meaningful
-     *  where AllowsVitalFlinch() is true (i.e. non-Boss tiers). */
+    /** Threshold for a vital-shot flinch. Only meaningful where AllowsVitalFlinch()
+     *  is true (i.e. non-Boss tiers). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy|Flinch",
         meta = (ClampMin = "0.0"))
     float VitalFlinchThreshold = 0.f;
+
+    // -------------------------------------------------------------------------
+    // Shape damage modifiers — incoming-damage multipliers by hit kind.
+    //
+    // The Shape field above is the enemy's damage IDENTITY (Plated shrugs body
+    // shots, Shrouded resists until revealed); these two multipliers are how that
+    // identity reads at the damage choke point. Kept as fields on the asset, next
+    // to the flinch thresholds and the base attributes, because that is where this
+    // project already carries per-kind tuning — no new config asset, editor-tunable
+    // on the DA_Enemy_* assets that already exist.
+    //
+    // BOTH DEFAULT 1.0 this pass: mechanism only, zero balance change on merge.
+    // Real values come from in-editor measurement, never from reasoning here.
+    // -------------------------------------------------------------------------
+
+    /** Multiplier on the final (post-mitigation) BODY-hit damage this enemy takes. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy|Shape",
+        meta = (ClampMin = "0.0"))
+    float ShapeBodyDamageMultiplier = 1.f;
+
+    /** Multiplier on the final (post-mitigation) VITAL-hit damage this enemy takes. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy|Shape",
+        meta = (ClampMin = "0.0"))
+    float ShapeVitalDamageMultiplier = 1.f;
+
+    /** The shape multiplier for a hit of the given kind. 1.0 by default. */
+    float GetShapeDamageMultiplier(bool bVital) const
+    { return bVital ? ShapeVitalDamageMultiplier : ShapeBodyDamageMultiplier; }
 
     // -------------------------------------------------------------------------
     // Behaviour — Role → Behaviour Tree.

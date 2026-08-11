@@ -866,6 +866,60 @@ void AGothicEnemyBase::MulticastOnHit_Implementation(
     }
 }
 
+void AGothicEnemyBase::EvaluateFlinch(float AppliedDamage, bool bVitalHit)
+{
+    // Legacy / unclassified enemies have no thresholds to evaluate against — the
+    // whole flinch rule is a no-op for them, exactly as it was before this pass.
+    const UGothicEnemyDataAsset* Data = GetEnemyData();
+    if (!Data)
+    {
+        return;
+    }
+
+    bool bTripped       = false;
+    bool bVitalReaction = false;
+    float Threshold     = 0.f;
+
+    if (bVitalHit)
+    {
+        // A vital hit is adjudicated ONLY on the vital track — it never falls back
+        // to the body threshold. Boss tier (AllowsVitalFlinch()==false) therefore
+        // takes a vital hit without flinching, which is the "higher tiers do not
+        // visibly register damage" reading the animation spec asks for.
+        if (Data->AllowsVitalFlinch())
+        {
+            Threshold = Data->VitalFlinchThreshold;
+            bVitalReaction = Threshold > 0.f && AppliedDamage >= Threshold;
+            bTripped = bVitalReaction;
+        }
+    }
+    else
+    {
+        // Body track. Threshold 0 (the default) never trips.
+        Threshold = Data->BodyFlinchThreshold;
+        bTripped = Threshold > 0.f && AppliedDamage >= Threshold;
+    }
+
+    if (!bTripped)
+    {
+        return;
+    }
+
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("Flinch: enemy=%s vital=%d applied=%.1f threshold=%.1f"),
+        *GetNameSafe(this), bVitalReaction ? 1 : 0, AppliedDamage, Threshold);
+
+    MulticastFlinch(bVitalReaction);
+}
+
+void AGothicEnemyBase::MulticastFlinch_Implementation(bool bVital)
+{
+    // Runs on server and every client. The gate already happened on the server in
+    // EvaluateFlinch; here we only forward to the Blueprint hook. No C++ content —
+    // OnFlinch is where content (montage / additive pose / interrupt) responds.
+    OnFlinch(bVital);
+}
+
 void AGothicEnemyBase::HandleStunTagChanged(const FGameplayTag CallbackTag, int32 NewCount)
 {
     if (!HasAuthority())

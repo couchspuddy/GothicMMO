@@ -266,11 +266,18 @@ public:
     EGothicEnemyTier GetEnemyTier() const
     { return EnemyData ? EnemyData->Tier : EGothicEnemyTier::Standard; }
 
-    /** Body shape — queried by the deferred shape-damage pass. Falls back to
-     *  Flesh when no EnemyData is assigned. */
+    /** Body shape. Falls back to Flesh when no EnemyData is assigned. */
     UFUNCTION(BlueprintPure, Category = "Gothic|Enemy|Class")
     EGothicEnemyShape GetEnemyShape() const
     { return EnemyData ? EnemyData->Shape : EGothicEnemyShape::Flesh; }
+
+    /**
+     * Incoming shape damage multiplier for a body/vital hit, read at the damage
+     * choke point. 1.0 with no EnemyData, so legacy enemies take unmodified damage.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Enemy|Class")
+    float GetShapeDamageMultiplier(bool bVital) const
+    { return EnemyData ? EnemyData->GetShapeDamageMultiplier(bVital) : 1.f; }
 
     /**
      * The Behaviour Tree this enemy's Role selects, or null if it has no
@@ -280,6 +287,42 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|Enemy|Class")
     UBehaviorTree* GetRoleBehaviorTree() const
     { return EnemyData ? EnemyData->ResolveBehaviorTree() : nullptr; }
+
+    // -----------------------------------------------------------------
+    // Flinch — threshold-gated hit reaction (Tier × data thresholds).
+    // -----------------------------------------------------------------
+
+    /**
+     * Server-side per-hit flinch adjudication, called from the damage choke point
+     * (UGothicAttributeSet::PostGameplayEffectExecute) once final damage has landed
+     * and the target has survived it. AppliedDamage is the health delta —
+     * post-mitigation, and post-shape once the shape pass lands.
+     *
+     * No EnemyData => no-op: legacy/unclassified enemies never flinch from this
+     * rule. A threshold of 0 (the default) never trips either, so an unconfigured
+     * asset is unchanged. A vital hit is adjudicated ONLY against VitalFlinchThreshold
+     * and only where AllowsVitalFlinch() (Boss never vital-flinches); a body hit only
+     * against BodyFlinchThreshold. On a trip it fans OnFlinch out to every client.
+     */
+    void EvaluateFlinch(float AppliedDamage, bool bVitalHit);
+
+    /**
+     * Multicast the flinch so the reaction plays on every machine — the choke point
+     * is server-only. Unreliable like MulticastOnHit: a dropped flinch is a missed
+     * cosmetic, not a desync. Calls OnFlinch on receipt.
+     */
+    UFUNCTION(NetMulticast, Unreliable)
+    void MulticastFlinch(bool bVital);
+
+    /**
+     * Blueprint hook for the actual reaction (an additive flinch pose, a montage,
+     * an interrupt — content's call). Fires only when a threshold is exceeded, so it
+     * is distinct from the unconditional directional hit-react MulticastOnHit already
+     * drives. bVital is true for the stronger vital-hit reaction. No C++ content: the
+     * hook fires; existing/future Blueprint or anim content responds.
+     */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Enemy|Flinch")
+    void OnFlinch(bool bVital);
 
 protected:
     /**
