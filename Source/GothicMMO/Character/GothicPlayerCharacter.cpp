@@ -579,6 +579,10 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
             // broke cross-session baselines) is pinned. Everywhere else this is
             // false and the existing rolled path is untouched. GrantStartingItems
             // is one-shot, so a bench respawn keeps the same canonical kit.
+            //
+            // The bench is a dev-only surface: in Shipping the whole canonical
+            // branch is compiled out and only the plain legacy grant remains.
+#if !UE_BUILD_SHIPPING
             const bool bBench = IsDevBenchLevel();
             if (bBench)
             {
@@ -587,6 +591,9 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
                     *GetName(), *UGameplayStatics::GetCurrentLevelName(this));
             }
             Inventory->GrantStartingItems(bBench);
+#else
+            Inventory->GrantStartingItems();
+#endif
         }
 
         // Sync weapon slots with anything already equipped (e.g. after respawn).
@@ -2697,6 +2704,11 @@ float AGothicPlayerCharacter::GetArchetypeDamageBonusPct(EGothicWeaponArchetype 
 
 bool AGothicPlayerCharacter::IsDevBenchLevel() const
 {
+    // Reflected (BlueprintPure), so the symbol stays in every config — UHT will
+    // not honour an #if around the declaration — but the bench itself is dev-only:
+    // in Shipping this always answers false, which routes every caller (the
+    // canonical loadout, any stray Blueprint) onto the plain non-bench path.
+#if !UE_BUILD_SHIPPING
     // GetCurrentLevelName strips the PIE "UEDPIE_0_" prefix, so the compare holds
     // in PIE, standalone and cooked — identical to the hint zone gate. Empty list
     // (or a mismatch) means NOT a bench, which is what keeps every shipping map
@@ -2704,8 +2716,12 @@ bool AGothicPlayerCharacter::IsDevBenchLevel() const
     const FString CurrentMap = UGameplayStatics::GetCurrentLevelName(this);
     return DevBenchMaps.ContainsByPredicate(
         [&CurrentMap](const FString& Allowed) { return Allowed.Equals(CurrentMap, ESearchCase::IgnoreCase); });
+#else
+    return false;
+#endif
 }
 
+#if !UE_BUILD_SHIPPING
 void AGothicPlayerCharacter::DumpBenchLoadout() const
 {
     // Read-only measurement dump. The console command already proved the bench
@@ -2762,6 +2778,121 @@ void AGothicPlayerCharacter::DumpBenchLoadout() const
             Secondaries.IsEmpty() ? TEXT("(none)") : *Secondaries);
     }
 }
+
+bool AGothicPlayerCharacter::GrantBenchItem(const FString& ItemDefName)
+{
+    AGothicPlayerState* PS = GetPlayerState<AGothicPlayerState>();
+    UGothicInventoryComponent* Inventory = PS ? PS->GetInventory() : nullptr;
+    if (!Inventory)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Bench|Grant|NO-INVENTORY|item=%s — PlayerState/inventory not resolved."),
+            *ItemDefName);
+        return false;
+    }
+
+    // Real named definitions live under /Game/Data/Loot as DA_ItemDef_<Name>. Load
+    // by full object path (Package.Object) so LoadObject resolves the asset itself
+    // rather than the package. A miss is the common operator error — a mistyped
+    // name — so it logs the resolved path to make the fix obvious, and returns
+    // rather than asserting.
+    const FString ObjectPath = FString::Printf(
+        TEXT("/Game/Data/Loot/DA_ItemDef_%s.DA_ItemDef_%s"), *ItemDefName, *ItemDefName);
+    UGothicItemDefinition* Def = LoadObject<UGothicItemDefinition>(nullptr, *ObjectPath);
+    if (!Def)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Bench|Grant|NOT-FOUND|item=%s|path=%s — check the name (Gothic.Bench.ListItems)."),
+            *ItemDefName, *ObjectPath);
+        return false;
+    }
+
+    // Canonical roll so the granted item is byte-identical every session, exactly
+    // like the pinned starting kit. AddItem/EquipItem are authority-only and log
+    // their own refusal on a client — the bench is single-player, so the local
+    // pawn is authority.
+    FGothicItemInstance Instance = Def->RollInstance(/*bCanonical=*/true);
+    if (!Inventory->AddItem(Instance))
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Bench|Grant|ADD-FAILED|item=%s — inventory full or client."), *ItemDefName);
+        return false;
+    }
+
+    // Equip straight into the definition's own slot. This fires OnItemEquipped ->
+    // OnEquipmentChanged, which is what actually arms the weapon slot / applies the
+    // armor stats — the same path a hand-equip takes.
+    Inventory->EquipItem(Instance.InstanceID);
+
+    // For a weapon, put it in the active hand so the press ends "ready to fire".
+    // Armor returns index -1 here and simply stays equipped.
+    bool bSwappedToHand = false;
+    if (Def->IsWeapon())
+    {
+        const int32 WeaponIndex = EquipSlotToWeaponIndex(Def->EquipSlot);
+        if (WeaponSlots.IsValidIndex(WeaponIndex))
+        {
+            SwapWeapon(WeaponIndex);
+            bSwappedToHand = true;
+        }
+    }
+
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("Bench|Grant|OK|item=%s|slot=%d|weapon=%d|inHand=%d|gearScore=%d"),
+        *ItemDefName, static_cast<int32>(Def->EquipSlot),
+        Def->IsWeapon() ? 1 : 0, bSwappedToHand ? 1 : 0, Inventory->GetGearScore());
+    return true;
+}
+
+void AGothicPlayerCharacter::BenchLookAt(const FVector& WorldPoint)
+{
+    AController* Ctrl = GetController();
+    if (!Ctrl)
+    {
+        UE_LOG(LogVigilCombat, Warning, TEXT("Bench|LookAt|NO-CONTROLLER|pawn=%s"), *GetName());
+        return;
+    }
+
+    // From the CAMERA's world location, deliberately — the camera sits ~170uu up
+    // the capsule, and building the aim from the actor origin instead is the exact
+    // pitch error this command exists to eliminate. Fall back to the eye viewpoint
+    // only if the component is somehow absent, never to the actor location.
+    FVector EyeLoc;
+    if (FirstPersonCamera)
+    {
+        EyeLoc = FirstPersonCamera->GetComponentLocation();
+    }
+    else
+    {
+        FRotator ViewRot;
+        GetActorEyesViewPoint(EyeLoc, ViewRot);
+    }
+
+    const FRotator LookRot = (WorldPoint - EyeLoc).Rotation();
+    Ctrl->SetControlRotation(LookRot);
+
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("Bench|LookAt|pawn=%s|from=%s|to=%s|pitch=%.2f|yaw=%.2f"),
+        *GetName(), *EyeLoc.ToCompactString(), *WorldPoint.ToCompactString(),
+        LookRot.Pitch, LookRot.Yaw);
+}
+
+void AGothicPlayerCharacter::BenchSetControlRotation(float Pitch, float Yaw)
+{
+    AController* Ctrl = GetController();
+    if (!Ctrl)
+    {
+        UE_LOG(LogVigilCombat, Warning, TEXT("Bench|SetRot|NO-CONTROLLER|pawn=%s"), *GetName());
+        return;
+    }
+
+    const FRotator Rot(Pitch, Yaw, 0.f);
+    Ctrl->SetControlRotation(Rot);
+
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("Bench|SetRot|pawn=%s|pitch=%.2f|yaw=%.2f"), *GetName(), Rot.Pitch, Rot.Yaw);
+}
+#endif // !UE_BUILD_SHIPPING
 
 const UGA_TheLovedAndTheLost* AGothicPlayerCharacter::FindLovedAndLost() const
 {

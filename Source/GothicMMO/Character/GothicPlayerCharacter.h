@@ -330,6 +330,12 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|DevBench")
     bool IsDevBenchLevel() const;
 
+    // The bench bodies below are plain (non-reflected) C++, so they compile out of
+    // Shipping entirely — declaration and definition both. DevBenchMaps and
+    // IsDevBenchLevel above stay unconditional because UHT reflects them (it does
+    // not honour an #if around a UPROPERTY/UFUNCTION declaration); IsDevBenchLevel
+    // just answers false in Shipping instead.
+#if !UE_BUILD_SHIPPING
     /**
      * Exemplar dev test option — the loadout readback the bench exists to make
      * legible. Logs the equipped kit, gear score, active-weapon tier multiplier
@@ -339,6 +345,38 @@ public:
      * IsDevBenchLevel() before it ever reaches here.
      */
     void DumpBenchLoadout() const;
+
+    /**
+     * Grant + auto-equip a named item definition with a CANONICAL roll, so a
+     * bench hotkey press is "weapon in hand ready to fire" or "armor on the body".
+     * ItemDefName is the DA_ItemDef_<Name> suffix (e.g. "Revolver", "Kept_Coat");
+     * the asset is loaded from /Game/Data/Loot. A weapon is additionally swapped
+     * to the active hand once equipped. Returns true if the asset resolved and the
+     * grant succeeded. Bench body — the console layer proves the gate first.
+     *
+     * Real named definitions only, never a transient mint — that is the whole
+     * point over DebugSpawnTestItems: a named def carries its authored slot,
+     * archetype, weapon data and perk catalog, so the equipped result is the real
+     * item, and the canonical roll keeps the bench numbers pinned.
+     */
+    bool GrantBenchItem(const FString& ItemDefName);
+
+    /**
+     * Aim the first-person camera at a world point by setting the controller's
+     * control rotation, so BOTH pitch and yaw land. The rotation is built from the
+     * CAMERA component's world location, not the actor's — that offset (the camera
+     * sits ~170uu up the capsule) is exactly the aiming error this closes, and the
+     * reason a scenario "look at actor location" would still miss. This is the
+     * pitch lever the harness has never had: projectile abilities fire raw
+     * camera-forward (GA_Slicer), so without control-rotation pitch there is no way
+     * to point them at a ground enemy from a console/scenario. Bench body.
+     */
+    void BenchLookAt(const FVector& WorldPoint);
+
+    /** Raw variant of BenchLookAt — set control rotation to an explicit pitch/yaw
+     *  (degrees), roll zeroed. Bench body. */
+    void BenchSetControlRotation(float Pitch, float Yaw);
+#endif // !UE_BUILD_SHIPPING
 
     // -------------------------------------------------------------------------
     // Downed fork (multiplayer)
