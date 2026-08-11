@@ -17,6 +17,7 @@
 #include "CoreMinimal.h"
 #include "Character/GothicCharacterBase.h"
 #include "Perception/AIPerceptionTypes.h"
+#include "AI/GothicEnemyDataAsset.h"   // Tier/Shape/Role enums are used by-value below
 #include "GothicEnemyBase.generated.h"
 
 class UAIPerceptionComponent;
@@ -24,6 +25,7 @@ class UWidgetComponent;
 class UGothicLootTable;
 class UGothicMeleeHitboxComponent;
 class UGothicVitalPointComponent;
+class UBehaviorTree;
 class AGothicEncounterVolume;
 
 // Forward-declared here so both GothicEnemyBase and GothicEncounterVolume
@@ -250,7 +252,46 @@ public:
     UFUNCTION(BlueprintPure, Category = "Gothic|AI")
     UAIPerceptionComponent* GetPerceptionComponent() const { return PerceptionComponent; }
 
+    // -----------------------------------------------------------------
+    // Classification — Tier × Shape × Role, driven by EnemyData.
+    // -----------------------------------------------------------------
+
+    /** The classification asset this enemy configures itself from. May be null
+     *  on legacy enemies that still init purely from DefaultAttributeEffect. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Enemy|Class")
+    UGothicEnemyDataAsset* GetEnemyData() const { return EnemyData; }
+
+    /** Durability tier. Falls back to Standard when no EnemyData is assigned. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Enemy|Class")
+    EGothicEnemyTier GetEnemyTier() const
+    { return EnemyData ? EnemyData->Tier : EGothicEnemyTier::Standard; }
+
+    /** Body shape — queried by the deferred shape-damage pass. Falls back to
+     *  Flesh when no EnemyData is assigned. */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Enemy|Class")
+    EGothicEnemyShape GetEnemyShape() const
+    { return EnemyData ? EnemyData->Shape : EGothicEnemyShape::Flesh; }
+
+    /**
+     * The Behaviour Tree this enemy's Role selects, or null if it has no
+     * EnemyData / an unmapped role. The AI controller calls this at possession
+     * and falls back to its own BehaviorTreeAsset on null.
+     */
+    UFUNCTION(BlueprintPure, Category = "Gothic|Enemy|Class")
+    UBehaviorTree* GetRoleBehaviorTree() const
+    { return EnemyData ? EnemyData->ResolveBehaviorTree() : nullptr; }
+
 protected:
+    /**
+     * Layers EnemyData's base attributes over the Blueprint's DefaultAttributeEffect.
+     *
+     * Super applies DefaultAttributeEffect (unchanged, so legacy enemies with no
+     * EnemyData behave exactly as before). When EnemyData IS present its MaxHealth
+     * / BaseAttack / BaseDefense then override the corresponding attribute BASE
+     * values — server-only, since Super's own attribute writes are server-only and
+     * these are authoritative gameplay state. Health is seeded to full MaxHealth.
+     */
+    virtual void InitializeGAS() override;
     // -------------------------------------------------------------------------
     // Components
     // -------------------------------------------------------------------------
@@ -279,6 +320,17 @@ protected:
     // -------------------------------------------------------------------------
     // Data — set in Blueprint
     // -------------------------------------------------------------------------
+
+    /**
+     * Tier × Shape × Role classification + base tuning for this enemy KIND.
+     * Assign the matching DA_Enemy_* on each enemy Blueprint. Read at spawn:
+     * InitializeGAS pulls base attributes from it, and the AI controller pulls
+     * the Behaviour Tree from its Role. Optional — a null EnemyData leaves the
+     * enemy on the legacy DefaultAttributeEffect + controller BehaviorTreeAsset
+     * path unchanged.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy|Class")
+    TObjectPtr<UGothicEnemyDataAsset> EnemyData;
 
     /**
      * Delay before the corpse is destroyed (seconds).

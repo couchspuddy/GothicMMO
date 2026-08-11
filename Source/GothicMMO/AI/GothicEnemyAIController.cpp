@@ -112,9 +112,21 @@ void AGothicEnemyAIController::OnPossess(APawn* InPawn)
         DefaultWalkSpeed = Char->GetCharacterMovement()->MaxWalkSpeed;
     }
 
-    if (BehaviorTreeAsset)
+    // The enemy's classification data selects the tree by Role; the controller's
+    // own BehaviorTreeAsset is the fallback for enemies with no EnemyData (or an
+    // unmapped role). Data-driven first, so re-roling an enemy is a data edit.
+    UBehaviorTree* TreeToRun = BehaviorTreeAsset;
+    if (const AGothicEnemyBase* Enemy = Cast<AGothicEnemyBase>(InPawn))
     {
-        RunBehaviorTree(BehaviorTreeAsset);
+        if (UBehaviorTree* RoleTree = Enemy->GetRoleBehaviorTree())
+        {
+            TreeToRun = RoleTree;
+        }
+    }
+
+    if (TreeToRun)
+    {
+        RunBehaviorTree(TreeToRun);
 
         if (Blackboard)
         {
