@@ -340,6 +340,21 @@ public:
      */
     void DumpBenchLoadout() const;
 
+    /**
+     * Grant + auto-equip a named item definition with a CANONICAL roll, so a
+     * bench hotkey press is "weapon in hand ready to fire" or "armor on the body".
+     * ItemDefName is the DA_ItemDef_<Name> suffix (e.g. "Revolver", "Kept_Coat");
+     * the asset is loaded from /Game/Data/Loot. A weapon is additionally swapped
+     * to the active hand once equipped. Returns true if the asset resolved and the
+     * grant succeeded. Bench body — the console layer proves the gate first.
+     *
+     * Real named definitions only, never a transient mint — that is the whole
+     * point over DebugSpawnTestItems: a named def carries its authored slot,
+     * archetype, weapon data and perk catalog, so the equipped result is the real
+     * item, and the canonical roll keeps the bench numbers pinned.
+     */
+    bool GrantBenchItem(const FString& ItemDefName);
+
     // -------------------------------------------------------------------------
     // Downed fork (multiplayer)
     //
