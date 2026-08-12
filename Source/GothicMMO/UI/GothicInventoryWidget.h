@@ -14,10 +14,35 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "GameplayTagContainer.h"
 #include "Items/GothicItemTypes.h"
 #include "GothicInventoryWidget.generated.h"
 
 class UGothicInventoryComponent;
+
+/**
+ * One rolled weapon perk, resolved to display-ready text for the inspect screen.
+ * Built in MakeUIData from FGothicItemInstance::WeaponPerks by looking each tag
+ * up in the weapon's own catalog. DisplayName falls back to the tag's leaf name
+ * and Description is left empty when the perk cannot be resolved (unknown tag,
+ * or no catalog authored yet) — the entry is never dropped, so a perk the copy
+ * actually rolled always shows the player something.
+ */
+USTRUCT(BlueprintType)
+struct FGothicPerkUIData
+{
+    GENERATED_BODY()
+
+    /** The Perk.Weapon.<Bucket>.<Name> tag written onto the item instance. */
+    UPROPERTY(BlueprintReadOnly, Category = "UI")
+    FGameplayTag Tag;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UI")
+    FText DisplayName;
+
+    UPROPERTY(BlueprintReadOnly, Category = "UI")
+    FText Description;
+};
 
 /** Simplified item data for UI display — avoids exposing raw pointers to Blueprint. */
 USTRUCT(BlueprintType)
@@ -66,6 +91,15 @@ struct FGothicItemUIData
 
     UPROPERTY(BlueprintReadOnly, Category = "UI")
     TObjectPtr<UTexture2D> Icon;
+
+    /**
+     * Rolled weapon perks, resolved to display text for the inspect screen.
+     * Empty for non-weapons, mundane drops, and every weapon until
+     * DA_WeaponPerkCatalog is authored (the roll writes no tags then). Populated
+     * in MakeUIData — see FGothicPerkUIData for the fallback rules.
+     */
+    UPROPERTY(BlueprintReadOnly, Category = "UI")
+    TArray<FGothicPerkUIData> Perks;
 };
 
 /**

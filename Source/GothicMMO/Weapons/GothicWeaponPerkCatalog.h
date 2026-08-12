@@ -128,4 +128,14 @@ public:
      */
     UFUNCTION(BlueprintCallable, Category = "Perks")
     TArray<FGameplayTag> GetEligiblePerks(EGothicPerkBucket Bucket, const UGothicWeaponData* WeaponData) const;
+
+    /**
+     * The catalog entry for a rolled perk tag, or null if this catalog holds no
+     * such perk. This is the one lookup the inventory UI resolves a rolled
+     * Perk.Weapon.<Bucket>.<Name> tag through to reach its display name and
+     * description. Not a UFUNCTION — it returns a pointer into Perks, which the
+     * UI copies out of immediately; an unknown tag returns null and the caller
+     * falls back to the tag's leaf name rather than dropping the perk.
+     */
+    const FGothicWeaponPerkEntry* FindPerkEntry(const FGameplayTag& PerkTag) const;
 };
