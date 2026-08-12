@@ -52,3 +52,24 @@ TArray<FGameplayTag> UGothicWeaponPerkCatalog::GetEligiblePerks(
 
     return Eligible;
 }
+
+const FGothicWeaponPerkEntry* UGothicWeaponPerkCatalog::FindPerkEntry(const FGameplayTag& PerkTag) const
+{
+    if (!PerkTag.IsValid())
+    {
+        return nullptr;
+    }
+
+    // Linear scan — the catalog is one small hand-authored asset (18 entries as
+    // of WEAPON_PERK_TABLES.md) and the UI resolves at most three tags per item,
+    // so a map keyed by tag would cost more to build than it saves.
+    for (const FGothicWeaponPerkEntry& Entry : Perks)
+    {
+        if (Entry.PerkTag == PerkTag)
+        {
+            return &Entry;
+        }
+    }
+
+    return nullptr;
+}

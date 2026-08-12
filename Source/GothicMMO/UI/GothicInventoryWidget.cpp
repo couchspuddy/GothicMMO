@@ -3,6 +3,8 @@
 #include "UI/GothicInventoryWidget.h"
 #include "Items/GothicInventoryComponent.h"
 #include "Items/GothicItemDefinition.h"
+#include "Weapons/GothicWeaponData.h"
+#include "Weapons/GothicWeaponPerkCatalog.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
@@ -275,6 +277,50 @@ FGothicItemUIData UGothicInventoryWidget::MakeUIData(const FGothicItemInstance& 
         Data.EquipSlot = Item.Definition->EquipSlot;
         Data.PrimaryStatType = Item.Definition->PrimaryStatType;
         Data.Icon = Item.Definition->Icon;
+    }
+
+    // Rolled weapon perks -> display text for the inspect screen. The rolled tags
+    // live on the INSTANCE; their display name and description live on the shared
+    // weapon asset's catalog, so resolution walks Definition -> WeaponData ->
+    // PerkCatalog. Each of those may be null (non-weapon, or no catalog authored
+    // yet), and a tag may not be in the catalog at all — every one of those
+    // degrades to the tag's leaf name with an empty description rather than
+    // dropping the perk the copy actually rolled.
+    const UGothicWeaponData* WeaponData =
+        Item.Definition ? Item.Definition->WeaponData.Get() : nullptr;
+    const UGothicWeaponPerkCatalog* PerkCatalog =
+        WeaponData ? WeaponData->PerkCatalog.Get() : nullptr;
+
+    for (const FGameplayTag& PerkTag : Item.WeaponPerks)
+    {
+        if (!PerkTag.IsValid())
+        {
+            continue;
+        }
+
+        FGothicPerkUIData PerkData;
+        PerkData.Tag = PerkTag;
+
+        if (const FGothicWeaponPerkEntry* Entry = PerkCatalog ? PerkCatalog->FindPerkEntry(PerkTag) : nullptr)
+        {
+            PerkData.DisplayName = Entry->DisplayName;
+            PerkData.Description = Entry->Description;
+        }
+
+        // Fallback name — an unresolved tag, or a catalog entry that has no
+        // authored DisplayName, still reads as its leaf
+        // ("Perk.Weapon.FineTune.DeadHand" -> "DeadHand") rather than as blank.
+        if (PerkData.DisplayName.IsEmpty())
+        {
+            const FString TagString = PerkTag.ToString();
+            FString Leaf;
+            PerkData.DisplayName = TagString.Split(
+                    TEXT("."), nullptr, &Leaf, ESearchCase::IgnoreCase, ESearchDir::FromEnd)
+                ? FText::FromString(Leaf)
+                : FText::FromString(TagString);
+        }
+
+        Data.Perks.Add(PerkData);
     }
 
     return Data;
