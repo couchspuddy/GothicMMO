@@ -33,6 +33,7 @@
 
 class AGothicEncounterVolume;
 class UBoxComponent;
+class UStaticMeshComponent;
 
 UCLASS()
 class GOTHICMMO_API AGothicBleedGate : public AActor
@@ -43,6 +44,7 @@ public:
 	AGothicBleedGate();
 
 	virtual void BeginPlay() override;
+	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void GetLifetimeReplicatedProps(
 		TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -57,6 +59,26 @@ protected:
 	 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|BleedGate")
 	TObjectPtr<UBoxComponent> Barrier;
+
+	/**
+	 * The default whitebox stand-in for the wall's look, so a closed gate reads as
+	 * a solid barrier instead of an invisible one. Parented to Barrier and sized to
+	 * its span in OnConstruction, so each placed gate's authored extent and yaw carry
+	 * over for free. Purely visual — it carries NO collision or nav footprint; the
+	 * Barrier box still owns all the blocking. A Blueprint subclass with real art
+	 * hangs its own mesh/haze on OnBleedGateStateChanged and turns this off with
+	 * bShowDefaultBarrierMesh.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|BleedGate")
+	TObjectPtr<UStaticMeshComponent> BarrierMesh;
+
+	/**
+	 * Off-switch for the whitebox. A BP subclass supplying its own barrier art sets
+	 * this false so the placeholder mesh never draws; the raw C++ class placed in the
+	 * level leaves it on.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Gothic|BleedGate")
+	bool bShowDefaultBarrierMesh = true;
 
 	/**
 	 * Every encounter this gate waits on. The gate opens only once ALL of them
@@ -119,4 +141,11 @@ private:
 
 	/** Opens the gate if every gated encounter has now paid out. */
 	void RefreshOpenState();
+
+	/**
+	 * Fits the whitebox mesh to the Barrier's current span and applies its tint.
+	 * Called from OnConstruction so authored per-instance scaling propagates in the
+	 * editor without a rebuild.
+	 */
+	void SyncBarrierMesh();
 };
