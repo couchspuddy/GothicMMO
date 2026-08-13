@@ -3,6 +3,11 @@
 #include "AI/GothicBleedGate.h"
 #include "AI/GothicEncounterVolume.h"
 #include "Components/BoxComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "UObject/ConstructorHelpers.h"
 #include "Net/UnrealNetwork.h"
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
@@ -40,6 +45,32 @@ AGothicBleedGate::AGothicBleedGate()
 	// Not an obstacle for pathfinding either — belt and braces with the channel
 	// choice above, so a gate can never distort the navmesh enemies path across.
 	Barrier->SetCanEverAffectNavigation(false);
+
+	// The visible stand-in. Parented to Barrier so it inherits the wall's placement
+	// and the actor's own scale; OnConstruction sizes it to the box span. It carries
+	// no collision and no nav footprint — the Barrier box above owns every bit of the
+	// blocking, and doubling it here would wall enemies in and distort the navmesh.
+	BarrierMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("BarrierMesh"));
+	BarrierMesh->SetupAttachment(Barrier);
+	BarrierMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	BarrierMesh->SetCollisionProfileName(TEXT("NoCollision"));
+	BarrierMesh->SetGenerateOverlapEvents(false);
+	BarrierMesh->SetCanEverAffectNavigation(false);
+	BarrierMesh->CastShadow = false;
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(
+		TEXT("/Engine/BasicShapes/Cube.Cube"));
+	if (CubeMesh.Succeeded())
+	{
+		BarrierMesh->SetStaticMesh(CubeMesh.Object);
+	}
+
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> BarrierMat(
+		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+	if (BarrierMat.Succeeded())
+	{
+		BarrierMesh->SetMaterial(0, BarrierMat.Object);
+	}
 }
 
 void AGothicBleedGate::GetLifetimeReplicatedProps(
@@ -47,6 +78,43 @@ void AGothicBleedGate::GetLifetimeReplicatedProps(
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AGothicBleedGate, bOpen);
+}
+
+void AGothicBleedGate::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+
+	// Refit the whitebox whenever the gate is placed or its Barrier is re-scaled in
+	// the editor, so all three gates' authored spans and yaws show up without a
+	// rebuild. Runtime open/close is handled separately in ApplyOpenState.
+	SyncBarrierMesh();
+}
+
+void AGothicBleedGate::SyncBarrierMesh()
+{
+	if (!BarrierMesh || !Barrier)
+	{
+		return;
+	}
+
+	// The engine cube spans 100u per side (±50 from its pivot), so one unit of box
+	// half-extent is 50u of mesh. Scaling by extent/50 makes the whitebox exactly
+	// fill the Barrier's authored span; because the mesh is parented to the box, any
+	// actor-level scale the designer applied multiplies both alike and they stay
+	// matched.
+	const FVector Extent = Barrier->GetUnscaledBoxExtent();
+	BarrierMesh->SetRelativeScale3D(Extent / 50.f);
+
+	// Tint the placeholder toward the Bleed's crimson so it reads as a deliberate
+	// barrier rather than a stray grey block. BasicShapeMaterial exposes a "Color"
+	// vector param; if that name ever drifts the cube simply stays untinted and is
+	// still a visible wall.
+	if (UMaterialInstanceDynamic* MID = BarrierMesh->CreateAndSetMaterialInstanceDynamic(0))
+	{
+		MID->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.12f, 0.01f, 0.03f));
+	}
+
+	BarrierMesh->SetVisibility(bShowDefaultBarrierMesh && !bOpen);
 }
 
 void AGothicBleedGate::BeginPlay()
@@ -192,24 +260,25 @@ void AGothicBleedGate::OnRep_Open()
 
 void AGothicBleedGate::ApplyOpenState()
 {
-	if (!Barrier)
+	if (Barrier)
 	{
-		return;
+		Barrier->SetCollisionEnabled(
+			bOpen ? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics);
+
+		// The box itself stays hidden in game (its wireframe is editor-only dev art);
+		// what the player actually sees is BarrierMesh below.
+		Barrier->SetHiddenInGame(bOpen);
 	}
 
-	Barrier->SetCollisionEnabled(
-		bOpen ? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics);
-
-	// Visibility tracks collision, so a closed gate is something the player can
-	// SEE they cannot pass. Without this the barrier stayed hidden and a gate read
-	// as the player simply being stuck on nothing — and the header has always
-	// claimed this function applied visibility, which it did not.
-	//
-	// The box's own wireframe is a PLACEHOLDER: it is legible but it is dev art.
-	// The intended look comes through OnBleedGateStateChanged, which needs a
-	// Blueprint subclass of this actor to implement — the raw C++ class placed in
-	// the level has nowhere to hang the haze, the audio bed or the dissolve.
-	Barrier->SetHiddenInGame(bOpen);
+	// Visibility tracks state, so a closed gate is something the player can SEE they
+	// cannot pass — the fix for the invisible-wall confusion. This is the whitebox
+	// stand-in; the intended look still comes through OnBleedGateStateChanged, which
+	// a Blueprint subclass implements (and which turns bShowDefaultBarrierMesh off so
+	// its own art replaces the placeholder).
+	if (BarrierMesh)
+	{
+		BarrierMesh->SetVisibility(bShowDefaultBarrierMesh && !bOpen);
+	}
 
 	OnBleedGateStateChanged(bOpen);
 }
