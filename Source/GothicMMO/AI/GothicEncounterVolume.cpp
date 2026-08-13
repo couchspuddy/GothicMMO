@@ -1,7 +1,9 @@
 ﻿// GothicEncounterVolume.cpp
 
 #include "AI/GothicEncounterVolume.h"
+#include "GothicMMO.h"                      // LogVigilCombat
 #include "AI/GothicEnemyBase.h"
+#include "Game/GothicDeterminism.h"
 #include "Game/GothicGameState.h"
 #include "Game/GothicPlayerState.h"
 #include "Game/GothicGameInstance.h"
@@ -310,8 +312,13 @@ TArray<AGothicEnemyBase*> AGothicEncounterVolume::SpawnWaveFromPoints(
             FVector SpawnLocation = Origin;
             if (i > 0 && Scatter > 0.f)
             {
-                const FVector2D Offset = FMath::RandPointInCircle(Scatter);
-                SpawnLocation = Origin + FVector(Offset.X, Offset.Y, 0.f);
+                // Uniform point in the scatter disc, drawn through FGothicDeterminism
+                // so a seeded measurement run reproduces wave placement (project
+                // invariant: no raw FMath::Rand*). r = R*sqrt(u) keeps the sample
+                // uniform-over-area, matching FMath::RandPointInCircle's distribution.
+                const float Angle = FGothicDeterminism::FRandRange(0.f, 2.f * PI);
+                const float Dist = Scatter * FMath::Sqrt(FGothicDeterminism::FRandRange(0.f, 1.f));
+                SpawnLocation = Origin + FVector(Dist * FMath::Cos(Angle), Dist * FMath::Sin(Angle), 0.f);
             }
 
             // Project back to walkable ground. Without this, a scatter disc
@@ -338,20 +345,57 @@ TArray<AGothicEnemyBase*> AGothicEncounterVolume::SpawnWaveFromPoints(
                 {
                     SpawnLocation = Projected.Location;
                 }
+                // One WIDER retry before giving up: a point that just missed the nav
+                // mesh (a spawn point authored a little off its floor, or a scatter
+                // sample that overhung an edge) usually lands with a fatter box.
+                // Extent xy x3, z 500.
+                else if (NavSys->ProjectPointToNavigation(
+                        SpawnLocation, Projected, FVector(QueryExtentXY * 3.f, QueryExtentXY * 3.f, 500.f)))
+                {
+                    SpawnLocation = Projected.Location;
+                }
                 else
                 {
-                    SpawnLocation = Origin;
+                    // No walkable ground within reach of this point — SKIP it rather
+                    // than fall back to the raw Origin (the old behaviour), which may
+                    // be inside geometry. An embedded enemy is unreachable and can
+                    // never die, so RemainingEnemyCount never falls to zero and the
+                    // Selah prompt / BleedGate never open. A wave that spawns fewer,
+                    // reachable enemies still completes; a wave with one embedded
+                    // enemy never does. RemainingEnemyCount counts only the members
+                    // AddWaveToEncounter actually folds in, so a skip is completion-safe.
+                    UE_LOG(LogVigilCombat, Warning,
+                        TEXT("VigilTimeline|t=%.3f|%s|WaveSpawn|SKIP_NONAV|point=%s|origin=%s|loc=%s|class=%s"),
+                        World->GetTimeSeconds(), *GetName(), *GetNameSafe(Point),
+                        *Origin.ToCompactString(), *SpawnLocation.ToCompactString(),
+                        *GetNameSafe(Point->EnemyClass));
+                    continue;
                 }
             }
 
             FActorSpawnParameters SpawnParams;
+            // Never embed: if collision can't be resolved, DON'T spawn (returns null)
+            // and treat it exactly like a nav skip below. The old
+            // AdjustIfPossibleButAlwaysSpawn buried the pawn in geometry when
+            // adjustment failed, which hung the encounter the same way.
             SpawnParams.SpawnCollisionHandlingOverride =
-                ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+                ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
 
             AGothicEnemyBase* NewEnemy = World->SpawnActor<AGothicEnemyBase>(
                 Point->EnemyClass, SpawnLocation, Point->GetActorRotation(), SpawnParams);
 
-            if (NewEnemy)
+            if (!NewEnemy)
+            {
+                // Colliding spawn refused. Same completion-safe reasoning as the nav
+                // skip: a smaller reachable wave beats an embedded blocker that keeps
+                // RemainingEnemyCount pinned above zero forever.
+                UE_LOG(LogVigilCombat, Warning,
+                    TEXT("VigilTimeline|t=%.3f|%s|WaveSpawn|SKIP_COLLISION|point=%s|loc=%s|class=%s"),
+                    World->GetTimeSeconds(), *GetName(), *GetNameSafe(Point),
+                    *SpawnLocation.ToCompactString(), *GetNameSafe(Point->EnemyClass));
+                continue;
+            }
+
             {
                 // Pack stamp AFTER spawn, through the setter — BeginPlay has
                 // already run inside SpawnActor and saw NAME_None; SetPackID
