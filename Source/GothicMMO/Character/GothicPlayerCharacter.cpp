@@ -105,7 +105,13 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     FirstPersonCamera->SetRelativeLocation(FVector(20.f, 0.f, 170.f));
     FirstPersonCamera->bUsePawnControlRotation = true;
 
+    // Owner never sees their own third-person body (a swinging shoulder/head in the
+    // FP camera), but MUST still cast its shadow — a first-person player with no shadow
+    // reads as floating. SetOwnerNoSee + bCastHiddenShadow gives exactly that: hidden
+    // to the owner, shadow retained. These flags are evaluated per-viewer, so remote
+    // players' bodies are completely unaffected — everyone else sees the full Manny.
     GetMesh()->SetOwnerNoSee(true);
+    GetMesh()->bCastHiddenShadow = true;
 
     bUseControllerRotationPitch = false;
     bUseControllerRotationYaw   = true;
@@ -141,6 +147,18 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     FirstPersonArmsMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     FirstPersonArmsMesh->CastShadow = false;
     FirstPersonArmsMesh->bCastHiddenShadow = false;
+
+    // Third-person weapon — the mirror of WeaponMeshComponent for OTHER players. Rides
+    // the third-person body's hand socket so a remote pawn shows the gun in Manny's hand.
+    // OwnerNoSee is the exact complement of the FP weapon's OnlyOwnerSee: the local player
+    // sees only their camera-mounted gun, everyone else sees only this one. Casts a shadow
+    // (a floating-gun shadow is fine and expected); no collision. The mesh is assigned in
+    // lockstep with the FP weapon by RefreshWeaponVisuals — nothing is set here. Socket
+    // read from the member default (ThirdPersonWeaponSocket) which is already initialized.
+    ThirdPersonWeaponMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ThirdPersonWeaponMesh"));
+    ThirdPersonWeaponMesh->SetupAttachment(GetMesh(), ThirdPersonWeaponSocket);
+    ThirdPersonWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    ThirdPersonWeaponMesh->SetOwnerNoSee(true);  // everyone EXCEPT the local player
 
     // Create the input handler component
     InputHandler = CreateDefaultSubobject<UGothicInputHandlerComponent>(TEXT("InputHandler"));
@@ -220,8 +238,23 @@ void AGothicPlayerCharacter::BeginPlay()
     // mesh in its ref pose.
     if (FirstPersonArmsMesh)
     {
+        // The base transform always applies — it is where the arms sit relative to the
+        // camera, independent of how the mesh is posed.
         FirstPersonArmsMesh->SetRelativeLocationAndRotation(ArmsOffset, ArmsRotation);
-        if (ArmsIdlePose)
+
+        // If an AnimClass is assigned, the animation blueprint OWNS the pose and we must
+        // NOT force single-node playback. The editor pass after this PR assigns ABP_FP_Copy
+        // (driving CtrlRig_FPWarp) as this component's AnimClass; forcing AnimationSingleNode
+        // there would tear the ABP down and stomp the warp rig, dropping the arms to a
+        // static frame. So the single-node idle below is strictly the FALLBACK for when no
+        // ABP is assigned — leave AnimationBlueprint mode untouched in the ABP case.
+        if (FirstPersonArmsMesh->GetAnimClass() != nullptr)
+        {
+            UE_LOG(LogVigilCombat, Verbose,
+                TEXT("VigilTimeline|t=%.3f|%s|ArmsPose|SKIPPED|reason=anim-class-assigned"),
+                GASInitTimelineNow(this), *GetName());
+        }
+        else if (ArmsIdlePose)
         {
             // Drive the idle as a single looping node — but NOT through PlayAnimation.
             // On this component the mesh's serialized AnimationMode is ALREADY
@@ -256,6 +289,21 @@ void AGothicPlayerCharacter::BeginPlay()
             UE_LOG(LogVigilCombat, Verbose,
                 TEXT("VigilTimeline|t=%.3f|%s|ArmsPose|SKIPPED|reason=null-ArmsIdlePose"),
                 GASInitTimelineNow(this), *GetName());
+        }
+
+        // Belt-and-braces head removal — runs after BOTH pose paths so no rig state can
+        // put the owner's own head in the camera. The warp ABP is meant to keep the head
+        // out of frame; this is the guarantee when it does not (rig fault, wrong retarget,
+        // or the single-node fallback). GetBoneIndex returns INDEX_NONE when no mesh is
+        // assigned yet or the bone is absent, so the whole thing is a safe no-op then;
+        // NAME_None disables it entirely.
+        if (FPHeadBoneToHide != NAME_None &&
+            FirstPersonArmsMesh->GetBoneIndex(FPHeadBoneToHide) != INDEX_NONE)
+        {
+            FirstPersonArmsMesh->HideBoneByName(FPHeadBoneToHide, PBO_None);
+            UE_LOG(LogVigilCombat, Verbose,
+                TEXT("VigilTimeline|t=%.3f|%s|ArmsHead|HIDDEN|bone=%s"),
+                GASInitTimelineNow(this), *GetName(), *FPHeadBoneToHide.ToString());
         }
     }
 
@@ -3921,6 +3969,14 @@ void AGothicPlayerCharacter::UpdateFirstPersonWeaponPose(float DeltaTime)
     // same camera-space reason as the weapon above — ArmsRotation is yawed -90, so an
     // Euler add would twist the kick down the arms' local axis. At rest SprintPoseAlpha
     // and CurrentFireKick* are zero, so this reproduces BeginPlay's transform exactly.
+    //
+    // KEPT under an active warp ABP (deliberate call): CtrlRig_FPWarp warps the mesh's
+    // BONES in component space; this writes the COMPONENT's transform relative to the
+    // camera — the mount point the whole warped result hangs off. Moving the mount moves
+    // the warped arms+gun together, which is exactly the sprint-lower and fire-kick we
+    // want, so there is nothing to gate. If a future warp rig instead drove the component
+    // transform itself, this would fight it and would then need to yield to ArmsOffset
+    // only — flagged in the PR, not gated now (the rig warps bones, not the component).
     if (FirstPersonArmsMesh)
     {
         const FVector ArmsDelta = (SprintWeaponOffset * SprintPoseAlpha) + CurrentFireKickLocation;
@@ -3949,6 +4005,18 @@ void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
         WeaponMeshComponent->SetStaticMesh(WeaponData->WeaponMesh);
         WeaponMeshComponent->SetRelativeScale3D(WeaponData->MeshScale);
 
+        // Mirror the same mesh onto the third-person hand mount so OTHER players see the
+        // gun in Manny's hand. Owner-hidden by the ctor's SetOwnerNoSee; grip alignment is
+        // the whitebox ThirdPersonWeaponOffset/Rotation (a later content-pass tune, not a
+        // per-weapon value yet). Scale tracks the FP weapon's so the two never diverge.
+        if (ThirdPersonWeaponMesh)
+        {
+            ThirdPersonWeaponMesh->SetStaticMesh(WeaponData->WeaponMesh);
+            ThirdPersonWeaponMesh->SetRelativeScale3D(WeaponData->MeshScale);
+            ThirdPersonWeaponMesh->SetRelativeLocationAndRotation(
+                ThirdPersonWeaponOffset, ThirdPersonWeaponRotation);
+        }
+
         UE_LOG(LogVigilCombat, Verbose,
             TEXT("VigilTimeline|t=%.3f|%s|WeaponVisuals|APPLIED|slot=%d|mesh=%s"),
             GASInitTimelineNow(this), *GetName(), SlotIndex,
@@ -3971,6 +4039,10 @@ void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
     else
     {
         WeaponMeshComponent->SetStaticMesh(nullptr);
+        if (ThirdPersonWeaponMesh)
+        {
+            ThirdPersonWeaponMesh->SetStaticMesh(nullptr);
+        }
 
         UE_LOG(LogVigilCombat, Verbose,
             TEXT("VigilTimeline|t=%.3f|%s|WeaponVisuals|CLEARED|slot=%d|reason=null-WeaponData"),
