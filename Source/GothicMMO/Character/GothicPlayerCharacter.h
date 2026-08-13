@@ -193,6 +193,17 @@ public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
     TObjectPtr<UAnimationAsset> ArmsIdlePose;
 
+    /**
+     * Bone hidden on the first-person arms mesh so the owner never sees their own
+     * head/neck in front of the camera. Belt-and-braces: the warp rig (CtrlRig_FPWarp)
+     * is meant to keep the head out of frame, but a rig fault, a wrong retarget, or the
+     * single-node fallback could still put it there. Hidden in BeginPlay after the mesh
+     * initializes, on BOTH the ABP and single-node paths. NAME_None disables the hide.
+     * Applied via HideBoneByName, which is a safe no-op when the bone does not exist.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson")
+    FName FPHeadBoneToHide = TEXT("head");
+
     // -------------------------------------------------------------------------
     // Weapon pose: sprint and fire kick
     //
@@ -983,6 +994,36 @@ protected:
     // See the ArmsOffset/ArmsIdlePose block above for the full rationale.
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
     TObjectPtr<USkeletalMeshComponent> FirstPersonArmsMesh;
+
+    // -------------------------------------------------------------------------
+    // Third-person weapon — the gun OTHER players see in Manny's hand
+    //
+    // The mirror image of WeaponMeshComponent: that one is OnlyOwnerSee (the local
+    // player's camera-mounted gun), this one is OwnerNoSee (visible to everyone BUT
+    // the local player). Both carry the same mesh — RefreshWeaponVisuals assigns and
+    // clears them together — so a remote pawn shows a weapon in the third-person body's
+    // hand while its owner sees the first-person one. Static-mesh to match the FP
+    // weapon (WeaponData->WeaponMesh is a static mesh); a skeletal weapon would need
+    // both components upgraded in lockstep.
+    // -------------------------------------------------------------------------
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
+    TObjectPtr<UStaticMeshComponent> ThirdPersonWeaponMesh;
+
+    /** Socket on the third-person body (GetMesh()) the remote-visible weapon rides.
+     *  Default hand_r — the bone HandGrip_R itself is authored on. If the FP grip
+     *  socket HandGrip_R gives better whitebox alignment, retarget here. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|ThirdPerson")
+    FName ThirdPersonWeaponSocket = TEXT("hand_r");
+
+    /** Grip offset for the third-person weapon relative to its socket. Whitebox
+     *  placeholder — real per-weapon alignment is a later content pass. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|ThirdPerson")
+    FVector ThirdPersonWeaponOffset = FVector::ZeroVector;
+
+    /** Grip orientation for the third-person weapon relative to its socket. Whitebox
+     *  placeholder — see ThirdPersonWeaponOffset. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|ThirdPerson")
+    FRotator ThirdPersonWeaponRotation = FRotator::ZeroRotator;
 
     /**
      * Re-parent the weapon and apply the relative transform that matches whichever
