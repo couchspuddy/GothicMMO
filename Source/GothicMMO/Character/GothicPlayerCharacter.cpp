@@ -102,20 +102,25 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
         ECC_GameTraceChannel2 /*ArenaBlock*/, ECR_Block);
 
     FirstPersonCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FirstPersonCamera"));
-    // Parent the FP camera to the CAPSULE, not the third-person mesh. A mesh-parented
-    // camera rides the body's animation (root motion, idle sway, hit reacts), which reads
-    // as a drifting first-person eye; the capsule is the actor's stable spine and matches
-    // the FP-template hierarchy. bUsePawnControlRotation still drives the look direction.
-    FirstPersonCamera->SetupAttachment(GetCapsuleComponent());
-    // Keep the WORLD eye position identical across the reparent. The camera was
-    // mesh-relative (20,0,170); on a standard ACharacter the mesh root sits at the
-    // capsule's foot (mesh-relative Z = -CapsuleHalfHeight), so the same world point is
-    // capsule-relative (20, 0, 170 - CapsuleHalfHeight). Read the half-height off the
-    // capsule instead of hardcoding it — at construction this is the ACharacter default
-    // 88 (nothing in Source resizes the player capsule), giving Z = 170 - 88 = 82.
-    const float CapsuleHalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-    FirstPersonCamera->SetRelativeLocation(FVector(20.f, 0.f, 170.f - CapsuleHalfHeight));
+    // Parent the FP camera to the FP ARMS MESH's head bone, so the eye rides the exact
+    // point CtrlRig_FPWarp pins the head at (Ctrl_Head, an authored fixed component-space
+    // eye point) while the rig FABRIK-warps the spine out of the eye line. This is the
+    // FP-template-true assembly — the template's camera hangs off its arms' head socket —
+    // and it makes the view an actual eye point rather than a capsule-relative guess.
+    // The attachment itself is DEFERRED to just after FirstPersonArmsMesh is created below,
+    // because that component does not exist yet at this line. bUsePawnControlRotation still
+    // drives the look direction; only POSITION comes from the rig-stabilized head, so the
+    // head bone's own animated rotation never reaches the view. A BeginPlay guard falls the
+    // camera back to a capsule seat if the arms mesh/head bone is missing (never at origin).
     FirstPersonCamera->bUsePawnControlRotation = true;
+
+    // First-person FOV render path (added UE 5.5, present in 5.8). With the arms + FP weapon
+    // flagged FirstPersonPrimitiveType=FirstPerson (below), the camera renders them at their
+    // OWN field of view and a compressed depth range, so the gun never clips the world near
+    // plane. Enabled here structurally; the value is (re)pushed from FirstPersonFOV in
+    // BeginPlay so a BP CDO override of that UPROPERTY still lands.
+    FirstPersonCamera->bEnableFirstPersonFieldOfView = true;
+    FirstPersonCamera->FirstPersonFieldOfView = FirstPersonFOV;
 
     // Owner never sees their own third-person body (a swinging shoulder/head in the
     // FP camera), but MUST still cast its shadow — a first-person player with no shadow
@@ -141,6 +146,11 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     WeaponMeshComponent->SetupAttachment(GetMesh(), TEXT("HandGrip_R"));
     WeaponMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     WeaponMeshComponent->SetOnlyOwnerSee(true);  // Only the local player sees their own weapon
+    // Render the FP gun through the camera's first-person FOV path (UE 5.8), same as the
+    // arms below — its own FOV + compressed depth range keep the muzzle off the near plane.
+    // Owner-only visibility already scopes this to the local view; remote players see the
+    // separate ThirdPersonWeaponMesh, which is left as an ordinary world-space primitive.
+    WeaponMeshComponent->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
 
     // First-person arms — a full-body skeletal mesh parented to the ANIMATED TP body
     // (GetMesh() / CharacterMesh0), owner-only. This is the FP-template-true layout AND the
@@ -178,6 +188,17 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     FirstPersonArmsMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     FirstPersonArmsMesh->CastShadow = false;
     FirstPersonArmsMesh->bCastHiddenShadow = false;
+    // Flag the arms as first-person so the camera's FirstPersonFieldOfView/depth-compression
+    // apply to them (UE 5.8). Pairs with the FP weapon flag above; the TP body is untouched.
+    FirstPersonArmsMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
+
+    // Now that FirstPersonArmsMesh exists, seat the FP camera on its head bone — the eye
+    // point CtrlRig_FPWarp stabilizes (see the FirstPersonCamera block above for the full
+    // rationale). CameraAttachSocket ("head") is a bone name; SetupAttachment accepts a bone
+    // or a socket. CameraHeadOffset is a small forward push clear of the face. The BeginPlay
+    // guard reattaches to the capsule if the mesh has no asset or the bone is absent.
+    FirstPersonCamera->SetupAttachment(FirstPersonArmsMesh, CameraAttachSocket);
+    FirstPersonCamera->SetRelativeLocation(CameraHeadOffset);
 
     // Third-person weapon — the mirror of WeaponMeshComponent for OTHER players. Rides
     // the third-person body's hand socket so a remote pawn shows the gun in Manny's hand.
@@ -206,14 +227,46 @@ void AGothicPlayerCharacter::BeginPlay()
 {
     Super::BeginPlay();
 
-    // Whatever the Blueprint set is the resting FOV — read it once rather than
-    // hardcoding 90 here and having the two disagree the moment someone tunes it.
+    // Seat and configure the first-person camera. The constructor attached it to the FP
+    // arms mesh's head bone (CameraAttachSocket) — the eye point CtrlRig_FPWarp stabilizes.
+    // That only holds once the editor pass has assigned a skeletal mesh that actually
+    // carries that bone; verify it here and fall back to a stable capsule seat otherwise, so
+    // a missing mesh/bone can never leave the eye at the component origin (feet/world zero).
     if (FirstPersonCamera)
     {
+        const bool bHeadBoneResolves =
+            FirstPersonArmsMesh != nullptr
+            && FirstPersonArmsMesh->GetSkeletalMeshAsset() != nullptr
+            && FirstPersonArmsMesh->DoesSocketExist(CameraAttachSocket);
+
+        if (!bHeadBoneResolves)
+        {
+            // Historical eye seat: X=20 forward, Z = 170 - CapsuleHalfHeight (= 82 at the
+            // ACharacter default 88), i.e. exactly where the camera sat before the head mount.
+            const float CapsuleHalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+            FirstPersonCamera->AttachToComponent(
+                GetCapsuleComponent(), FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+            FirstPersonCamera->SetRelativeLocation(FVector(20.f, 0.f, 170.f - CapsuleHalfHeight));
+
+            UE_LOG(LogVigilCombat, Warning,
+                TEXT("VigilTimeline|t=%.3f|%s|FPCamera|FALLBACK|reason=%s|seat=capsule|z=%.1f"),
+                GASInitTimelineNow(this), *GetName(),
+                (FirstPersonArmsMesh == nullptr) ? TEXT("no-arms-component")
+                    : (FirstPersonArmsMesh->GetSkeletalMeshAsset() == nullptr) ? TEXT("no-mesh-asset")
+                    : TEXT("no-head-bone"),
+                170.f - CapsuleHalfHeight);
+        }
+
+        // Push the first-person render FOV now, so a BP CDO override of FirstPersonFOV lands
+        // (the constructor set it from the member default). bEnableFirstPersonFieldOfView is
+        // already true from the constructor; re-assert it in case a BP serialized it off.
+        FirstPersonCamera->bEnableFirstPersonFieldOfView = true;
+        FirstPersonCamera->FirstPersonFieldOfView = FirstPersonFOV;
+
+        // Whatever the Blueprint set is the resting FOV — read it once rather than
+        // hardcoding 90 here and having the two disagree the moment someone tunes it.
         HipFieldOfView = FirstPersonCamera->FieldOfView;
     }
-
-    AnchorCameraToBone();
 
 
     if (APlayerController* PC = Cast<APlayerController>(GetController()))
@@ -1969,6 +2022,13 @@ void AGothicPlayerCharacter::UpdateReviveChannelHUD()
     }
 }
 
+// SUPERSEDED by the FP arms head-bone mount (PR: fp-camera-head-mount). The camera is now
+// parented to FirstPersonArmsMesh's head socket in the constructor with a BeginPlay fallback,
+// so this legacy TP-body-bone anchor is NO LONGER CALLED (the AnchorCameraToBone() call was
+// removed from BeginPlay). Kept declared, and CameraAttachBoneName defaulted to NAME_None, so
+// the function is a hard no-op even if something re-invokes it and so any existing BP CDO
+// reference to CameraAttachBoneName still resolves. Do not re-wire this into BeginPlay — it
+// would re-parent the camera off the eye-stabilized head onto the animated TP spine.
 void AGothicPlayerCharacter::AnchorCameraToBone()
 {
     if (!FirstPersonCamera || CameraAttachBoneName.IsNone())
