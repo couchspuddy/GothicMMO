@@ -955,6 +955,19 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
     void SwapWeapon(int32 NewIndex);
 
+    /**
+     * Swap the active hand to whichever weapon slot backs EquipSlot, if that slot
+     * currently holds a weapon. Returns true if a swap occurred (false for armor
+     * slots or an empty weapon slot).
+     *
+     * The production analogue of GrantBenchItem's to-hand step, extracted so the
+     * inventory component's vendor-grant seam can reach it without touching the
+     * private EquipSlotToWeaponIndex mapping. Unlike GrantBenchItem this is always
+     * compiled (it is not behind the Shipping-stripped dev-bench guard).
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Weapons")
+    bool SwapToWeaponForEquipSlot(EGothicEquipSlot EquipSlot);
+
     /** Called after SwapWeapon completes — Blueprint can play swap animations, sounds. */
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|Weapons")
     void OnWeaponSwapped(int32 NewIndex, const UGothicWeaponData* NewWeaponData);
