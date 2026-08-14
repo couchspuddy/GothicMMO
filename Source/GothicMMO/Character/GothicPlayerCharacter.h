@@ -36,6 +36,23 @@ class UGA_TheLovedAndTheLost;
 class AGothicPlayerState;
 struct FInputActionValue;
 
+/**
+ * Which mount the WeaponMeshComponent (the owner-only first-person gun) is CURRENTLY
+ * using. Set by ApplyWeaponAttachment, read by UpdateFirstPersonWeaponPose to decide
+ * whether the per-frame camera-space weapon write applies. Runtime state, not serialized.
+ *
+ *   Camera     — camera-parented (legacy single-node / no-arms FP; the pose write drives it)
+ *   ArmsSocket — parented to the ABP-driven FP arms grip socket (the arms write carries it;
+ *                a camera-space write here would tear the gun off the animated hand)
+ *   BodyHand   — third-person body hand (a simulated proxy, or the FP toggle turned off)
+ */
+enum class EFPWeaponMount : uint8
+{
+    Camera,
+    ArmsSocket,
+    BodyHand,
+};
+
 UCLASS()
 class GOTHICMMO_API AGothicPlayerCharacter : public AGothicCharacterBase
 {
@@ -203,6 +220,18 @@ public:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson")
     FName FPHeadBoneToHide = TEXT("head");
+
+    /**
+     * Grip socket on the first-person arms mesh that the FP weapon mounts to when the
+     * arms are ABP-driven (SKM_Manny_Simple exposes HandGrip_R since #79's warp rig).
+     * In that mount the gun rides the animated hand instead of hanging off the camera,
+     * with WeaponData->MeshOffset/MeshRotation applied as the grip-relative seat. If the
+     * assigned mesh does NOT expose this socket, ApplyWeaponAttachment falls back to the
+     * legacy camera mount and logs one Warning. weapon_r_muzzle is also present on the
+     * mesh should future muzzle VFX want it.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson")
+    FName FPWeaponGripSocket = TEXT("HandGrip_R");
 
     // -------------------------------------------------------------------------
     // Weapon pose: sprint and fire kick
@@ -989,6 +1018,13 @@ protected:
     // -------------------------------------------------------------------------
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
     TObjectPtr<UStaticMeshComponent> WeaponMeshComponent;
+
+    // The mount WeaponMeshComponent is CURRENTLY using, decided by ApplyWeaponAttachment
+    // and read by UpdateFirstPersonWeaponPose to gate the camera-space weapon write.
+    // Gates on the ACTUAL mount, never on the bAttachWeaponToCamera config flag, so a
+    // hand-mounted gun never gets camera-space transforms stomped onto it per frame.
+    // Defaults to Camera so the legacy pose write is the pre-attachment behavior.
+    EFPWeaponMount WeaponMountState = EFPWeaponMount::Camera;
 
     // First-person arms — skeletal mesh parented to the camera, owner-only-see.
     // See the ArmsOffset/ArmsIdlePose block above for the full rationale.
