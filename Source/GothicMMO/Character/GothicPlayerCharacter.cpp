@@ -142,13 +142,29 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     WeaponMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     WeaponMeshComponent->SetOnlyOwnerSee(true);  // Only the local player sees their own weapon
 
-    // First-person arms — a full-body skeletal mesh parented to the CAPSULE and seated
-    // COINCIDENT with the third-person body (feet on the floor), owner-only. This is the
-    // FP-template-true layout: the body stands at the character's position and the warp
-    // rig (CtrlRig_FPWarp, via ABP_FP_Copy) frames the arms from the eye camera. That
-    // centers the gun on the reticle by construction and yields legs/feet on look-down —
-    // the pre-warp camera-hung placement (ArmsOffset in camera space) gave over-the-
-    // shoulder framing that was statically untunable to the reticle.
+    // First-person arms — a full-body skeletal mesh parented to the ANIMATED TP body
+    // (GetMesh() / CharacterMesh0), owner-only. This is the FP-template-true layout AND the
+    // load-bearing fix for the warp rig. ABP_FP_Copy's AnimGraph is
+    // CopyPoseFromMesh(bUseAttachedParent=true, source pin unset) → CtrlRig_FPWarp →
+    // Output; with the source pin unset, the copy resolves its source as GetAttachParent()
+    // cast to USkeletalMeshComponent, so that parent MUST be a skeletal mesh carrying a
+    // live pose. PR #85 parented this to the CAPSULE (non-skeletal) — the cast yielded
+    // nothing, so the copy produced no pose: a ref-pose statue on the host and a
+    // degenerate-pose cull on the client. Parenting to GetMesh() feeds the animated TP
+    // pose the ABP expects; CtrlRig_FPWarp then frames the arms from the eye camera. The
+    // FP template works for exactly this reason — its FP mesh is a child of the animated
+    // body mesh.
+    //
+    // Relative transform is IDENTITY (zero location, zero rotation). CopyPoseFromMesh does
+    // a RAW component-space bone copy from source to target — it does NOT re-base by any
+    // relative offset between the two components — so the copy is only correct when the two
+    // share a component space, i.e. identical world transforms, i.e. an identity relative
+    // transform. The TP mesh already carries ACharacter's capsule-foot seat (relative
+    // Z = -CapsuleHalfHeight) and the -90 yaw to face +X; the FP mesh inherits BOTH through
+    // the parent. Giving the FP mesh its own -90 yaw here would rotate its component space
+    // out of the source's and double-apply through the raw copy — so it is deliberately NOT
+    // set. The #85 capsule-half-height seat is intentionally dropped; this child-of-mesh
+    // identity transform replaces it.
     //
     // SetOnlyOwnerSee(true) is why this still needs NO possession-race handling: every
     // pawn's arms render only on their own owner's machine, so on every OTHER machine
@@ -156,13 +172,8 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     // stays null — renders nothing until the editor pass assigns SKM_Manny_Simple or a
     // Paragon kit).
     FirstPersonArmsMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("FirstPersonArms"));
-    FirstPersonArmsMesh->SetupAttachment(GetCapsuleComponent());
-    // Coincident with the TP body: an ACharacter seats GetMesh() at the capsule foot
-    // (relative Z = -CapsuleHalfHeight) yawed -90 to face +X. Match it exactly. Reuse the
-    // live half-height read above (ACharacter default 88 at construction, nothing resizes
-    // the player capsule) rather than hardcoding — the same read PR #83 used for the camera.
-    FirstPersonArmsMesh->SetRelativeLocationAndRotation(
-        FVector(0.f, 0.f, -CapsuleHalfHeight), FRotator(0.f, -90.f, 0.f));
+    FirstPersonArmsMesh->SetupAttachment(GetMesh());
+    FirstPersonArmsMesh->SetRelativeLocationAndRotation(FVector::ZeroVector, FRotator::ZeroRotator);
     FirstPersonArmsMesh->SetOnlyOwnerSee(true);
     FirstPersonArmsMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     FirstPersonArmsMesh->CastShadow = false;
@@ -246,6 +257,15 @@ void AGothicPlayerCharacter::BeginPlay()
     if (GetMesh() && bHideBodyInFirstPerson)
     {
         GetMesh()->SetOwnerNoSee(true);
+    }
+
+    // Mirror the enforcement for the FP arms: a constructor SetOnlyOwnerSee is likewise
+    // overridden by whatever the Blueprint serialized on the inherited component, and if
+    // the BP flipped it off every OTHER player would see this owner-only body clipped onto
+    // the Manny they already render. Re-assert it here where the Blueprint cannot win.
+    if (FirstPersonArmsMesh)
+    {
+        FirstPersonArmsMesh->SetOnlyOwnerSee(true);
     }
 
     // Pose the first-person arms. The PLACEMENT is no longer set here: the arms are
