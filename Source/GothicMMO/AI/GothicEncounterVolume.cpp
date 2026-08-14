@@ -302,7 +302,8 @@ AActor* AGothicEncounterVolume::FindNearestPlayerPawn() const
 }
 
 AGothicEnemyBase* AGothicEncounterVolume::SpawnEnemyFromRequest(
-    AGothicEnemySpawnPoint* Point, int32 IndexInPoint)
+    AGothicEnemySpawnPoint* Point, int32 IndexInPoint,
+    int32 RetriesRemaining, int32 MaxRetries)
 {
     UWorld* World = GetWorld();
     if (!World || !Point || !Point->EnemyClass)
@@ -361,12 +362,24 @@ AGothicEnemyBase* AGothicEncounterVolume::SpawnEnemyFromRequest(
         {
             SpawnLocation = Projected.Location;
         }
+        else if (RetriesRemaining > 0)
+        {
+            // Rejected, but a retry is still queued — the caller re-rolls this
+            // request's scatter on a later tick. NOT a lost spawn, so log at
+            // Verbose rather than raise a SKIP warning the retry would contradict.
+            UE_LOG(LogVigilCombat, Verbose,
+                TEXT("VigilTimeline|t=%.3f|%s|WaveSpawn|RETRY|attempt=%d/%d|point=%s|loc=%s|class=%s"),
+                World->GetTimeSeconds(), *GetName(), MaxRetries - RetriesRemaining + 1, MaxRetries,
+                *GetNameSafe(Point), *SpawnLocation.ToCompactString(),
+                *GetNameSafe(Point->EnemyClass));
+            return nullptr;
+        }
         else
         {
-            // No walkable ground within reach of this point — SKIP it rather
-            // than fall back to the raw Origin (the old behaviour), which may
-            // be inside geometry. An embedded enemy is unreachable and can
-            // never die, so RemainingEnemyCount never falls to zero and the
+            // No walkable ground within reach of this point, retries exhausted —
+            // SKIP it rather than fall back to the raw Origin (the old behaviour),
+            // which may be inside geometry. An embedded enemy is unreachable and
+            // can never die, so RemainingEnemyCount never falls to zero and the
             // Selah prompt / BleedGate never open. A wave that spawns fewer,
             // reachable enemies still completes; a wave with one embedded
             // enemy never does. The pending-intent count is decremented on a
@@ -393,11 +406,23 @@ AGothicEnemyBase* AGothicEncounterVolume::SpawnEnemyFromRequest(
 
     if (!NewEnemy)
     {
-        // Colliding spawn refused. Same completion-safe reasoning as the nav
-        // skip: a smaller reachable wave beats an embedded blocker that keeps
-        // RemainingEnemyCount pinned above zero forever. Under the stagger this
-        // is precisely the case a retry usually clears (the frame's other
-        // spawns have already depenetrated and settled).
+        if (RetriesRemaining > 0)
+        {
+            // Colliding spawn refused, but a retry is queued — the caller re-rolls
+            // this request's scatter on a later tick, by which point the frame's
+            // other spawns have depenetrated and settled and the point is usually
+            // clear. NOT a lost spawn: Verbose, not a SKIP warning.
+            UE_LOG(LogVigilCombat, Verbose,
+                TEXT("VigilTimeline|t=%.3f|%s|WaveSpawn|RETRY|attempt=%d/%d|point=%s|loc=%s|class=%s"),
+                World->GetTimeSeconds(), *GetName(), MaxRetries - RetriesRemaining + 1, MaxRetries,
+                *GetNameSafe(Point), *SpawnLocation.ToCompactString(),
+                *GetNameSafe(Point->EnemyClass));
+            return nullptr;
+        }
+
+        // Colliding spawn refused, retries exhausted. Same completion-safe
+        // reasoning as the nav skip: a smaller reachable wave beats an embedded
+        // blocker that keeps RemainingEnemyCount pinned above zero forever.
         UE_LOG(LogVigilCombat, Warning,
             TEXT("VigilTimeline|t=%.3f|%s|WaveSpawn|SKIP_COLLISION|point=%s|loc=%s|class=%s"),
             World->GetTimeSeconds(), *GetName(), *GetNameSafe(Point),
@@ -475,7 +500,12 @@ void AGothicEncounterVolume::ProcessWaveSpawnQueue()
         const FGothicWaveSpawnRequest Req = WaveSpawnQueue[0];
         WaveSpawnQueue.RemoveAt(0);
 
-        AGothicEnemyBase* NewEnemy = SpawnEnemyFromRequest(Req.Point, Req.IndexInPoint);
+        // Hand SpawnEnemyFromRequest this request's retry budget so its rejection
+        // log matches the requeue decision below: while retries remain a rejection
+        // logs Verbose WaveSpawn|RETRY, and only the final (RetriesRemaining==0)
+        // rejection raises the SKIP warning. MaxRetries reconstructs attempt=N/M.
+        AGothicEnemyBase* NewEnemy = SpawnEnemyFromRequest(
+            Req.Point, Req.IndexInPoint, Req.RetriesRemaining, FMath::Max(0, WaveSpawnMaxRetries));
         if (NewEnemy)
         {
             // Resolve the intent BEFORE folding in, so RemainingEnemyCount and
