@@ -86,6 +86,25 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
     bool AddItem(const FGothicItemInstance& Item);
 
+    /**
+     * Grant a fresh item rolled from a definition — the production vendor seam
+     * (Hearth weapon vendor). Client-callable: on authority it grants directly,
+     * on a client it forwards to ServerGrantItem, exactly like EquipItem →
+     * ServerEquipItem. The roll MUST happen server-side because
+     * UGothicItemDefinition::RollInstance is plain C++, not replicated — a client
+     * roll would never reach the authoritative inventory.
+     *
+     * Unlike AddItem, this IS a legitimate client entry point: it is what the
+     * vendor UI's "buy" button calls. FREE for now — no cost is deducted; the
+     * currency check/deduction slots in server-side (see
+     * ServerGrantItem_Implementation, next to the Silver read).
+     *
+     * bAutoEquip: equip the rolled instance into its slot and, for weapons, swap
+     * it into the active hand — mirrors the dev bench's GrantBenchItem.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
+    void RequestGrantItem(UGothicItemDefinition* Definition, bool bAutoEquip = true);
+
     /** Remove an item by its instance ID. Authority-only. Returns true if found and removed. */
     UFUNCTION(BlueprintCallable, Category = "Gothic|Inventory")
     bool RemoveItem(const FGuid& InstanceID);
@@ -310,6 +329,9 @@ public:
     // the RPC directly.
 
     UFUNCTION(Server, Reliable, WithValidation)
+    void ServerGrantItem(UGothicItemDefinition* Definition, bool bAutoEquip);
+
+    UFUNCTION(Server, Reliable, WithValidation)
     void ServerEquipItem(const FGuid& InstanceID);
 
     UFUNCTION(Server, Reliable, WithValidation)
@@ -398,6 +420,7 @@ private:
     // The public functions are routers (authority → these; client → Server RPC).
     // These assume authority and are where the actual rules live.
 
+    void GrantItem_Authority(UGothicItemDefinition* Definition, bool bAutoEquip);
     bool EquipItem_Authority(const FGuid& InstanceID);
     bool UnequipSlot_Authority(EGothicEquipSlot Slot);
     bool DismantleItem_Authority(const FGuid& InstanceID);

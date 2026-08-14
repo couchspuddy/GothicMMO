@@ -3799,6 +3799,17 @@ int32 AGothicPlayerCharacter::EquipSlotToWeaponIndex(EGothicEquipSlot Slot)
     }
 }
 
+bool AGothicPlayerCharacter::SwapToWeaponForEquipSlot(EGothicEquipSlot EquipSlot)
+{
+    const int32 WeaponIndex = EquipSlotToWeaponIndex(EquipSlot);
+    if (WeaponSlots.IsValidIndex(WeaponIndex))
+    {
+        SwapWeapon(WeaponIndex);
+        return true;
+    }
+    return false;
+}
+
 void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGothicItemInstance& Item)
 {
     // Any equip can change the MovementSpeed secondary, and attribute changes do

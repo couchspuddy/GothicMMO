@@ -2,6 +2,9 @@
 
 #include "Items/GothicInventoryComponent.h"
 #include "Items/GothicItemDefinition.h"
+#include "Character/GothicPlayerCharacter.h" // vendor grant reaches the pawn's weapon swap
+#include "GameFramework/PlayerState.h"
+#include "GothicMMO.h"                        // LogVigilCombat
 #include "Weapons/GothicWeaponData.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "AbilitySystemComponent.h"
@@ -190,6 +193,103 @@ bool UGothicInventoryComponent::EquipItem(const FGuid& InstanceID)
         return true; // "request sent" — see the header note on return values.
     }
     return EquipItem_Authority(InstanceID);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Vendor grant seam (Hearth weapon vendor)
+//
+// Same router → Server RPC → *_Authority shape as EquipItem: the client entry
+// point forwards to the server, and the roll + add + equip happen only on the
+// authority. The roll cannot be client-side — RollInstance is plain, unreplicated
+// C++, so a client roll would produce an instance the server never sees.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void UGothicInventoryComponent::RequestGrantItem(UGothicItemDefinition* Definition, bool bAutoEquip)
+{
+    if (!HasInventoryAuthority())
+    {
+        ServerGrantItem(Definition, bAutoEquip);
+        return;
+    }
+    GrantItem_Authority(Definition, bAutoEquip);
+}
+
+bool UGothicInventoryComponent::ServerGrantItem_Validate(UGothicItemDefinition* Definition, bool bAutoEquip)
+{
+    // Reject a null definition outright — the one thing a malicious/buggy client
+    // could send that the authority path can't roll. Everything else (inventory
+    // full, misauthored slot) is handled and logged downstream by AddItem/EquipItem.
+    return Definition != nullptr;
+}
+
+void UGothicInventoryComponent::ServerGrantItem_Implementation(UGothicItemDefinition* Definition, bool bAutoEquip)
+{
+    GrantItem_Authority(Definition, bAutoEquip);
+}
+
+void UGothicInventoryComponent::GrantItem_Authority(UGothicItemDefinition* Definition, bool bAutoEquip)
+{
+    if (!Definition)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Vendor|Grant|NULL-DEF — RequestGrantItem called with no definition; ignored."));
+        return;
+    }
+
+    // ── Cost hook ────────────────────────────────────────────────────────
+    // FREE for now: no currency is deducted. When Silver becomes spendable this
+    // is the single point where the vendor price check + deduction slots in —
+    // read the price off the definition (or a vendor table), compare against
+    // Silver, bail with a log if short, and deduct after a successful AddItem.
+    // Left explicitly FREE per the current plan (free until currency exists).
+    // e.g.:  if (Silver < Price) { log "insufficient"; return; }  ... Silver -= Price;
+
+    // Canonical roll: free vendor stock must be deterministic. A non-canonical
+    // roll would let a player re-buy the same item until the secondaries came up
+    // favourably (reroll-farming); RollInstance(true) freezes every stat to its
+    // range midpoint so every copy of a given vendor line is identical.
+    const FGothicItemInstance Instance = Definition->RollInstance(/*bCanonical=*/true);
+    if (!AddItem(Instance))
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("Vendor|Grant|ADD-FAILED|def=%s — inventory full."),
+            *Definition->ItemID.ToString());
+        return;
+    }
+
+    bool bEquipped = false;
+    bool bSwappedToHand = false;
+    if (bAutoEquip)
+    {
+        bEquipped = EquipItem(Instance.InstanceID);
+
+        // For a weapon, force it into the active hand — mirrors GrantBenchItem.
+        // The equip above already armed the weapon slot via OnItemEquipped →
+        // OnEquipmentChanged (on authority and, through OnRep_EquippedItems, on
+        // the owning client); this only makes it the ACTIVE weapon. Reaching the
+        // pawn from a component that lives on the PlayerState: Owner is the
+        // PlayerState, whose Pawn is the character.
+        if (bEquipped && Definition->IsWeapon())
+        {
+            APlayerState* OwningPS = Cast<APlayerState>(GetOwner());
+            AGothicPlayerCharacter* PlayerChar =
+                OwningPS ? Cast<AGothicPlayerCharacter>(OwningPS->GetPawn()) : nullptr;
+            if (PlayerChar)
+            {
+                bSwappedToHand = PlayerChar->SwapToWeaponForEquipSlot(Definition->EquipSlot);
+            }
+        }
+    }
+
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("Vendor|Grant|OK|owner=%s|def=%s|instance=%s|slot=%d|weapon=%d|equipped=%d|inHand=%d"),
+        *GetNameSafe(GetOwner()),
+        *Definition->ItemID.ToString(),
+        *Instance.InstanceID.ToString(),
+        static_cast<int32>(Definition->EquipSlot),
+        Definition->IsWeapon() ? 1 : 0,
+        bEquipped ? 1 : 0,
+        bSwappedToHand ? 1 : 0);
 }
 
 bool UGothicInventoryComponent::ServerEquipItem_Validate(const FGuid& InstanceID)
