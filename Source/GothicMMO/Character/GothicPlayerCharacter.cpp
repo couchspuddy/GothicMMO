@@ -28,6 +28,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/SkeletalMesh.h"                // USkeletalMesh — grip-socket mount diagnostics
 #include "Engine/LocalPlayer.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -3865,21 +3866,73 @@ void AGothicPlayerCharacter::ApplyWeaponAttachment(const UGothicWeaponData* Weap
         return;
     }
 
-    // Only the local player gets the camera-parented weapon. A simulated proxy has no
-    // meaningful camera of its own, and other players need to see the gun in the hand
-    // where the animation puts it.
-    const bool bCameraMounted =
-        bAttachWeaponToCamera && IsLocallyControlled() && FirstPersonCamera != nullptr;
+    // The FP arms count as "ABP-driven" only when a mesh is assigned AND it runs an
+    // anim class (ABP_FP_Copy / CtrlRig_FPWarp, wired since #79). In that state the
+    // hands MOVE per frame, so a camera-fixed gun visibly floats off them — mount the
+    // gun to the animated hand instead. With no mesh or no anim class (the single-node
+    // arms era) the hand is static, and the legacy camera mount is still correct.
+    const bool bArmsAbpDriven =
+        FirstPersonArmsMesh != nullptr
+        && FirstPersonArmsMesh->GetSkeletalMeshAsset() != nullptr
+        && FirstPersonArmsMesh->GetAnimClass() != nullptr;
 
-    if (bCameraMounted)
+    // Only the local player gets a first-person mount (camera or animated hand). A
+    // simulated proxy has no meaningful camera of its own; it shows the gun through
+    // ThirdPersonWeaponMesh and keeps WeaponMeshComponent on the body hand (hidden by
+    // SetOnlyOwnerSee) as a harmless fallback.
+    if (IsLocallyControlled() && FirstPersonCamera != nullptr)
     {
-        WeaponMeshComponent->AttachToComponent(
-            FirstPersonCamera, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+        if (bArmsAbpDriven && FirstPersonArmsMesh->DoesSocketExist(FPWeaponGripSocket))
+        {
+            // Ride the animated hand. WeaponData->MeshOffset/MeshRotation were authored
+            // to seat the mesh inside a hand grip — exactly this socket's frame — so the
+            // same values that align the third-person hand mount apply here.
+            WeaponMeshComponent->AttachToComponent(
+                FirstPersonArmsMesh,
+                FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+                FPWeaponGripSocket);
 
-        WeaponMeshComponent->SetRelativeLocation(CameraWeaponOffset);
-        WeaponMeshComponent->SetRelativeRotation(CameraWeaponRotation);
+            if (WeaponData)
+            {
+                WeaponMeshComponent->SetRelativeLocation(WeaponData->MeshOffset);
+                WeaponMeshComponent->SetRelativeRotation(WeaponData->MeshRotation);
+            }
+
+            WeaponMountState = EFPWeaponMount::ArmsSocket;
+            return;
+        }
+
+        if (bArmsAbpDriven)
+        {
+            // ABP-driven but the assigned mesh lacks the grip socket — mounting to the
+            // mesh root would stack the gun at the origin. Fall back to the legacy
+            // camera mount so the player still sees a usable weapon, and say so once.
+            UE_LOG(LogVigilCombat, Warning,
+                TEXT("VigilTimeline|t=%.3f|%s|FPWeaponMount|socket-missing|socket=%s|mesh=%s|fallback=camera"),
+                GASInitTimelineNow(this), *GetName(), *FPWeaponGripSocket.ToString(),
+                FirstPersonArmsMesh->GetSkeletalMeshAsset()
+                    ? *FirstPersonArmsMesh->GetSkeletalMeshAsset()->GetName() : TEXT("None"));
+        }
+
+        if (bArmsAbpDriven || bAttachWeaponToCamera)
+        {
+            // Legacy camera mount: the single-node / no-arms path, and the socket-missing
+            // fallback above (forced regardless of the flag — the brief mandates camera as
+            // the fallback for an ABP-driven mesh that can't expose a grip).
+            WeaponMeshComponent->AttachToComponent(
+                FirstPersonCamera, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+
+            WeaponMeshComponent->SetRelativeLocation(CameraWeaponOffset);
+            WeaponMeshComponent->SetRelativeRotation(CameraWeaponRotation);
+
+            WeaponMountState = EFPWeaponMount::Camera;
+            return;
+        }
+        // else: local, no ABP arms, and bAttachWeaponToCamera explicitly turned off —
+        // the third-person-view toggle. Fall through to the body hand mount below.
     }
-    else if (GetMesh())
+
+    if (GetMesh())
     {
         WeaponMeshComponent->AttachToComponent(
             GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, TEXT("HandGrip_R"));
@@ -3889,6 +3942,8 @@ void AGothicPlayerCharacter::ApplyWeaponAttachment(const UGothicWeaponData* Weap
             WeaponMeshComponent->SetRelativeLocation(WeaponData->MeshOffset);
             WeaponMeshComponent->SetRelativeRotation(WeaponData->MeshRotation);
         }
+
+        WeaponMountState = EFPWeaponMount::BodyHand;
     }
 }
 
@@ -3959,8 +4014,17 @@ void AGothicPlayerCharacter::UpdateFirstPersonWeaponPose(float DeltaTime)
                                    SprintWeaponRotation.Roll  * SprintPoseAlpha).Quaternion();
     const FQuat KickQ   = CurrentFireKickRotation.Quaternion();
 
-    WeaponMeshComponent->SetRelativeLocation(TargetLocation);
-    WeaponMeshComponent->SetRelativeRotation((KickQ * SprintQ * BaseQ).Rotator());
+    // Drive the weapon component directly ONLY when it is actually camera-mounted. In
+    // the animated-hand mount (WeaponMountState == ArmsSocket) the gun is a CHILD of
+    // FirstPersonArmsMesh at the grip socket; a camera-space write here would stomp that
+    // grip transform every frame and tear the gun off the hand. Gate on the ACTUAL mount,
+    // not bAttachWeaponToCamera — that flag is still true in the hand mount. The arms
+    // write below carries the whole arms+gun assembly through sprint/kick in that mode.
+    if (WeaponMountState == EFPWeaponMount::Camera)
+    {
+        WeaponMeshComponent->SetRelativeLocation(TargetLocation);
+        WeaponMeshComponent->SetRelativeRotation((KickQ * SprintQ * BaseQ).Rotator());
+    }
 
     // Procedural lockstep: drive the FP arms with the SAME sprint/kick deltas the
     // weapon just got, so the hands ride the gun instead of freezing in the BeginPlay
