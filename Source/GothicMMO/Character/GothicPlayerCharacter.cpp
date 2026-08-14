@@ -142,19 +142,27 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     WeaponMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     WeaponMeshComponent->SetOnlyOwnerSee(true);  // Only the local player sees their own weapon
 
-    // First-person arms — a skeletal mesh parented to the camera, exactly like the
-    // camera-mounted weapon is meant to be: a child of the camera cannot drift off
-    // the crosshair at any pitch. SetOnlyOwnerSee(true) plus that camera parenting is
-    // why this needs NO possession-race handling — unlike the weapon attach, whose
-    // target flips between camera and hand socket by locality. Every pawn's arms
-    // render only on their own owner's machine, so on every OTHER machine this
-    // component is inert by construction; there is nothing to re-attach once
-    // IsLocallyControlled() resolves. No mesh is assigned in C++ (SkeletalMesh stays
-    // null — renders nothing until the editor pass assigns SKM_Manny_Simple or a
-    // Paragon kit); the relative transform and idle pose are applied in BeginPlay so
-    // Blueprint-tuned ArmsOffset/ArmsRotation take effect.
+    // First-person arms — a full-body skeletal mesh parented to the CAPSULE and seated
+    // COINCIDENT with the third-person body (feet on the floor), owner-only. This is the
+    // FP-template-true layout: the body stands at the character's position and the warp
+    // rig (CtrlRig_FPWarp, via ABP_FP_Copy) frames the arms from the eye camera. That
+    // centers the gun on the reticle by construction and yields legs/feet on look-down —
+    // the pre-warp camera-hung placement (ArmsOffset in camera space) gave over-the-
+    // shoulder framing that was statically untunable to the reticle.
+    //
+    // SetOnlyOwnerSee(true) is why this still needs NO possession-race handling: every
+    // pawn's arms render only on their own owner's machine, so on every OTHER machine
+    // this component is inert by construction. No mesh is assigned in C++ (SkeletalMesh
+    // stays null — renders nothing until the editor pass assigns SKM_Manny_Simple or a
+    // Paragon kit).
     FirstPersonArmsMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("FirstPersonArms"));
-    FirstPersonArmsMesh->SetupAttachment(FirstPersonCamera);
+    FirstPersonArmsMesh->SetupAttachment(GetCapsuleComponent());
+    // Coincident with the TP body: an ACharacter seats GetMesh() at the capsule foot
+    // (relative Z = -CapsuleHalfHeight) yawed -90 to face +X. Match it exactly. Reuse the
+    // live half-height read above (ACharacter default 88 at construction, nothing resizes
+    // the player capsule) rather than hardcoding — the same read PR #83 used for the camera.
+    FirstPersonArmsMesh->SetRelativeLocationAndRotation(
+        FVector(0.f, 0.f, -CapsuleHalfHeight), FRotator(0.f, -90.f, 0.f));
     FirstPersonArmsMesh->SetOnlyOwnerSee(true);
     FirstPersonArmsMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     FirstPersonArmsMesh->CastShadow = false;
@@ -240,20 +248,22 @@ void AGothicPlayerCharacter::BeginPlay()
         GetMesh()->SetOwnerNoSee(true);
     }
 
-    // Place the first-person arms in camera space from the tunable defaults (so a
-    // Blueprint-edited ArmsOffset/ArmsRotation takes effect rather than the raw
-    // constructor value), and — if an idle pose was assigned — drive it as a single
-    // looping node. The pose is the one hook beyond parenting: the editor pass will
-    // assign a full-body mesh with no ABP, which renders as a T-pose through the
-    // player's face without it. Null-safe on every count: no mesh assigned yet means
-    // PlayAnimation simply has nothing to pose, and a null ArmsIdlePose leaves the
-    // mesh in its ref pose.
+    // Pose the first-person arms. The PLACEMENT is no longer set here: the arms are
+    // parented to the capsule and seated coincident with the TP body in the constructor
+    // (the FP-template-true layout), and the camera-space ArmsOffset/ArmsRotation that
+    // this used to apply are legacy semantics that no longer make sense for a body-
+    // positioned mesh — see the constructor. ArmsOffset/ArmsRotation are therefore inert
+    // for the shipped ABP path, and any BP CDO override of them is harmless.
+    //
+    // What remains is the single-node idle FALLBACK for the no-ABP case: the editor pass
+    // may assign a full-body mesh with no ABP, which renders as a T-pose. Null-safe on
+    // every count: no mesh assigned yet means nothing to pose, and a null ArmsIdlePose
+    // leaves the mesh in its ref pose. This fallback now poses the mesh at its capsule/
+    // body position rather than camera-hung — re-parenting to the camera only for the
+    // no-ABP case would complicate the code for a path the ABP has superseded, so the
+    // legacy camera-hung PLACEMENT is cut; the idle-pose playback itself is kept (cheap).
     if (FirstPersonArmsMesh)
     {
-        // The base transform always applies — it is where the arms sit relative to the
-        // camera, independent of how the mesh is posed.
-        FirstPersonArmsMesh->SetRelativeLocationAndRotation(ArmsOffset, ArmsRotation);
-
         // If an AnimClass is assigned, the animation blueprint OWNS the pose and we must
         // NOT force single-node playback. The editor pass after this PR assigns ABP_FP_Copy
         // (driving CtrlRig_FPWarp) as this component's AnimClass; forcing AnimationSingleNode
@@ -303,10 +313,12 @@ void AGothicPlayerCharacter::BeginPlay()
                 GASInitTimelineNow(this), *GetName());
         }
 
-        // Belt-and-braces head removal — runs after BOTH pose paths so no rig state can
-        // put the owner's own head in the camera. The warp ABP is meant to keep the head
-        // out of frame; this is the guarantee when it does not (rig fault, wrong retarget,
-        // or the single-node fallback). GetBoneIndex returns INDEX_NONE when no mesh is
+        // Head removal — now LOAD-BEARING, not just belt-and-braces. In the new capsule-
+        // coincident assembly the eye camera sits INSIDE the FP body's head region, so an
+        // unhidden head would render straight through the camera. Runs after BOTH pose
+        // paths so no rig state can put the owner's own head in frame; the warp ABP is
+        // meant to frame it out, this is the guarantee when it does not (rig fault, wrong
+        // retarget, or the single-node fallback). GetBoneIndex returns INDEX_NONE when no mesh is
         // assigned yet or the bone is absent, so the whole thing is a safe no-op then;
         // NAME_None disables it entirely.
         if (FPHeadBoneToHide != NAME_None &&
@@ -4048,22 +4060,20 @@ void AGothicPlayerCharacter::UpdateFirstPersonWeaponPose(float DeltaTime)
         WeaponMeshComponent->SetRelativeRotation((KickQ * SprintQ * BaseQ).Rotator());
     }
 
-    // Procedural lockstep: drive the FP arms with the SAME sprint/kick deltas the
-    // weapon just got, so the hands ride the gun instead of freezing in the BeginPlay
-    // pose. Reuses the already-computed terms; the arms base is ArmsOffset/ArmsRotation
-    // (not the camera-weapon base). Rotation composes with offsets OUTERMOST for the
-    // same camera-space reason as the weapon above — ArmsRotation is yawed -90, so an
-    // Euler add would twist the kick down the arms' local axis. At rest SprintPoseAlpha
-    // and CurrentFireKick* are zero, so this reproduces BeginPlay's transform exactly.
+    // The FP arms are now parented to the CAPSULE and seated coincident with the TP body
+    // (constructor), with the warp rig framing them from the eye camera. A camera-SPACE
+    // write here — ArmsOffset (a camera-space value) plus the sprint/kick deltas — would
+    // yank that body-positioned mesh around in capsule space, tearing the whole assembly
+    // off the character. So it must NOT run in the new assembly. For the ABP path the
+    // arms' sway/kick comes from the anim/rig instead; a future camera-shake / procedural
+    // recoil layer is the right home for extra FP feel and is deliberately NOT built here.
     //
-    // KEPT under an active warp ABP (deliberate call): CtrlRig_FPWarp warps the mesh's
-    // BONES in component space; this writes the COMPONENT's transform relative to the
-    // camera — the mount point the whole warped result hangs off. Moving the mount moves
-    // the warped arms+gun together, which is exactly the sprint-lower and fire-kick we
-    // want, so there is nothing to gate. If a future warp rig instead drove the component
-    // transform itself, this would fight it and would then need to yield to ArmsOffset
-    // only — flagged in the PR, not gated now (the rig warps bones, not the component).
-    if (FirstPersonArmsMesh)
+    // Gated to run ONLY when the arms are actually camera-parented — which, after the
+    // capsule reparent, the shipped path never is. This is retained purely so a future
+    // camera-parented arms fallback would still get the sprint/kick feel; it is a no-op
+    // for the body-positioned assembly. The weapon's own fire-kick FEEL still survives on
+    // the legacy camera weapon mount via the WeaponMountState==Camera write above.
+    if (FirstPersonArmsMesh && FirstPersonArmsMesh->GetAttachParent() == FirstPersonCamera)
     {
         const FVector ArmsDelta = (SprintWeaponOffset * SprintPoseAlpha) + CurrentFireKickLocation;
         FirstPersonArmsMesh->SetRelativeLocation(ArmsOffset + ArmsDelta);
