@@ -45,6 +45,31 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 	FOnEncounterBreakout, AGothicEncounterVolume*, Encounter);
 
+/**
+ * One queued enemy for a staggered wave. Waves used to spawn every capsule in a
+ * single synchronous loop; when a point's SpawnCount clustered several enemies in
+ * one frame they depenetrated into each other and AdjustIfPossibleButDontSpawnIfColliding
+ * (correctly) rejected the overlapping ones, running the wave short (SKIP_COLLISION).
+ * Queuing one spawn per interval separates them in time so each lands on clear ground.
+ */
+USTRUCT()
+struct FGothicWaveSpawnRequest
+{
+	GENERATED_BODY()
+
+	/** The spawn point this enemy belongs to — supplies class, origin, scatter,
+	 *  pack ID and loot-suppression, exactly as the synchronous path read them. */
+	UPROPERTY()
+	TObjectPtr<AGothicEnemySpawnPoint> Point = nullptr;
+
+	/** Index within the point: 0 sits on the point itself, >0 scatters (matches the
+	 *  old inner loop's `i`, so scatter placement is identical). */
+	int32 IndexInPoint = 0;
+
+	/** Collision/nav retries left before this request counts as a genuine skip. */
+	int32 RetriesRemaining = 0;
+};
+
 UCLASS()
 class GOTHICMMO_API AGothicEncounterVolume : public AActor
 {
@@ -57,7 +82,7 @@ public:
 
 	/** True once every enemy in this encounter is dead. */
 	UFUNCTION(BlueprintPure, Category = "Gothic|Encounter")
-	bool IsComplete() const { return RemainingEnemyCount <= 0; }
+	bool IsComplete() const { return RemainingEnemyCount <= 0 && PendingSpawnCount <= 0; }
 
 	/** Living member count — the exact number RemainingEnemyCount already tracks,
  *  exposed for anything that needs to read pack strength without owning its
@@ -176,6 +201,30 @@ protected:
 	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter|Waves")
 	float SelahCollectDuration = 5.f;
 
+	/**
+	 * Seconds between successive wave spawns. Waves spawn ONE enemy per interval
+	 * instead of the whole roster in a single frame — same-frame capsule
+	 * depenetration was rejecting overlapping spawns (SKIP_COLLISION) and running
+	 * waves 1-3 enemies short. It also gives the requested "enemies pour in over
+	 * time" feel. 0 reproduces the legacy synchronous all-at-once behaviour.
+	 *
+	 * EditAnywhere so designers can tune per instance AND so existing placed
+	 * volumes (which carry no serialized override for this new property) inherit
+	 * this default and get the fix without re-placement.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Gothic|Encounter|Waves", meta = (ClampMin = "0"))
+	float WaveSpawnStaggerInterval = 0.15f;
+
+	/**
+	 * Times a staggered spawn that hits a collision/nav rejection re-rolls its
+	 * scatter on a later tick before it counts as a skip. With the stagger a retry
+	 * almost always lands (the frame's other spawns have already settled), which
+	 * makes full wave counts deterministic. 0 disables retry; a skipped request
+	 * still decrements the pending-intent count so it can never wedge the encounter.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Gothic|Encounter|Waves", meta = (ClampMin = "0"))
+	int32 WaveSpawnMaxRetries = 1;
+
 	/** Radius from this volume's location within which a player can meditate to
 	 *  collect — the area-based prompt, not a singular corpse. */
 	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter")
@@ -213,6 +262,23 @@ private:
 	FTimerHandle ReturnHubHandle;
 
 	int32 RemainingEnemyCount = 0;
+
+	/**
+	 * Enemies a staggered wave still intends to spawn but hasn't yet. Registered
+	 * up-front the moment a wave is queued and drained one per spawn (or per skip),
+	 * this is the guard that stops RemainingEnemyCount from transiently reading 0 —
+	 * and firing the Selah prompt / next wave / gate chain prematurely — while a
+	 * wave's spawns are still arriving. See IsComplete() and HandleEnemyDied().
+	 * Always 0 on the legacy synchronous path (WaveSpawnStaggerInterval == 0).
+	 */
+	int32 PendingSpawnCount = 0;
+
+	/** Outstanding staggered spawn requests, drained one per WaveStaggerHandle tick. */
+	UPROPERTY()
+	TArray<FGothicWaveSpawnRequest> WaveSpawnQueue;
+
+	/** Drives ProcessWaveSpawnQueue — one enemy per WaveSpawnStaggerInterval. */
+	FTimerHandle WaveStaggerHandle;
 
 	UPROPERTY()
 	TObjectPtr<AGothicEnemyBase> LastEnemyToDie;
@@ -269,8 +335,29 @@ private:
 	FTimerHandle CollectFinishHandle;
 
 	/** Spawns SpawnCount enemies per point, stamps pack IDs, folds them into the
-	 *  roster, and sets each one's combat target so the wave actually engages. */
+	 *  roster, and sets each one's combat target so the wave actually engages.
+	 *  Staggered when WaveSpawnStaggerInterval > 0 (returns an EMPTY array in that
+	 *  case — spawns resolve later over the timer; callers use only Num() to log). */
 	TArray<AGothicEnemyBase*> SpawnWaveFromPoints(const TArray<TObjectPtr<AGothicEnemySpawnPoint>>& Points);
+
+	/** Resolves one spawn: scatter -> nav projection -> collision-guarded spawn ->
+	 *  pack stamp. Returns the enemy, or null on a SKIP_NONAV/SKIP_COLLISION (logged
+	 *  inside). Shared verbatim by the synchronous and staggered paths. */
+	AGothicEnemyBase* SpawnEnemyFromRequest(AGothicEnemySpawnPoint* Point, int32 IndexInPoint);
+
+	/** Folds one just-spawned staggered enemy into the roster (bind death, bump
+	 *  RemainingEnemyCount, hand it the player, retract any prompt) — the per-enemy
+	 *  equivalent of AddWaveToEncounter's loop body for the timer path. */
+	void RegisterWaveEnemy(AGothicEnemyBase* Enemy);
+
+	/** Timer tick: spawn (or retry/skip) one queued enemy, then reschedule while
+	 *  work remains. Drives the stagger. */
+	void ProcessWaveSpawnQueue();
+
+	/** The "roster reached zero" decision — advance the wave chain (Wave 3) or raise
+	 *  the Selah prompt. Extracted from HandleEnemyDied so the stagger path can run
+	 *  the same logic when a wave drains to nothing via skips (roster already 0). */
+	void EvaluateRosterCleared();
 
 	/** Closest player pawn to this volume, or null if there are none. */
 	AActor* FindNearestPlayerPawn() const;

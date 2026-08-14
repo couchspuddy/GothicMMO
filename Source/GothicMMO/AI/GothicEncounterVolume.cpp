@@ -201,30 +201,45 @@ void AGothicEncounterVolume::HandleEnemyDied(AGothicEnemyBase* DeadEnemy)
         return;
     }
 
-    if (RemainingEnemyCount <= 0)
+    // Gate the completion decision on PendingSpawnCount: while a staggered wave
+    // still has spawns queued, a roster that momentarily reads 0 (deaths racing
+    // ahead of the trickle of arrivals) must NOT fire the prompt / next wave. The
+    // last pending spawn to resolve re-runs this evaluation from ProcessWaveSpawnQueue.
+    if (RemainingEnemyCount <= 0 && PendingSpawnCount <= 0)
     {
-        // Interrupt wave (Wave 2) just fell -> the "one more after" spawns
-        // automatically without a prompt, if configured.
-        if (WaveStage == 2 && Wave3SpawnPoints.Num() > 0)
-        {
-            WaveStage = 3;
-            SpawnWaveFromPoints(Wave3SpawnPoints);
-            OnEncounterMemberDied.Broadcast(DeadEnemy);
-            return;
-        }
-
-        // Interrupt wave fell with no Wave 3, or Wave 3 itself fell -> the next
-        // collection is the real one. (WaveStage 0 stays 0: the first collect
-        // still has to trigger the interrupt.)
-        if (WaveStage == 2 || WaveStage == 3)
-        {
-            WaveStage = 4;
-        }
-
-        ActivateSelahPrompt();
+        EvaluateRosterCleared();
     }
 
     OnEncounterMemberDied.Broadcast(DeadEnemy);
+}
+
+void AGothicEncounterVolume::EvaluateRosterCleared()
+{
+    // Precondition the callers already satisfy, re-asserted so this is safe to call
+    // from the stagger drain as well as from a death.
+    if (RemainingEnemyCount > 0 || PendingSpawnCount > 0)
+    {
+        return;
+    }
+
+    // Interrupt wave (Wave 2) just fell -> the "one more after" spawns
+    // automatically without a prompt, if configured.
+    if (WaveStage == 2 && Wave3SpawnPoints.Num() > 0)
+    {
+        WaveStage = 3;
+        SpawnWaveFromPoints(Wave3SpawnPoints);
+        return;
+    }
+
+    // Interrupt wave fell with no Wave 3, or Wave 3 itself fell -> the next
+    // collection is the real one. (WaveStage 0 stays 0: the first collect
+    // still has to trigger the interrupt.)
+    if (WaveStage == 2 || WaveStage == 3)
+    {
+        WaveStage = 4;
+    }
+
+    ActivateSelahPrompt();
 }
 
 void AGothicEncounterVolume::ActivateSelahPrompt()
@@ -286,6 +301,234 @@ AActor* AGothicEncounterVolume::FindNearestPlayerPawn() const
     return Best;
 }
 
+AGothicEnemyBase* AGothicEncounterVolume::SpawnEnemyFromRequest(
+    AGothicEnemySpawnPoint* Point, int32 IndexInPoint)
+{
+    UWorld* World = GetWorld();
+    if (!World || !Point || !Point->EnemyClass)
+    {
+        return nullptr;
+    }
+
+    const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+
+    const FVector Origin = Point->GetActorLocation();
+    const float Scatter = FMath::Max(0.f, Point->ScatterRadius);
+
+    // The first enemy takes the point itself; the rest scatter around it.
+    FVector SpawnLocation = Origin;
+    if (IndexInPoint > 0 && Scatter > 0.f)
+    {
+        // Uniform point in the scatter disc, drawn through FGothicDeterminism
+        // so a seeded measurement run reproduces wave placement (project
+        // invariant: no raw FMath::Rand*). r = R*sqrt(u) keeps the sample
+        // uniform-over-area, matching FMath::RandPointInCircle's distribution.
+        const float Angle = FGothicDeterminism::FRandRange(0.f, 2.f * PI);
+        const float Dist = Scatter * FMath::Sqrt(FGothicDeterminism::FRandRange(0.f, 1.f));
+        SpawnLocation = Origin + FVector(Dist * FMath::Cos(Angle), Dist * FMath::Sin(Angle), 0.f);
+    }
+
+    // Project back to walkable ground. Without this, a scatter disc
+    // that overhangs the Encounter 2 balcony or a plaza wall drops
+    // enemies into geometry, where they either fall out of the world
+    // or stand unreachable and the encounter can never complete.
+    //
+    // Index 0 is projected too, and used to not be. A spawn point
+    // authored slightly off the floor it belongs to — above a mezzanine
+    // it should be under, or floating over a stairwell — placed its
+    // first enemy verbatim, on the wrong storey, fighting a player it
+    // could never reach. The projection is the only thing that decides
+    // which floor a wave lands on, so it must run for every enemy.
+    if (NavSys)
+    {
+        // Extent must not collapse when Scatter is 0 (the index-0 /
+        // no-scatter case): a zero-width query box finds nothing and
+        // every spawn would silently fall back to the raw Origin.
+        const float QueryExtentXY = FMath::Max(Scatter, 100.f);
+
+        FNavLocation Projected;
+        if (NavSys->ProjectPointToNavigation(
+                SpawnLocation, Projected, FVector(QueryExtentXY, QueryExtentXY, 300.f)))
+        {
+            SpawnLocation = Projected.Location;
+        }
+        // One WIDER retry before giving up: a point that just missed the nav
+        // mesh (a spawn point authored a little off its floor, or a scatter
+        // sample that overhung an edge) usually lands with a fatter box.
+        // Extent xy x3, z 500.
+        else if (NavSys->ProjectPointToNavigation(
+                SpawnLocation, Projected, FVector(QueryExtentXY * 3.f, QueryExtentXY * 3.f, 500.f)))
+        {
+            SpawnLocation = Projected.Location;
+        }
+        else
+        {
+            // No walkable ground within reach of this point — SKIP it rather
+            // than fall back to the raw Origin (the old behaviour), which may
+            // be inside geometry. An embedded enemy is unreachable and can
+            // never die, so RemainingEnemyCount never falls to zero and the
+            // Selah prompt / BleedGate never open. A wave that spawns fewer,
+            // reachable enemies still completes; a wave with one embedded
+            // enemy never does. The pending-intent count is decremented on a
+            // skip by the caller, so a skip is completion-safe.
+            UE_LOG(LogVigilCombat, Warning,
+                TEXT("VigilTimeline|t=%.3f|%s|WaveSpawn|SKIP_NONAV|point=%s|origin=%s|loc=%s|class=%s"),
+                World->GetTimeSeconds(), *GetName(), *GetNameSafe(Point),
+                *Origin.ToCompactString(), *SpawnLocation.ToCompactString(),
+                *GetNameSafe(Point->EnemyClass));
+            return nullptr;
+        }
+    }
+
+    FActorSpawnParameters SpawnParams;
+    // Never embed: if collision can't be resolved, DON'T spawn (returns null)
+    // and treat it exactly like a nav skip. The old
+    // AdjustIfPossibleButAlwaysSpawn buried the pawn in geometry when
+    // adjustment failed, which hung the encounter the same way.
+    SpawnParams.SpawnCollisionHandlingOverride =
+        ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
+
+    AGothicEnemyBase* NewEnemy = World->SpawnActor<AGothicEnemyBase>(
+        Point->EnemyClass, SpawnLocation, Point->GetActorRotation(), SpawnParams);
+
+    if (!NewEnemy)
+    {
+        // Colliding spawn refused. Same completion-safe reasoning as the nav
+        // skip: a smaller reachable wave beats an embedded blocker that keeps
+        // RemainingEnemyCount pinned above zero forever. Under the stagger this
+        // is precisely the case a retry usually clears (the frame's other
+        // spawns have already depenetrated and settled).
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("VigilTimeline|t=%.3f|%s|WaveSpawn|SKIP_COLLISION|point=%s|loc=%s|class=%s"),
+            World->GetTimeSeconds(), *GetName(), *GetNameSafe(Point),
+            *SpawnLocation.ToCompactString(), *GetNameSafe(Point->EnemyClass));
+        return nullptr;
+    }
+
+    // Pack stamp AFTER spawn, through the setter — BeginPlay has
+    // already run inside SpawnActor and saw NAME_None; SetPackID
+    // is the convergence point for both assignment paths.
+    if (!Point->PackID.IsNone())
+    {
+        NewEnemy->SetPackID(Point->PackID);
+    }
+    if (Point->bSuppressLootDrop)
+    {
+        NewEnemy->SetSuppressLootDrop(true);
+    }
+
+    return NewEnemy;
+}
+
+void AGothicEncounterVolume::RegisterWaveEnemy(AGothicEnemyBase* Enemy)
+{
+    if (!HasAuthority() || !Enemy)
+    {
+        return;
+    }
+
+    // The per-enemy equivalent of AddWaveToEncounter's loop body (see that method):
+    // fold into the roster, own it, bind its death, count it.
+    EncounterEnemies.Add(Enemy);
+    Enemy->OwningEncounter = this;
+    Enemy->OnEnemyDied.AddDynamic(this, &AGothicEncounterVolume::HandleEnemyDied);
+    ++RemainingEnemyCount;
+
+    // Point the new arrival at the player. Without this a wave spawns and simply
+    // stands there: measured on the plaza's 16-strong reinforcement wave, 12 of 16
+    // never moved and never acquired a target. The placed roster gets its target
+    // from HandleTriggerBeginOverlap; reinforcements arrive because the player is
+    // already here.
+    if (AActor* Target = FindNearestPlayerPawn())
+    {
+        Enemy->SetCombatTarget(Target, TEXT("wave-handoff"));
+    }
+
+    // A wave folding in retracts any pending meditation prompt — same as
+    // AddWaveToEncounter. Under the stagger the prompt cannot actually be up
+    // during a wave (PendingSpawnCount gates it), but keep parity so a corner
+    // case can never strand a prompt over a spawning wave.
+    if (AGothicGameState* GS = GetWorld() ? GetWorld()->GetGameState<AGothicGameState>() : nullptr)
+    {
+        if (GS->IsPromptPending(this))
+        {
+            GS->SetSelahNames(TArray<FText>());
+            GS->ClearEncounterPrompt(this);
+        }
+    }
+}
+
+void AGothicEncounterVolume::ProcessWaveSpawnQueue()
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+    UWorld* World = GetWorld();
+    if (!World)
+    {
+        return;
+    }
+
+    if (WaveSpawnQueue.Num() > 0)
+    {
+        const FGothicWaveSpawnRequest Req = WaveSpawnQueue[0];
+        WaveSpawnQueue.RemoveAt(0);
+
+        AGothicEnemyBase* NewEnemy = SpawnEnemyFromRequest(Req.Point, Req.IndexInPoint);
+        if (NewEnemy)
+        {
+            // Resolve the intent BEFORE folding in, so RemainingEnemyCount and
+            // PendingSpawnCount move as a matched pair and never both read the
+            // enemy as absent.
+            --PendingSpawnCount;
+            RegisterWaveEnemy(NewEnemy);
+
+            UE_LOG(LogTemp, Verbose,
+                TEXT("Selah[%s]: staggered spawn folded in — roster=%d, RemainingEnemyCount=%d, PendingSpawnCount=%d"),
+                *GetName(), EncounterEnemies.Num(), RemainingEnemyCount, PendingSpawnCount);
+        }
+        else if (Req.RetriesRemaining > 0)
+        {
+            // Re-roll on a later tick (fresh scatter). Pending intent unchanged —
+            // this request has NOT resolved yet, so completion still waits on it.
+            FGothicWaveSpawnRequest Retry = Req;
+            --Retry.RetriesRemaining;
+            WaveSpawnQueue.Add(Retry);
+        }
+        else
+        {
+            // Genuinely fouled point, retries exhausted. Resolve the intent so a
+            // skip can NEVER wedge the encounter open via the pending counter —
+            // the exact bug class PR #77 fixed must not return this way.
+            --PendingSpawnCount;
+        }
+    }
+
+    if (WaveSpawnQueue.Num() > 0)
+    {
+        // More to come — reschedule the trickle.
+        World->GetTimerManager().SetTimer(
+            WaveStaggerHandle, this, &AGothicEncounterVolume::ProcessWaveSpawnQueue,
+            FMath::Max(0.01f, WaveSpawnStaggerInterval), false);
+    }
+    else
+    {
+        // Wave fully resolved (PendingSpawnCount is now 0). Invalidate BEFORE any
+        // chain re-entry so a Wave 3 kicked off below arms a fresh timer cleanly.
+        WaveStaggerHandle.Invalidate();
+
+        // If the roster is already empty here, the death handler was gated by
+        // PendingSpawnCount and never advanced the chain (every enemy of this
+        // wave skipped, or all died faster than they spawned). Advance it now so
+        // a skip can't leave the encounter hung open.
+        if (RemainingEnemyCount <= 0)
+        {
+            EvaluateRosterCleared();
+        }
+    }
+}
+
 TArray<AGothicEnemyBase*> AGothicEncounterVolume::SpawnWaveFromPoints(
     const TArray<TObjectPtr<AGothicEnemySpawnPoint>>& Points)
 {
@@ -296,118 +539,69 @@ TArray<AGothicEnemyBase*> AGothicEncounterVolume::SpawnWaveFromPoints(
         return Spawned;
     }
 
-    const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+    // ── Staggered path (WaveSpawnStaggerInterval > 0) ────────────────────────
+    // Queue one request per intended enemy and register the wave's FULL intended
+    // total in PendingSpawnCount up-front, THEN trickle the spawns out one per
+    // interval. Because completion is gated on PendingSpawnCount, the counter can
+    // never transiently hit 0 mid-wave and fire the prompt / next wave early.
+    if (WaveSpawnStaggerInterval > 0.f)
+    {
+        int32 QueuedThisCall = 0;
+        for (AGothicEnemySpawnPoint* Point : Points)
+        {
+            if (!Point || !Point->EnemyClass) continue;
 
+            const int32 Count = FMath::Max(1, Point->SpawnCount);
+            for (int32 i = 0; i < Count; ++i)
+            {
+                // Sequential per point (point A #0..#N, then point B #0..#N). Chosen
+                // over interleaving points because it is the simpler expansion and the
+                // temporal stagger — not spawn order — is what separates the capsules.
+                FGothicWaveSpawnRequest Req;
+                Req.Point = Point;
+                Req.IndexInPoint = i;
+                Req.RetriesRemaining = FMath::Max(0, WaveSpawnMaxRetries);
+                WaveSpawnQueue.Add(Req);
+                ++QueuedThisCall;
+            }
+        }
+
+        PendingSpawnCount += QueuedThisCall;
+
+        UE_LOG(LogTemp, Verbose,
+            TEXT("Selah[%s]: wave queued for stagger — +%d intended @ %.2fs interval, PendingSpawnCount=%d, WaveStage=%d"),
+            *GetName(), QueuedThisCall, WaveSpawnStaggerInterval, PendingSpawnCount, WaveStage);
+
+        // Kick the trickle on a timer (first spawn one interval out, not this
+        // frame): keeps pacing uniform and, critically, keeps EvaluateRosterCleared
+        // off the current call stack (this can be reached from within
+        // HandleEnemyDied / ProcessWaveSpawnQueue). If a stagger is already running
+        // the appended entries are picked up by the in-flight loop.
+        if (QueuedThisCall > 0 && !WaveStaggerHandle.IsValid())
+        {
+            World->GetTimerManager().SetTimer(
+                WaveStaggerHandle, this, &AGothicEncounterVolume::ProcessWaveSpawnQueue,
+                FMath::Max(0.01f, WaveSpawnStaggerInterval), false);
+        }
+
+        // Spawns resolve later over the timer, so the array cannot be returned
+        // populated. Every caller uses only Num() to log — reinforcement/Wave 3
+        // ignore it, SpawnInterruptWave logs it (now reads 0; noted in the PR).
+        return Spawned;
+    }
+
+    // ── Legacy synchronous path (WaveSpawnStaggerInterval == 0) ──────────────
+    // Byte-for-byte the original behaviour: spawn every enemy this frame, fold the
+    // whole batch in at once (no pending window), target them.
     for (AGothicEnemySpawnPoint* Point : Points)
     {
         if (!Point || !Point->EnemyClass) continue;
 
-        const FVector Origin = Point->GetActorLocation();
         const int32 Count = FMath::Max(1, Point->SpawnCount);
-        const float Scatter = FMath::Max(0.f, Point->ScatterRadius);
-
         for (int32 i = 0; i < Count; ++i)
         {
-            // The first enemy takes the point itself; the rest scatter around it.
-            FVector SpawnLocation = Origin;
-            if (i > 0 && Scatter > 0.f)
+            if (AGothicEnemyBase* NewEnemy = SpawnEnemyFromRequest(Point, i))
             {
-                // Uniform point in the scatter disc, drawn through FGothicDeterminism
-                // so a seeded measurement run reproduces wave placement (project
-                // invariant: no raw FMath::Rand*). r = R*sqrt(u) keeps the sample
-                // uniform-over-area, matching FMath::RandPointInCircle's distribution.
-                const float Angle = FGothicDeterminism::FRandRange(0.f, 2.f * PI);
-                const float Dist = Scatter * FMath::Sqrt(FGothicDeterminism::FRandRange(0.f, 1.f));
-                SpawnLocation = Origin + FVector(Dist * FMath::Cos(Angle), Dist * FMath::Sin(Angle), 0.f);
-            }
-
-            // Project back to walkable ground. Without this, a scatter disc
-            // that overhangs the Encounter 2 balcony or a plaza wall drops
-            // enemies into geometry, where they either fall out of the world
-            // or stand unreachable and the encounter can never complete.
-            //
-            // Index 0 is projected too, and used to not be. A spawn point
-            // authored slightly off the floor it belongs to — above a mezzanine
-            // it should be under, or floating over a stairwell — placed its
-            // first enemy verbatim, on the wrong storey, fighting a player it
-            // could never reach. The projection is the only thing that decides
-            // which floor a wave lands on, so it must run for every enemy.
-            if (NavSys)
-            {
-                // Extent must not collapse when Scatter is 0 (the index-0 /
-                // no-scatter case): a zero-width query box finds nothing and
-                // every spawn would silently fall back to the raw Origin.
-                const float QueryExtentXY = FMath::Max(Scatter, 100.f);
-
-                FNavLocation Projected;
-                if (NavSys->ProjectPointToNavigation(
-                        SpawnLocation, Projected, FVector(QueryExtentXY, QueryExtentXY, 300.f)))
-                {
-                    SpawnLocation = Projected.Location;
-                }
-                // One WIDER retry before giving up: a point that just missed the nav
-                // mesh (a spawn point authored a little off its floor, or a scatter
-                // sample that overhung an edge) usually lands with a fatter box.
-                // Extent xy x3, z 500.
-                else if (NavSys->ProjectPointToNavigation(
-                        SpawnLocation, Projected, FVector(QueryExtentXY * 3.f, QueryExtentXY * 3.f, 500.f)))
-                {
-                    SpawnLocation = Projected.Location;
-                }
-                else
-                {
-                    // No walkable ground within reach of this point — SKIP it rather
-                    // than fall back to the raw Origin (the old behaviour), which may
-                    // be inside geometry. An embedded enemy is unreachable and can
-                    // never die, so RemainingEnemyCount never falls to zero and the
-                    // Selah prompt / BleedGate never open. A wave that spawns fewer,
-                    // reachable enemies still completes; a wave with one embedded
-                    // enemy never does. RemainingEnemyCount counts only the members
-                    // AddWaveToEncounter actually folds in, so a skip is completion-safe.
-                    UE_LOG(LogVigilCombat, Warning,
-                        TEXT("VigilTimeline|t=%.3f|%s|WaveSpawn|SKIP_NONAV|point=%s|origin=%s|loc=%s|class=%s"),
-                        World->GetTimeSeconds(), *GetName(), *GetNameSafe(Point),
-                        *Origin.ToCompactString(), *SpawnLocation.ToCompactString(),
-                        *GetNameSafe(Point->EnemyClass));
-                    continue;
-                }
-            }
-
-            FActorSpawnParameters SpawnParams;
-            // Never embed: if collision can't be resolved, DON'T spawn (returns null)
-            // and treat it exactly like a nav skip below. The old
-            // AdjustIfPossibleButAlwaysSpawn buried the pawn in geometry when
-            // adjustment failed, which hung the encounter the same way.
-            SpawnParams.SpawnCollisionHandlingOverride =
-                ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
-
-            AGothicEnemyBase* NewEnemy = World->SpawnActor<AGothicEnemyBase>(
-                Point->EnemyClass, SpawnLocation, Point->GetActorRotation(), SpawnParams);
-
-            if (!NewEnemy)
-            {
-                // Colliding spawn refused. Same completion-safe reasoning as the nav
-                // skip: a smaller reachable wave beats an embedded blocker that keeps
-                // RemainingEnemyCount pinned above zero forever.
-                UE_LOG(LogVigilCombat, Warning,
-                    TEXT("VigilTimeline|t=%.3f|%s|WaveSpawn|SKIP_COLLISION|point=%s|loc=%s|class=%s"),
-                    World->GetTimeSeconds(), *GetName(), *GetNameSafe(Point),
-                    *SpawnLocation.ToCompactString(), *GetNameSafe(Point->EnemyClass));
-                continue;
-            }
-
-            {
-                // Pack stamp AFTER spawn, through the setter — BeginPlay has
-                // already run inside SpawnActor and saw NAME_None; SetPackID
-                // is the convergence point for both assignment paths.
-                if (!Point->PackID.IsNone())
-                {
-                    NewEnemy->SetPackID(Point->PackID);
-                }
-                if (Point->bSuppressLootDrop)
-                {
-                    NewEnemy->SetSuppressLootDrop(true);
-                }
                 Spawned.Add(NewEnemy);
             }
         }
@@ -415,16 +609,8 @@ TArray<AGothicEnemyBase*> AGothicEncounterVolume::SpawnWaveFromPoints(
 
     AddWaveToEncounter(Spawned); // registers deaths, bumps the count, retracts any prompt
 
-    // Point the new arrivals at the player. Without this a wave spawns and simply
-    // stands there: measured on the plaza's 16-strong reinforcement wave, 12 of 16
-    // never moved and never acquired a target, because nothing sets one and their
-    // spawn points sit outside perception range of wherever the player is fighting.
-    // Only the three that happened to land within ~500uu engaged at all.
-    //
-    // The placed roster gets its target from HandleTriggerBeginOverlap, which fires
-    // once per encounter and is opt-in — so it can never cover enemies that did not
-    // exist when the player crossed the trigger. Reinforcements are, by definition,
-    // arriving because the player is already here.
+    // Point the new arrivals at the player (see RegisterWaveEnemy's note for why
+    // an untargeted wave just stands there).
     if (AActor* Target = FindNearestPlayerPawn())
     {
         for (AGothicEnemyBase* Enemy : Spawned)
