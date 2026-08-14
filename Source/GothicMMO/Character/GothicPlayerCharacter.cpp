@@ -102,8 +102,19 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
         ECC_GameTraceChannel2 /*ArenaBlock*/, ECR_Block);
 
     FirstPersonCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FirstPersonCamera"));
-    FirstPersonCamera->SetupAttachment(GetMesh());
-    FirstPersonCamera->SetRelativeLocation(FVector(20.f, 0.f, 170.f));
+    // Parent the FP camera to the CAPSULE, not the third-person mesh. A mesh-parented
+    // camera rides the body's animation (root motion, idle sway, hit reacts), which reads
+    // as a drifting first-person eye; the capsule is the actor's stable spine and matches
+    // the FP-template hierarchy. bUsePawnControlRotation still drives the look direction.
+    FirstPersonCamera->SetupAttachment(GetCapsuleComponent());
+    // Keep the WORLD eye position identical across the reparent. The camera was
+    // mesh-relative (20,0,170); on a standard ACharacter the mesh root sits at the
+    // capsule's foot (mesh-relative Z = -CapsuleHalfHeight), so the same world point is
+    // capsule-relative (20, 0, 170 - CapsuleHalfHeight). Read the half-height off the
+    // capsule instead of hardcoding it — at construction this is the ACharacter default
+    // 88 (nothing in Source resizes the player capsule), giving Z = 170 - 88 = 82.
+    const float CapsuleHalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+    FirstPersonCamera->SetRelativeLocation(FVector(20.f, 0.f, 170.f - CapsuleHalfHeight));
     FirstPersonCamera->bUsePawnControlRotation = true;
 
     // Owner never sees their own third-person body (a swinging shoulder/head in the
