@@ -238,6 +238,45 @@ public:
     FName FPWeaponGripSocket = TEXT("HandGrip_R");
 
     // -------------------------------------------------------------------------
+    // First-person camera mount
+    //
+    // The FP camera is parented (in the constructor) to the FP arms mesh's head bone,
+    // so the eye rides the exact point CtrlRig_FPWarp pins the head at while it warps the
+    // body out of the eye line. bUsePawnControlRotation still owns look direction — only
+    // position comes from the head. Every number here is EditDefaultsOnly so the template's
+    // ground truth (if the FP feature pack is ever re-added) can correct it as DATA, not code.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Bone/socket on the FP arms mesh the camera mounts to. "head" is a bone on
+     * SKM_Manny_Simple; SetupAttachment accepts a bone name or a socket name equally.
+     * If the assigned mesh lacks it, BeginPlay falls the camera back to a capsule seat
+     * (one LogVigilCombat Warning) rather than leaving the eye at the component origin.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson")
+    FName CameraAttachSocket = TEXT("head");
+
+    /**
+     * Camera offset relative to the head bone: +X forward, +Y right, +Z up. A small
+     * forward push keeps the near plane clear of the face/skull interior. Reasoned
+     * default (no template ground truth was imported) — expect to tune this once against
+     * the real assembly; if the rig-pinned head reads as juddering, this is the knob.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson")
+    FVector CameraHeadOffset = FVector(10.f, 0.f, 0.f);
+
+    /**
+     * Field of view (degrees) the camera renders first-person-flagged primitives at — the
+     * FP arms and FP weapon, both flagged FirstPersonPrimitiveType=FirstPerson. Independent
+     * of the world FOV (that stays HipFieldOfView/ADSFieldOfView). ~70 is the standard FP
+     * weapon FOV that keeps the gun from ballooning; UE 5.8 bEnableFirstPersonFieldOfView
+     * gates it. Reasoned default — the FP template's exact value was never imported.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson",
+              meta = (ClampMin = "5.0", ClampMax = "170.0"))
+    float FirstPersonFOV = 70.f;
+
+    // -------------------------------------------------------------------------
     // Weapon pose: sprint and fire kick
     //
     // These replace what the body animation used to do. Once the weapon became a
@@ -1150,28 +1189,16 @@ protected:
     // -----------------------------------------------------------------
 
     /**
-     * Bone the first-person camera rides. NAME_None keeps it on the mesh
-     * component, which is the original behaviour.
-     *
-     * WHY: the weapon is attached to a hand socket, so it inherits every bit of
-     * body animation. The camera was attached to the mesh COMPONENT, which does
-     * not move with animation at all. That difference is the weapon sway — the
-     * gun bobs with the pelvis while the view stays perfectly still, and the eye
-     * reads the relative motion.
-     *
-     * Anchoring the camera to a bone in the same chain as the weapon makes both
-     * move together, so the gun sits still in frame and the bob shows up as head
-     * movement instead. spine_05 rather than head: the aim layer already holds
-     * everything from spine_01 up rigid, so spine_05 moves exactly as the pelvis
-     * does — identically to the weapon — while head can carry extra animation.
-     *
-     * Only POSITION is inherited: the camera has bUsePawnControlRotation, so the
-     * bone's rotation never reaches the view.
-     *
-     * TO REVERT: clear this to None in BP_GothicPlayerCharacter. No rebuild.
+     * LEGACY / INERT. Bone on the THIRD-PERSON body the camera used to ride, back
+     * when the FP eye was a TP-body-bone anchor (AnchorCameraToBone). SUPERSEDED by
+     * the FP arms head-bone mount (CameraAttachSocket, below): the camera is now
+     * parented to FirstPersonArmsMesh's head in the constructor and AnchorCameraToBone
+     * is no longer called. Defaulted to NAME_None so the dead function is a hard no-op
+     * even if re-invoked; kept declared only so an existing BP CDO reference still
+     * resolves. Do not rely on this — set CameraHeadOffset for eye tuning instead.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Camera")
-    FName CameraAttachBoneName = TEXT("spine_05");
+    FName CameraAttachBoneName = NAME_None;
 
     /**
      * Extra offset applied after anchoring, in bone space.
