@@ -217,13 +217,17 @@ protected:
 
 	/**
 	 * Times a staggered spawn that hits a collision/nav rejection re-rolls its
-	 * scatter on a later tick before it counts as a skip. With the stagger a retry
-	 * almost always lands (the frame's other spawns have already settled), which
-	 * makes full wave counts deterministic. 0 disables retry; a skipped request
-	 * still decrements the pending-intent count so it can never wedge the encounter.
+	 * scatter on a later tick before it counts as a skip. Each retry lands on a
+	 * separate queue tick with a freshly-rolled scatter sample, so consecutive
+	 * collisions are independent rolls — 3 makes abandonment astronomically rare
+	 * on any disc that has free area at all (measured: 1 retry recovered most but
+	 * still lost the occasional rejection whose retry also collided). 0 disables
+	 * retry; a skipped request still decrements the pending-intent count so it can
+	 * never wedge the encounter. Only the final, retries-exhausted rejection logs a
+	 * SKIP warning — intermediate retries log at Verbose (WaveSpawn|RETRY).
 	 */
 	UPROPERTY(EditAnywhere, Category = "Gothic|Encounter|Waves", meta = (ClampMin = "0"))
-	int32 WaveSpawnMaxRetries = 1;
+	int32 WaveSpawnMaxRetries = 3;
 
 	/** Radius from this volume's location within which a player can meditate to
 	 *  collect — the area-based prompt, not a singular corpse. */
@@ -341,9 +345,16 @@ private:
 	TArray<AGothicEnemyBase*> SpawnWaveFromPoints(const TArray<TObjectPtr<AGothicEnemySpawnPoint>>& Points);
 
 	/** Resolves one spawn: scatter -> nav projection -> collision-guarded spawn ->
-	 *  pack stamp. Returns the enemy, or null on a SKIP_NONAV/SKIP_COLLISION (logged
-	 *  inside). Shared verbatim by the synchronous and staggered paths. */
-	AGothicEnemyBase* SpawnEnemyFromRequest(AGothicEnemySpawnPoint* Point, int32 IndexInPoint);
+	 *  pack stamp. Returns the enemy, or null on a rejection. Shared verbatim by the
+	 *  synchronous and staggered paths.
+	 *
+	 *  RetriesRemaining/MaxRetries drive the rejection log ONLY (they do not re-roll
+	 *  here — the caller re-queues): a rejection with retries left logs at Verbose as
+	 *  WaveSpawn|RETRY|attempt=N/M; the SKIP_NONAV / SKIP_COLLISION Warning fires only
+	 *  once retries are exhausted (final abandonment). Defaults 0/0 = the synchronous
+	 *  path, which has no retries and so always logs the SKIP warning on rejection. */
+	AGothicEnemyBase* SpawnEnemyFromRequest(AGothicEnemySpawnPoint* Point, int32 IndexInPoint,
+		int32 RetriesRemaining = 0, int32 MaxRetries = 0);
 
 	/** Folds one just-spawned staggered enemy into the roster (bind death, bump
 	 *  RemainingEnemyCount, hand it the player, retract any prompt) — the per-enemy
