@@ -182,15 +182,19 @@ public:
     // -------------------------------------------------------------------------
 
     /**
-     * Where the arms sit relative to the camera: +X forward, +Y right, +Z up.
-     * Chosen to sit a humanoid mesh's hands near the existing camera weapon at
-     * CameraWeaponOffset (30,12,-12). EDITOR-TUNE-ME by eye once a mesh is
-     * assigned — the right value depends entirely on the mesh's own pivot. */
+     * LEGACY / INERT for the shipped path. This was the arms' camera-space placement
+     * back when FirstPersonArmsMesh hung off FirstPersonCamera. The arms are now
+     * parented to the capsule and seated coincident with the TP body (see the
+     * constructor and BeginPlay), so this value is no longer read for placement on the
+     * ABP path and its per-frame use is gated to a camera-parented fallback the shipped
+     * assembly never takes. A BP CDO override of it (the old -20,0,-165) is therefore
+     * harmless. Kept declared so the gated fallback and any BP references still resolve. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
     FVector ArmsOffset = FVector(20.f, 0.f, -25.f);
 
-    /** Arms orientation relative to the camera. Starting value only —
-     *  EDITOR-TUNE-ME once the arms mesh is assigned. */
+    /** LEGACY / INERT for the shipped path — the camera-space arms orientation. See
+     *  ArmsOffset: the capsule-coincident constructor transform (yaw -90) is the real
+     *  placement now, and any BP override here is inert. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
     FRotator ArmsRotation = FRotator(0.f, -90.f, 0.f);
 
@@ -1039,8 +1043,9 @@ protected:
     // Defaults to Camera so the legacy pose write is the pre-attachment behavior.
     EFPWeaponMount WeaponMountState = EFPWeaponMount::Camera;
 
-    // First-person arms — skeletal mesh parented to the camera, owner-only-see.
-    // See the ArmsOffset/ArmsIdlePose block above for the full rationale.
+    // First-person arms — skeletal mesh parented to the CAPSULE, seated coincident with
+    // the TP body (feet on floor), owner-only-see; the warp rig frames the arms from the
+    // eye camera. See the constructor for the FP-template-true rationale.
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
     TObjectPtr<USkeletalMeshComponent> FirstPersonArmsMesh;
 
