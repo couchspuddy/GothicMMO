@@ -493,15 +493,15 @@ void AGothicPlayerCharacter::UpdateFirstPersonVisibility()
     // this touches VISIBILITY only, never ticking or VisibilityBasedAnimTickOption, so
     // the FP mesh's pose evaluation is unchanged (out of scope by design).
     const bool bLocal = IsLocallyControlled();
-    const bool bHidden = !bLocal;
+    const bool bShouldHide = !bLocal;
 
     if (WeaponMeshComponent)
     {
-        WeaponMeshComponent->SetHiddenInGame(bHidden);
+        WeaponMeshComponent->SetHiddenInGame(bShouldHide);
     }
     if (FirstPersonArmsMesh)
     {
-        FirstPersonArmsMesh->SetHiddenInGame(bHidden);
+        FirstPersonArmsMesh->SetHiddenInGame(bShouldHide);
     }
 
     // Log once per transition, not per call — this runs from several seams and per
@@ -512,7 +512,7 @@ void AGothicPlayerCharacter::UpdateFirstPersonVisibility()
         LastFPVisibilityLocal = NewState;
         UE_LOG(LogVigilCombat, Verbose,
             TEXT("VigilTimeline|t=%.3f|%s|FPVis|local=%d|hidden=%d"),
-            GASInitTimelineNow(this), *GetName(), NewState, bHidden ? 1 : 0);
+            GASInitTimelineNow(this), *GetName(), NewState, bShouldHide ? 1 : 0);
     }
 }
 
