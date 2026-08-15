@@ -142,18 +142,16 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     GetCharacterMovement()->MaxWalkSpeed              = 500.f;  // Overwritten by WalkSpeed in BeginPlay
     GetCharacterMovement()->JumpZVelocity             = 700.f;
 
-    // Weapon mesh — socketed to the right-hand grip so it follows the character's
-    // animations (reload, fire, idle sway) instead of being locked to the camera.
-    // HandGrip_R is authored on SKM_Manny_Simple's hand_r bone; per-weapon grip
-    // alignment comes from WeaponData MeshOffset/Rotation/Scale in RefreshWeaponVisuals.
+    // DEPRECATED / RETIRED — the native "WeaponMesh" subobject. It is no longer driven by
+    // any code (all runtime work moved to FPWeaponMesh, created below). It is still created
+    // here only so the WeaponMeshComponent UPROPERTY it backs keeps a valid layout for the
+    // BP-derived class that carries the pointer-redirect onto the ghost "UWeaponMesh";
+    // NeutralizeDuplicateWeaponMesh hides both this and the ghost at runtime so neither
+    // renders. Do NOT re-wire this into equip/pose/visibility — see the header.
     WeaponMeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("WeaponMesh"));
     WeaponMeshComponent->SetupAttachment(GetMesh(), TEXT("HandGrip_R"));
     WeaponMeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-    WeaponMeshComponent->SetOnlyOwnerSee(true);  // Only the local player sees their own weapon
-    // Render the FP gun through the camera's first-person FOV path (UE 5.8), same as the
-    // arms below — its own FOV + compressed depth range keep the muzzle off the near plane.
-    // Owner-only visibility already scopes this to the local view; remote players see the
-    // separate ThirdPersonWeaponMesh, which is left as an ordinary world-space primitive.
+    WeaponMeshComponent->SetOnlyOwnerSee(true);
     WeaponMeshComponent->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
 
     // First-person arms — a skeletal mesh parented to the CAMERA (classic assembly),
@@ -185,7 +183,26 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     // the live instance in EnforceFirstPersonCameraMount (PostInitializeComponents) because
     // the BP's serialized hierarchy can override a constructor-only attach (the banked trap).
 
-    // Third-person weapon — the mirror of WeaponMeshComponent for OTHER players. Rides
+    // First-person weapon — the ONE honest gun, BORN on the hand. A child of the arms mesh
+    // at FPWeaponGripSocket, so it rides the animated hand by construction: no runtime
+    // re-parent and — crucially — no Blueprint pointer-redirect can move it, because
+    // "FPWeaponMesh" is a brand-new name with ZERO legacy serialization (the redirect that
+    // hijacked WeaponMeshComponent onto the ghost "UWeaponMesh" cannot bind a name the BP
+    // never serialized). This constructor SetupAttachment is safe for that same reason — the
+    // attach-cycle trap only bites names the BP already has a serialized hierarchy for.
+    // Owner-only + FirstPerson-flagged, exactly like the arms it rides; no collision, no
+    // shadow (the TP body/weapon carry the world silhouette). FPWeaponGripSocket's inline
+    // default (HandGrip_R) is already in place here; if the assigned arms mesh lacks the
+    // socket the attach falls back to the mesh root and ApplyWeaponAttachment corrects it.
+    FPWeaponMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FPWeaponMesh"));
+    FPWeaponMesh->SetupAttachment(FirstPersonArmsMesh, FPWeaponGripSocket);
+    FPWeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    FPWeaponMesh->SetOnlyOwnerSee(true);
+    FPWeaponMesh->CastShadow = false;
+    FPWeaponMesh->bCastHiddenShadow = false;
+    FPWeaponMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
+
+    // Third-person weapon — the mirror of FPWeaponMesh for OTHER players. Rides
     // the third-person body's hand socket so a remote pawn shows the gun in Manny's hand.
     // OwnerNoSee is the exact complement of the FP weapon's OnlyOwnerSee: the local player
     // sees only their camera-mounted gun, everyone else sees only this one. Casts a shadow
@@ -466,9 +483,9 @@ void AGothicPlayerCharacter::UpdateFirstPersonVisibility()
     const bool bLocal = IsLocallyControlled();
     const bool bShouldHide = !bLocal;
 
-    if (WeaponMeshComponent)
+    if (FPWeaponMesh)
     {
-        WeaponMeshComponent->SetHiddenInGame(bShouldHide);
+        FPWeaponMesh->SetHiddenInGame(bShouldHide);
     }
     if (FirstPersonArmsMesh)
     {
@@ -2029,9 +2046,9 @@ void AGothicPlayerCharacter::PostInitializeComponents()
     // before BeginPlay's RefreshWeaponVisuals / arms-pose work reads the camera.
     EnforceFirstPersonCameraMount();
 
-    // Resolve the WeaponMesh-vs-UWeaponMesh duplication now that the BP hierarchy (and the
-    // pointer redirect) has serialized: hide whichever weapon-mesh component the pointer does
-    // NOT resolve to, so only ONE owner gun renders. See NeutralizeDuplicateWeaponMesh.
+    // Hide the two RETIRED legacy guns ("UWeaponMesh" ghost + native "WeaponMesh") now that
+    // the BP hierarchy (and the pointer redirect) has serialized, so only the hand-born
+    // FPWeaponMesh renders. See NeutralizeDuplicateWeaponMesh.
     NeutralizeDuplicateWeaponMesh();
 
     // Earliest deterministic pass at the FP-mesh visibility gate. On a remote proxy
@@ -2043,6 +2060,27 @@ void AGothicPlayerCharacter::PostInitializeComponents()
     // NO tick prerequisite. #90 forced the arms to tick after the TP body they CopyPose'd
     // from; the classic assembly does not CopyPose (AnimClass = None), so that source
     // dependency no longer exists and pinning the tick order would be dead weight.
+}
+
+void AGothicPlayerCharacter::OnConstruction(const FTransform& Transform)
+{
+    Super::OnConstruction(Transform);
+
+    // Editor-only design-time preview: put PreviewWeaponMesh in the hand so the BP editor
+    // viewport shows a gun at design time. Gated on a NON-GAME world (IsGameWorld() is false
+    // for the editor/preview worlds OnConstruction runs in when a BP is edited, true in
+    // PIE/standalone/dedicated) — this is the "no runtime weapon is active" gate: at real
+    // spawn the equip flow (RefreshWeaponVisuals) owns FPWeaponMesh's mesh and an in-game
+    // empty slot clears it to null, never back to this preview. NO hardcoded asset path;
+    // PreviewWeaponMesh is assigned on BP_GothicPlayerCharacter or left null (renders nothing).
+    const UWorld* World = GetWorld();
+    if (PreviewWeaponMesh && FPWeaponMesh && (World == nullptr || !World->IsGameWorld()))
+    {
+        FPWeaponMesh->SetStaticMesh(PreviewWeaponMesh);
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|FPGun|PREVIEW|mesh=%s"),
+            GASInitTimelineNow(this), *GetName(), *PreviewWeaponMesh->GetName());
+    }
 }
 
 void AGothicPlayerCharacter::EnforceFirstPersonCameraMount()
@@ -4085,60 +4123,57 @@ void AGothicPlayerCharacter::OnEquipmentChanged(EGothicEquipSlot Slot, const FGo
 
 void AGothicPlayerCharacter::ApplyWeaponAttachment(const UGothicWeaponData* WeaponData)
 {
-    if (!WeaponMeshComponent)
+    if (!FPWeaponMesh)
     {
         return;
     }
 
-    // The classic single-node assembly (this rebuild): the arms are a camera child seated at
-    // ArmsOffset, so they track the reticle rigidly, and the gun must ride THOSE arms so it is
-    // rigid by construction — a child of a camera-glued hand cannot drift off the crosshair.
-    // The gate is deliberately mesh-only: the old gate additionally required an anim class
-    //     && FirstPersonArmsMesh->GetAnimClass() != nullptr;
-    // which the classic path can never satisfy (AnimClass is deliberately None for single-node
-    // playback), so the hand-mount never engaged and the gun fell through to the camera/body
-    // mount — the "assets on a curve" defect. Accept the classic path: a SkeletalMesh asset is
-    // assigned AND the grip socket exists. No anim class needed — the arms move as one rigid
-    // camera child whether the pose is single-node, ref-pose, or ABP-driven.
+    // The gun is BORN on the hand (constructor SetupAttachment onto FirstPersonArmsMesh @
+    // FPWeaponGripSocket), so in the normal path this call only RE-ASSERTS that seat and
+    // stamps the per-weapon grip transform on a swap — it is idempotent, not a re-parent
+    // from scratch. The arms are a camera child seated at ArmsOffset, so the whole
+    // arms+gun assembly tracks the reticle rigidly by construction. Gate is mesh-only: a
+    // SkeletalMesh asset is assigned AND the grip socket exists (no anim class needed — the
+    // arms move as one rigid camera child whether single-node, ref-pose, or ABP-driven).
     const bool bArmsValid =
         FirstPersonArmsMesh != nullptr
         && FirstPersonArmsMesh->GetSkeletalMeshAsset() != nullptr;
 
-    // Only the local player gets a first-person mount (arms grip or camera). A simulated proxy
-    // has no meaningful camera of its own; it shows the gun through ThirdPersonWeaponMesh and
-    // keeps WeaponMeshComponent on the body hand (hidden by SetOnlyOwnerSee) as a harmless
-    // fallback.
+    // Only the local player has a meaningful first-person mount. A simulated proxy shows the
+    // gun through ThirdPersonWeaponMesh; FPWeaponMesh is OnlyOwnerSee so it renders nothing on
+    // a proxy's machine regardless of where it hangs — the body-hand fallback below is purely
+    // to keep it out of the way.
     if (IsLocallyControlled() && FirstPersonCamera != nullptr)
     {
         if (bArmsValid && FirstPersonArmsMesh->DoesSocketExist(FPWeaponGripSocket))
         {
-            // Glue the gun to the camera-glued arms. WeaponData->MeshOffset/MeshRotation were
+            // Re-assert the born-on-hand seat. WeaponData->MeshOffset/MeshRotation were
             // authored to seat the mesh inside a hand grip — exactly this socket's frame — so
             // the same values that align the third-person hand mount apply here.
-            WeaponMeshComponent->AttachToComponent(
+            FPWeaponMesh->AttachToComponent(
                 FirstPersonArmsMesh,
                 FAttachmentTransformRules::SnapToTargetNotIncludingScale,
                 FPWeaponGripSocket);
 
             if (WeaponData)
             {
-                WeaponMeshComponent->SetRelativeLocation(WeaponData->MeshOffset);
-                WeaponMeshComponent->SetRelativeRotation(WeaponData->MeshRotation);
+                FPWeaponMesh->SetRelativeLocation(WeaponData->MeshOffset);
+                FPWeaponMesh->SetRelativeRotation(WeaponData->MeshRotation);
             }
 
             WeaponMountState = EFPWeaponMount::ArmsSocket;
             UE_LOG(LogVigilCombat, Log,
-                TEXT("VigilTimeline|t=%.3f|%s|FPGun|MOUNT|parent=%s|socket=%s|mount=ArmsSocket"),
+                TEXT("VigilTimeline|t=%.3f|%s|FPGun|MOUNT|comp=FPWeaponMesh|parent=%s|socket=%s|mount=ArmsSocket"),
                 GASInitTimelineNow(this), *GetName(),
-                *GetNameSafe(WeaponMeshComponent->GetAttachParent()), *FPWeaponGripSocket.ToString());
+                *GetNameSafe(FPWeaponMesh->GetAttachParent()), *FPWeaponGripSocket.ToString());
             return;
         }
 
         if (bArmsValid)
         {
-            // Arms mesh assigned but the grip socket is missing — mounting to the mesh root
-            // would stack the gun at the origin. Fall back to the legacy camera mount so the
-            // player still sees a usable weapon, and say so once.
+            // Arms mesh assigned but the grip socket is missing — the born seat resolved to the
+            // mesh root, stacking the gun at the arms origin. Fall back to the camera mount so
+            // the player still sees a usable weapon, and say so once.
             UE_LOG(LogVigilCombat, Warning,
                 TEXT("VigilTimeline|t=%.3f|%s|FPWeaponMount|socket-missing|socket=%s|mesh=%s|fallback=camera"),
                 GASInitTimelineNow(this), *GetName(), *FPWeaponGripSocket.ToString(),
@@ -4148,20 +4183,23 @@ void AGothicPlayerCharacter::ApplyWeaponAttachment(const UGothicWeaponData* Weap
 
         if (bArmsValid || bAttachWeaponToCamera)
         {
-            // Legacy camera mount: no arms mesh assigned yet (before the editor pass), or the
-            // socket-missing fallback above (forced regardless of the flag — camera is the
-            // fallback for an arms mesh that cannot expose a grip).
-            WeaponMeshComponent->AttachToComponent(
+            // Camera fallback. RETAINED (author's call, per brief item 3) for two cases the
+            // born-on-hand seat cannot serve on its own: (a) no arms mesh assigned yet — the
+            // pre-editor-pass window, where the gun would otherwise sit invisibly at the empty
+            // arms component's origin — and (b) the socket-missing case above. In both the gun
+            // re-parents to the camera at CameraWeaponOffset so it stays visible and usable; the
+            // camera-space pose write in UpdateFirstPersonWeaponPose engages only in THIS state.
+            FPWeaponMesh->AttachToComponent(
                 FirstPersonCamera, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
 
-            WeaponMeshComponent->SetRelativeLocation(CameraWeaponOffset);
-            WeaponMeshComponent->SetRelativeRotation(CameraWeaponRotation);
+            FPWeaponMesh->SetRelativeLocation(CameraWeaponOffset);
+            FPWeaponMesh->SetRelativeRotation(CameraWeaponRotation);
 
             WeaponMountState = EFPWeaponMount::Camera;
             UE_LOG(LogVigilCombat, Log,
-                TEXT("VigilTimeline|t=%.3f|%s|FPGun|MOUNT|parent=%s|socket=none|mount=Camera"),
+                TEXT("VigilTimeline|t=%.3f|%s|FPGun|MOUNT|comp=FPWeaponMesh|parent=%s|socket=none|mount=Camera"),
                 GASInitTimelineNow(this), *GetName(),
-                *GetNameSafe(WeaponMeshComponent->GetAttachParent()));
+                *GetNameSafe(FPWeaponMesh->GetAttachParent()));
             return;
         }
         // else: local, no arms mesh, and bAttachWeaponToCamera explicitly turned off — the
@@ -4170,37 +4208,38 @@ void AGothicPlayerCharacter::ApplyWeaponAttachment(const UGothicWeaponData* Weap
 
     if (GetMesh())
     {
-        WeaponMeshComponent->AttachToComponent(
+        FPWeaponMesh->AttachToComponent(
             GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, TEXT("HandGrip_R"));
 
         if (WeaponData)
         {
-            WeaponMeshComponent->SetRelativeLocation(WeaponData->MeshOffset);
-            WeaponMeshComponent->SetRelativeRotation(WeaponData->MeshRotation);
+            FPWeaponMesh->SetRelativeLocation(WeaponData->MeshOffset);
+            FPWeaponMesh->SetRelativeRotation(WeaponData->MeshRotation);
         }
 
         WeaponMountState = EFPWeaponMount::BodyHand;
         UE_LOG(LogVigilCombat, Log,
-            TEXT("VigilTimeline|t=%.3f|%s|FPGun|MOUNT|parent=%s|socket=HandGrip_R|mount=BodyHand"),
-            GASInitTimelineNow(this), *GetName(), *GetNameSafe(WeaponMeshComponent->GetAttachParent()));
+            TEXT("VigilTimeline|t=%.3f|%s|FPGun|MOUNT|comp=FPWeaponMesh|parent=%s|socket=HandGrip_R|mount=BodyHand"),
+            GASInitTimelineNow(this), *GetName(), *GetNameSafe(FPWeaponMesh->GetAttachParent()));
     }
 }
 
 void AGothicPlayerCharacter::NeutralizeDuplicateWeaponMesh()
 {
-    // Resolve the WeaponMesh-vs-UWeaponMesh duplication. The C++ WeaponMeshComponent pointer is
-    // Blueprint-redirected onto the BP component "UWeaponMesh" (the pointer-bound gun that all
-    // equip/mirror/pose code drives), which leaves the constructor-created native "WeaponMesh"
-    // subobject as an orphan the pointer no longer references — the second owner-only gun that
-    // rides the third-person hand animation ("assets on a curve"). The orphan is undeletable
-    // (banked trap), so hide it in place. Found DEFENSIVELY by name: neutralize any weapon-mesh
-    // component that is NOT the pointer-bound one (and not the third-person mirror), so this is
-    // correct regardless of which way the redirect landed.
+    // Retire BOTH legacy first-person guns now that FPWeaponMesh is the real one. The two
+    // dead components are the BP ghost "UWeaponMesh" (the WeaponMeshComponent pointer's
+    // redirect target, camera-parented and undeletable) and the native constructor subobject
+    // "WeaponMesh" — each would otherwise render a second owner-only gun. Neither is deletable
+    // (banked trap / BP-serialized redirect), so both are hidden in place. Found by name;
+    // FPWeaponMesh and ThirdPersonWeaponMesh are skipped by pointer so the two LIVE guns are
+    // never touched (name skip alone would be enough — FPWeaponMesh/ThirdPersonWeaponMesh do
+    // not match the retired names — but the pointer skip makes the intent explicit).
     TArray<UStaticMeshComponent*> MeshComps;
     GetComponents<UStaticMeshComponent>(MeshComps);
+    TArray<FString> Neutralized;
     for (UStaticMeshComponent* Comp : MeshComps)
     {
-        if (!Comp || Comp == WeaponMeshComponent || Comp == ThirdPersonWeaponMesh)
+        if (!Comp || Comp == FPWeaponMesh || Comp == ThirdPersonWeaponMesh)
         {
             continue;
         }
@@ -4210,11 +4249,14 @@ void AGothicPlayerCharacter::NeutralizeDuplicateWeaponMesh()
         {
             Comp->SetHiddenInGame(true);
             Comp->SetVisibility(false);
-            UE_LOG(LogVigilCombat, Log,
-                TEXT("VigilTimeline|t=%.3f|%s|FPGun|DEDUPE|neutralized=%s|kept=%s"),
-                GASInitTimelineNow(this), *GetName(), *CompName, *GetNameSafe(WeaponMeshComponent));
+            Neutralized.Add(CompName);
         }
     }
+
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("VigilTimeline|t=%.3f|%s|FPGun|DEDUPE|neutralized=[%s]|kept=%s"),
+        GASInitTimelineNow(this), *GetName(),
+        *FString::Join(Neutralized, TEXT(",")), *GetNameSafe(FPWeaponMesh));
 }
 
 void AGothicPlayerCharacter::AddWeaponFireKick()
@@ -4255,7 +4297,7 @@ void AGothicPlayerCharacter::AddWeaponFireKick()
 
 void AGothicPlayerCharacter::UpdateFirstPersonWeaponPose(float DeltaTime)
 {
-    if (!WeaponMeshComponent || !bAttachWeaponToCamera || !FirstPersonCamera)
+    if (!FPWeaponMesh || !bAttachWeaponToCamera || !FirstPersonCamera)
     {
         return;
     }
@@ -4292,8 +4334,8 @@ void AGothicPlayerCharacter::UpdateFirstPersonWeaponPose(float DeltaTime)
     // write below carries the whole arms+gun assembly through sprint/kick in that mode.
     if (WeaponMountState == EFPWeaponMount::Camera)
     {
-        WeaponMeshComponent->SetRelativeLocation(TargetLocation);
-        WeaponMeshComponent->SetRelativeRotation((KickQ * SprintQ * BaseQ).Rotator());
+        FPWeaponMesh->SetRelativeLocation(TargetLocation);
+        FPWeaponMesh->SetRelativeRotation((KickQ * SprintQ * BaseQ).Rotator());
     }
 
     // The arms sway/kick write. In the classic assembly the arms ARE camera-parented, so
@@ -4319,22 +4361,22 @@ void AGothicPlayerCharacter::UpdateFirstPersonWeaponPose(float DeltaTime)
 
 void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
 {
-    if (!WeaponMeshComponent || !WeaponSlots.IsValidIndex(SlotIndex))
+    if (!FPWeaponMesh || !WeaponSlots.IsValidIndex(SlotIndex))
     {
         // This is where a missing gun goes quiet: an early return here leaves the last
         // mesh (or none) on screen with no other symptom. Name which guard tripped.
         UE_LOG(LogVigilCombat, Verbose,
             TEXT("VigilTimeline|t=%.3f|%s|WeaponVisuals|SKIPPED|slot=%d|reason=%s"),
             GASInitTimelineNow(this), *GetName(), SlotIndex,
-            !WeaponMeshComponent ? TEXT("null-WeaponMeshComponent") : TEXT("invalid-slot-index"));
+            !FPWeaponMesh ? TEXT("null-FPWeaponMesh") : TEXT("invalid-slot-index"));
         return;
     }
 
     const UGothicWeaponData* WeaponData = WeaponSlots[SlotIndex].WeaponData;
     if (WeaponData)
     {
-        WeaponMeshComponent->SetStaticMesh(WeaponData->WeaponMesh);
-        WeaponMeshComponent->SetRelativeScale3D(WeaponData->MeshScale);
+        FPWeaponMesh->SetStaticMesh(WeaponData->WeaponMesh);
+        FPWeaponMesh->SetRelativeScale3D(WeaponData->MeshScale);
 
         // Mirror the same mesh onto the third-person hand mount so OTHER players see the
         // gun in Manny's hand. Owner-hidden by the ctor's SetOwnerNoSee; grip alignment is
@@ -4369,7 +4411,7 @@ void AGothicPlayerCharacter::RefreshWeaponVisuals(int32 SlotIndex)
     }
     else
     {
-        WeaponMeshComponent->SetStaticMesh(nullptr);
+        FPWeaponMesh->SetStaticMesh(nullptr);
         if (ThirdPersonWeaponMesh)
         {
             ThirdPersonWeaponMesh->SetStaticMesh(nullptr);
