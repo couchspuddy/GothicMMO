@@ -72,16 +72,13 @@ public:
     virtual void Tick(float DeltaTime) override;
 
     /**
-     * Enforce the first-person camera mount AFTER the Blueprint's serialized component
-     * hierarchy has been applied but BEFORE BeginPlay. This is the load-bearing seam for
-     * the FP eye: the constructor CANNOT attach the camera to the FP arms' head bone,
-     * because BP_GothicPlayerCharacter's serialized SCS still parents FirstPersonArms as a
-     * DESCENDANT of FirstPersonCamera (legacy assembly), so a constructor attach cycles the
-     * CDO graph and the engine silently refuses it ("would create a cycle") — leaving the
-     * eye on the capsule at the stale SCS seat with the wrong FOV, no warning fired. Runtime
-     * re-parenting on the live instance does not cycle once the arms are first re-seated
-     * under the body mesh, so the whole chain is (re)built here from scratch. See
-     * EnforceFirstPersonCameraMount.
+     * Enforce the classic first-person assembly AFTER the Blueprint's serialized component
+     * hierarchy has been applied but BEFORE BeginPlay. The BP's serialized SCS can fight a
+     * constructor-only attach (the banked trap), so the chain — camera->capsule, then
+     * arms->camera at the ArmsOffset/ArmsRotation seat — is (re)built deterministically on
+     * the live instance here, each attach result checked and logged. Running before
+     * BeginPlay guarantees the eye and arms are seated before BeginPlay's RefreshWeaponVisuals
+     * and arms-pose work read the camera. See EnforceFirstPersonCameraMount.
      */
     virtual void PostInitializeComponents() override;
 
@@ -196,19 +193,18 @@ public:
     // -------------------------------------------------------------------------
 
     /**
-     * LEGACY / INERT for the shipped path. This was the arms' camera-space placement
-     * back when FirstPersonArmsMesh hung off FirstPersonCamera. The arms are now
-     * parented to the capsule and seated coincident with the TP body (see the
-     * constructor and BeginPlay), so this value is no longer read for placement on the
-     * ABP path and its per-frame use is gated to a camera-parented fallback the shipped
-     * assembly never takes. A BP CDO override of it (the old -20,0,-165) is therefore
-     * harmless. Kept declared so the gated fallback and any BP references still resolve. */
+     * ACTIVE placement for the classic assembly. FirstPersonArmsMesh is a CHILD of
+     * FirstPersonCamera, so this is the arms' camera-relative resting seat: +X forward,
+     * +Y right, +Z up. Applied in EnforceFirstPersonCameraMount (pre-BeginPlay) and again
+     * in BeginPlay so a BP CDO override lands, and reconstituted every frame as the base of
+     * UpdateFirstPersonWeaponPose's arms write (ArmsOffset + sprint/kick delta). BP carries
+     * (-20,0,-165); that is the starting point for the framing/alignment tuning pass. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
-    FVector ArmsOffset = FVector(20.f, 0.f, -25.f);
+    FVector ArmsOffset = FVector(-20.f, 0.f, -165.f);
 
-    /** LEGACY / INERT for the shipped path — the camera-space arms orientation. See
-     *  ArmsOffset: the capsule-coincident constructor transform (yaw -90) is the real
-     *  placement now, and any BP override here is inert. */
+    /** ACTIVE — the arms' camera-relative orientation. Yaw -90 faces the mesh down +X
+     *  (the same convention the TP body uses). Base of the arms-write rotation compose in
+     *  UpdateFirstPersonWeaponPose (KickQ * SprintQ * ArmsRotation.Quaternion()). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
     FRotator ArmsRotation = FRotator(0.f, -90.f, 0.f);
 
@@ -230,11 +226,11 @@ public:
 
     /**
      * Bone hidden on the first-person arms mesh so the owner never sees their own
-     * head/neck in front of the camera. Belt-and-braces: the warp rig (CtrlRig_FPWarp)
-     * is meant to keep the head out of frame, but a rig fault, a wrong retarget, or the
-     * single-node fallback could still put it there. Hidden in BeginPlay after the mesh
-     * initializes, on BOTH the ABP and single-node paths. NAME_None disables the hide.
-     * Applied via HideBoneByName, which is a safe no-op when the bone does not exist.
+     * head/neck in front of the camera. With the arms parented to the camera and seated
+     * low-forward of it (ArmsOffset), a full-body mesh's head/neck sits just behind the
+     * near plane and can clip the frame edges — so the hide is still wanted. Hidden in
+     * BeginPlay after the mesh initializes. NAME_None disables the hide. Applied via
+     * HideBoneByName, which is a safe no-op when the bone does not exist.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson")
     FName FPHeadBoneToHide = TEXT("head");
@@ -252,31 +248,32 @@ public:
     FName FPWeaponGripSocket = TEXT("HandGrip_R");
 
     // -------------------------------------------------------------------------
-    // First-person camera mount
+    // First-person camera mount (classic assembly)
     //
-    // The FP camera is parented (in EnforceFirstPersonCameraMount, from
-    // PostInitializeComponents — NOT the constructor, where the attach cycles the CDO graph)
-    // to the FP arms mesh's head bone, so the eye rides the exact point CtrlRig_FPWarp pins
-    // the head at while it warps the body out of the eye line. bUsePawnControlRotation still
-    // owns look direction — only position comes from the head. Every number here is
-    // EditDefaultsOnly so the template's
-    // ground truth (if the FP feature pack is ever re-added) can correct it as DATA, not code.
+    // The FP camera is parented to the CAPSULE at the historical eye seat
+    // (X=20, Z=170-CapsuleHalfHeight), enforced in EnforceFirstPersonCameraMount from
+    // PostInitializeComponents. bUsePawnControlRotation owns look direction, so the eye
+    // yaws/pitches rigidly with the reticle and the arms (a camera child) track it by
+    // construction. NO bone, NO socket, NO warp rig — the classic assembly chosen for
+    // rigidity/feel after the true-FP warp-rig approach (PRs #85-#90) proved unfixable
+    // without the never-imported FP template character.
     // -------------------------------------------------------------------------
 
     /**
-     * Bone/socket on the FP arms mesh the camera mounts to. "head" is a bone on
-     * SKM_Manny_Simple; AttachToComponent accepts a bone name or a socket name equally.
-     * If the assigned mesh lacks it, EnforceFirstPersonCameraMount falls the camera back to a
-     * capsule seat (one LogVigilCombat Warning) rather than leaving the eye at the component origin.
+     * LEGACY / INERT. Bone/socket the FP camera mounted to during the warp-rig era
+     * (#85-#90), when the eye rode the FP arms' head bone. The classic assembly seats the
+     * camera on the CAPSULE instead (EnforceFirstPersonCameraMount no longer reads this),
+     * so it is no longer used. Kept declared, and any BP CDO override of it is harmless, so
+     * an existing BP reference still resolves; do not re-wire it into the camera mount.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson")
     FName CameraAttachSocket = TEXT("head");
 
     /**
-     * Camera offset relative to the head bone: +X forward, +Y right, +Z up. A small
-     * forward push keeps the near plane clear of the face/skull interior. Reasoned
-     * default (no template ground truth was imported) — expect to tune this once against
-     * the real assembly; if the rig-pinned head reads as juddering, this is the knob.
+     * LEGACY / INERT. Camera offset relative to the head bone in the warp-rig era. Dead
+     * with CameraAttachSocket — the classic assembly's eye seat is the capsule-relative
+     * (20,0,170-halfheight) in EnforceFirstPersonCameraMount, not a head-bone offset. Kept
+     * declared only so a BP CDO reference still resolves.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson")
     FVector CameraHeadOffset = FVector(10.f, 0.f, 0.f);
@@ -1098,9 +1095,10 @@ protected:
     // Defaults to Camera so the legacy pose write is the pre-attachment behavior.
     EFPWeaponMount WeaponMountState = EFPWeaponMount::Camera;
 
-    // First-person arms — skeletal mesh parented to the CAPSULE, seated coincident with
-    // the TP body (feet on floor), owner-only-see; the warp rig frames the arms from the
-    // eye camera. See the constructor for the FP-template-true rationale.
+    // First-person arms — skeletal mesh parented to the CAMERA (classic assembly), seated at
+    // the camera-relative ArmsOffset/ArmsRotation, owner-only-see. As a camera child it
+    // inherits view yaw AND pitch rigidly, so the arms/gun track the reticle by construction.
+    // See the constructor.
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
     TObjectPtr<USkeletalMeshComponent> FirstPersonArmsMesh;
 
@@ -1228,12 +1226,11 @@ protected:
 
     /**
      * LEGACY / INERT. Bone on the THIRD-PERSON body the camera used to ride, back
-     * when the FP eye was a TP-body-bone anchor (AnchorCameraToBone). SUPERSEDED by
-     * the FP arms head-bone mount (CameraAttachSocket, below): the camera is now
-     * parented to FirstPersonArmsMesh's head in the constructor and AnchorCameraToBone
-     * is no longer called. Defaulted to NAME_None so the dead function is a hard no-op
-     * even if re-invoked; kept declared only so an existing BP CDO reference still
-     * resolves. Do not rely on this — set CameraHeadOffset for eye tuning instead.
+     * when the FP eye was a TP-body-bone anchor (AnchorCameraToBone). Dead in the classic
+     * assembly: the camera is parented to the CAPSULE at the historical eye seat
+     * (EnforceFirstPersonCameraMount) and AnchorCameraToBone is no longer called. Defaulted
+     * to NAME_None so the dead function is a hard no-op even if re-invoked; kept declared only
+     * so an existing BP CDO reference still resolves. Do not rely on this.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Camera")
     FName CameraAttachBoneName = NAME_None;
@@ -1827,20 +1824,18 @@ private:
     void AnchorCameraToBone();
 
     /**
-     * Build the FP camera mount deterministically on the live instance, in order:
-     *   1. Re-seat FirstPersonArmsMesh under the TP body mesh (GetMesh()) at an IDENTITY
-     *      relative transform. This breaks any stale serialized parentage — the BP SCS has
-     *      the arms hanging off the camera — so the camera is guaranteed NOT to be an
-     *      ancestor of the arms before step 2, and CopyPoseFromMesh's identity-space
-     *      requirement (see the constructor) is restored.
-     *   2. Attach FirstPersonCamera to the arms' head bone (CameraAttachSocket) and offset
-     *      it by CameraHeadOffset. AttachToComponent's bool result is checked; if the head
-     *      bone is absent or the attach is refused, the camera falls back to a stable capsule
-     *      seat and ONE LogVigilCombat Warning fires.
+     * Build the classic FP assembly deterministically on the live instance, in order:
+     *   1. Attach FirstPersonCamera to the CAPSULE at the historical eye seat
+     *      (X=20, Z=170-CapsuleHalfHeight). Camera FIRST, so any stale warp-era
+     *      camera-under-arms parentage is broken before step 2 re-seats the arms — no cycle.
+     *   2. Attach FirstPersonArmsMesh to FirstPersonCamera at ArmsOffset/ArmsRotation. As a
+     *      camera child the arms inherit view yaw AND pitch rigidly.
      *   3. Push FirstPersonFOV onto the FP-primitive render path.
-     * Every non-success path logs an FPCamera|MOUNT Warning with its reason — silence must
-     * never again read as success (the whole bug this PR closes). Idempotent; called from
-     * PostInitializeComponents.
+     * Each AttachToComponent bool result is checked and every path logs an FPCamera|MOUNT
+     * line (result=success/refused) with the new parent values — silence must never read as
+     * success (the census pattern the warp-era enforcement paid for). Idempotent; called from
+     * PostInitializeComponents. The BP's serialized hierarchy can fight a constructor-only
+     * attach, so this runtime enforcement is load-bearing.
      */
     void EnforceFirstPersonCameraMount();
 
