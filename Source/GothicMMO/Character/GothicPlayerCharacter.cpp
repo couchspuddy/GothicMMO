@@ -102,17 +102,27 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
         ECC_GameTraceChannel2 /*ArenaBlock*/, ECR_Block);
 
     FirstPersonCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FirstPersonCamera"));
-    // Parent the FP camera to the FP ARMS MESH's head bone, so the eye rides the exact
-    // point CtrlRig_FPWarp pins the head at (Ctrl_Head, an authored fixed component-space
-    // eye point) while the rig FABRIK-warps the spine out of the eye line. This is the
-    // FP-template-true assembly — the template's camera hangs off its arms' head socket —
-    // and it makes the view an actual eye point rather than a capsule-relative guess.
-    // The attachment itself is DEFERRED to just after FirstPersonArmsMesh is created below,
-    // because that component does not exist yet at this line. bUsePawnControlRotation still
-    // drives the look direction; only POSITION comes from the rig-stabilized head, so the
-    // head bone's own animated rotation never reaches the view. A BeginPlay guard falls the
-    // camera back to a capsule seat if the arms mesh/head bone is missing (never at origin).
+    // Seat the FP camera on the CAPSULE at a safe legacy eye height here, and NOTHING more.
+    // The real mount — parenting the eye to the FP arms' head bone so it rides the exact
+    // point CtrlRig_FPWarp pins the head at (Ctrl_Head) while the rig FABRIK-warps the spine
+    // out of the eye line — is the FP-template-true assembly, but it CANNOT be built at
+    // construct time: BP_GothicPlayerCharacter's serialized SCS still parents FirstPersonArms
+    // as a DESCENDANT of this camera (legacy assembly), so a constructor
+    // FirstPersonCamera->SetupAttachment(FirstPersonArmsMesh, ...) cycles the CDO graph and
+    // the engine silently REFUSES it with "would create a cycle" — leaving the eye on the
+    // capsule at the stale SCS seat, at the wrong FOV, with zero warnings (the exact bug
+    // PR #87 hit). The chain is instead (re)built deterministically on the live instance in
+    // PostInitializeComponents -> EnforceFirstPersonCameraMount, which re-seats the arms
+    // under the body mesh first so the camera->arms attach can never cycle.
+    // bUsePawnControlRotation still owns the look direction; only POSITION comes from the
+    // rig-stabilized head, so the head bone's own animated rotation never reaches the view.
     FirstPersonCamera->bUsePawnControlRotation = true;
+    FirstPersonCamera->SetupAttachment(GetCapsuleComponent());
+    // Legacy eye seat: X=20 forward, Z = 170 - CapsuleHalfHeight (= 82 at the ACharacter
+    // default 88) — exactly where the camera sat before any head mount. This is only the
+    // pre-enforcement fallback; EnforceFirstPersonCameraMount lifts it onto the head bone.
+    FirstPersonCamera->SetRelativeLocation(
+        FVector(20.f, 0.f, 170.f - GetCapsuleComponent()->GetScaledCapsuleHalfHeight()));
 
     // First-person FOV render path (added UE 5.5, present in 5.8). With the arms + FP weapon
     // flagged FirstPersonPrimitiveType=FirstPerson (below), the camera renders them at their
@@ -192,13 +202,11 @@ AGothicPlayerCharacter::AGothicPlayerCharacter()
     // apply to them (UE 5.8). Pairs with the FP weapon flag above; the TP body is untouched.
     FirstPersonArmsMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
 
-    // Now that FirstPersonArmsMesh exists, seat the FP camera on its head bone — the eye
-    // point CtrlRig_FPWarp stabilizes (see the FirstPersonCamera block above for the full
-    // rationale). CameraAttachSocket ("head") is a bone name; SetupAttachment accepts a bone
-    // or a socket. CameraHeadOffset is a small forward push clear of the face. The BeginPlay
-    // guard reattaches to the capsule if the mesh has no asset or the bone is absent.
-    FirstPersonCamera->SetupAttachment(FirstPersonArmsMesh, CameraAttachSocket);
-    FirstPersonCamera->SetRelativeLocation(CameraHeadOffset);
+    // The FP camera is DELIBERATELY not attached to FirstPersonArmsMesh here. That attach
+    // cycles against the BP serialized hierarchy (arms-under-camera) and is refused at CDO
+    // construction; it is done instead on the live instance in EnforceFirstPersonCameraMount
+    // (PostInitializeComponents), after the arms are re-seated under the body mesh. The
+    // camera keeps the capsule seat set in its own block above until then.
 
     // Third-person weapon — the mirror of WeaponMeshComponent for OTHER players. Rides
     // the third-person body's hand socket so a remote pawn shows the gun in Manny's hand.
@@ -227,42 +235,13 @@ void AGothicPlayerCharacter::BeginPlay()
 {
     Super::BeginPlay();
 
-    // Seat and configure the first-person camera. The constructor attached it to the FP
-    // arms mesh's head bone (CameraAttachSocket) — the eye point CtrlRig_FPWarp stabilizes.
-    // That only holds once the editor pass has assigned a skeletal mesh that actually
-    // carries that bone; verify it here and fall back to a stable capsule seat otherwise, so
-    // a missing mesh/bone can never leave the eye at the component origin (feet/world zero).
+    // The FP camera mount (arms re-seat -> camera-on-head -> FP FOV) was already enforced in
+    // PostInitializeComponents -> EnforceFirstPersonCameraMount, which runs before BeginPlay
+    // and after the Blueprint's serialized hierarchy is applied. Nothing re-attaches here;
+    // BeginPlay only captures the resting world FOV, which depends on whatever the Blueprint
+    // serialized onto the camera and so is read after that has landed.
     if (FirstPersonCamera)
     {
-        const bool bHeadBoneResolves =
-            FirstPersonArmsMesh != nullptr
-            && FirstPersonArmsMesh->GetSkeletalMeshAsset() != nullptr
-            && FirstPersonArmsMesh->DoesSocketExist(CameraAttachSocket);
-
-        if (!bHeadBoneResolves)
-        {
-            // Historical eye seat: X=20 forward, Z = 170 - CapsuleHalfHeight (= 82 at the
-            // ACharacter default 88), i.e. exactly where the camera sat before the head mount.
-            const float CapsuleHalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-            FirstPersonCamera->AttachToComponent(
-                GetCapsuleComponent(), FAttachmentTransformRules::SnapToTargetNotIncludingScale);
-            FirstPersonCamera->SetRelativeLocation(FVector(20.f, 0.f, 170.f - CapsuleHalfHeight));
-
-            UE_LOG(LogVigilCombat, Warning,
-                TEXT("VigilTimeline|t=%.3f|%s|FPCamera|FALLBACK|reason=%s|seat=capsule|z=%.1f"),
-                GASInitTimelineNow(this), *GetName(),
-                (FirstPersonArmsMesh == nullptr) ? TEXT("no-arms-component")
-                    : (FirstPersonArmsMesh->GetSkeletalMeshAsset() == nullptr) ? TEXT("no-mesh-asset")
-                    : TEXT("no-head-bone"),
-                170.f - CapsuleHalfHeight);
-        }
-
-        // Push the first-person render FOV now, so a BP CDO override of FirstPersonFOV lands
-        // (the constructor set it from the member default). bEnableFirstPersonFieldOfView is
-        // already true from the constructor; re-assert it in case a BP serialized it off.
-        FirstPersonCamera->bEnableFirstPersonFieldOfView = true;
-        FirstPersonCamera->FirstPersonFieldOfView = FirstPersonFOV;
-
         // Whatever the Blueprint set is the resting FOV — read it once rather than
         // hardcoding 90 here and having the two disagree the moment someone tunes it.
         HipFieldOfView = FirstPersonCamera->FieldOfView;
@@ -2022,8 +2001,104 @@ void AGothicPlayerCharacter::UpdateReviveChannelHUD()
     }
 }
 
-// SUPERSEDED by the FP arms head-bone mount (PR: fp-camera-head-mount). The camera is now
-// parented to FirstPersonArmsMesh's head socket in the constructor with a BeginPlay fallback,
+void AGothicPlayerCharacter::PostInitializeComponents()
+{
+    Super::PostInitializeComponents();
+
+    // Build the FP camera mount on the LIVE instance, now that the Blueprint's serialized
+    // component hierarchy has been applied. Doing it here rather than in the constructor is
+    // what dodges the CDO-graph cycle (arms serialized as a descendant of the camera); doing
+    // it before BeginPlay is what guarantees the eye is correctly seated before BeginPlay's
+    // RefreshWeaponVisuals / arms-pose work reads the camera.
+    EnforceFirstPersonCameraMount();
+}
+
+void AGothicPlayerCharacter::EnforceFirstPersonCameraMount()
+{
+    if (!FirstPersonCamera)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("VigilTimeline|t=%.3f|%s|FPCamera|MOUNT|result=refused|reason=no-camera-component"),
+            GASInitTimelineNow(this), *GetName());
+        return;
+    }
+
+    USkeletalMeshComponent* Arms = FirstPersonArmsMesh;
+
+    // Step 1 — re-seat the arms under the body mesh at an IDENTITY relative transform. This
+    // deterministically breaks any stale serialized arms-under-camera parentage, so the
+    // camera is guaranteed NOT to be the arms' ancestor before step 2 (no cycle), and
+    // CopyPoseFromMesh's shared-component-space requirement (see the constructor) is restored.
+    if (Arms && GetMesh())
+    {
+        const bool bArmsReseated = Arms->AttachToComponent(
+            GetMesh(), FAttachmentTransformRules::KeepRelativeTransform);
+        Arms->SetRelativeLocationAndRotation(FVector::ZeroVector, FRotator::ZeroRotator);
+
+        if (!bArmsReseated)
+        {
+            UE_LOG(LogVigilCombat, Warning,
+                TEXT("VigilTimeline|t=%.3f|%s|FPCamera|MOUNT|step=arms-reseat|result=refused"),
+                GASInitTimelineNow(this), *GetName());
+        }
+    }
+
+    // Step 2 — mount the camera on the arms' head bone. Guard on the bone actually existing
+    // on the assigned mesh: without it AttachToComponent would silently seat the eye at the
+    // arms' component origin. On ANY miss, fall back to the capsule seat and log one Warning.
+    const bool bHeadBoneResolves =
+        Arms != nullptr
+        && Arms->GetSkeletalMeshAsset() != nullptr
+        && Arms->DoesSocketExist(CameraAttachSocket);
+
+    bool bMounted = false;
+    if (bHeadBoneResolves)
+    {
+        bMounted = FirstPersonCamera->AttachToComponent(
+            Arms, FAttachmentTransformRules::SnapToTargetNotIncludingScale, CameraAttachSocket);
+
+        if (bMounted)
+        {
+            // CameraHeadOffset is applied in the HEAD-BONE frame, which CtrlRig_FPWarp pitches
+            // ~90deg — so the (10,0,0) default forward push may act vertically against the
+            // world. That is a data knob to tune once against the real rig, not this PR's job.
+            FirstPersonCamera->SetRelativeLocation(CameraHeadOffset);
+
+            UE_LOG(LogVigilCombat, Log,
+                TEXT("VigilTimeline|t=%.3f|%s|FPCamera|MOUNT|result=success|parent=%s|socket=%s"),
+                GASInitTimelineNow(this), *GetName(),
+                *GetNameSafe(FirstPersonCamera->GetAttachParent()),
+                *CameraAttachSocket.ToString());
+        }
+    }
+
+    if (!bMounted)
+    {
+        // Stable capsule fallback — the historical eye seat (X=20, Z=170-halfheight). Never
+        // leave the eye at the component origin, and never leave the refusal silent.
+        const float CapsuleHalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+        FirstPersonCamera->AttachToComponent(
+            GetCapsuleComponent(), FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+        FirstPersonCamera->SetRelativeLocation(FVector(20.f, 0.f, 170.f - CapsuleHalfHeight));
+
+        const TCHAR* Reason =
+            (Arms == nullptr) ? TEXT("no-arms-component")
+            : (Arms->GetSkeletalMeshAsset() == nullptr) ? TEXT("no-mesh-asset")
+            : (!bHeadBoneResolves) ? TEXT("no-head-bone")
+            : TEXT("attach-refused");
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("VigilTimeline|t=%.3f|%s|FPCamera|MOUNT|result=fallback|reason=%s|seat=capsule|z=%.1f"),
+            GASInitTimelineNow(this), *GetName(), Reason, 170.f - CapsuleHalfHeight);
+    }
+
+    // Step 3 — push the first-person render FOV (this lived on the dead constructor path).
+    // Re-assert bEnableFirstPersonFieldOfView in case a BP serialized it off.
+    FirstPersonCamera->bEnableFirstPersonFieldOfView = true;
+    FirstPersonCamera->FirstPersonFieldOfView = FirstPersonFOV;
+}
+
+// SUPERSEDED by the FP arms head-bone mount. The camera is now parented to
+// FirstPersonArmsMesh's head socket by EnforceFirstPersonCameraMount (PostInitializeComponents),
 // so this legacy TP-body-bone anchor is NO LONGER CALLED (the AnchorCameraToBone() call was
 // removed from BeginPlay). Kept declared, and CameraAttachBoneName defaulted to NAME_None, so
 // the function is a hard no-op even if something re-invokes it and so any existing BP CDO
