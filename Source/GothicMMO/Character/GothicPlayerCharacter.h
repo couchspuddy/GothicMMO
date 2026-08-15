@@ -72,6 +72,20 @@ public:
     virtual void Tick(float DeltaTime) override;
 
     /**
+     * Enforce the first-person camera mount AFTER the Blueprint's serialized component
+     * hierarchy has been applied but BEFORE BeginPlay. This is the load-bearing seam for
+     * the FP eye: the constructor CANNOT attach the camera to the FP arms' head bone,
+     * because BP_GothicPlayerCharacter's serialized SCS still parents FirstPersonArms as a
+     * DESCENDANT of FirstPersonCamera (legacy assembly), so a constructor attach cycles the
+     * CDO graph and the engine silently refuses it ("would create a cycle") — leaving the
+     * eye on the capsule at the stale SCS seat with the wrong FOV, no warning fired. Runtime
+     * re-parenting on the live instance does not cycle once the arms are first re-seated
+     * under the body mesh, so the whole chain is (re)built here from scratch. See
+     * EnforceFirstPersonCameraMount.
+     */
+    virtual void PostInitializeComponents() override;
+
+    /**
      * Unbinds the HUD attribute delegates.
      *
      * This is not housekeeping — it is the fix for a reproducible respawn crash.
@@ -240,18 +254,20 @@ public:
     // -------------------------------------------------------------------------
     // First-person camera mount
     //
-    // The FP camera is parented (in the constructor) to the FP arms mesh's head bone,
-    // so the eye rides the exact point CtrlRig_FPWarp pins the head at while it warps the
-    // body out of the eye line. bUsePawnControlRotation still owns look direction — only
-    // position comes from the head. Every number here is EditDefaultsOnly so the template's
+    // The FP camera is parented (in EnforceFirstPersonCameraMount, from
+    // PostInitializeComponents — NOT the constructor, where the attach cycles the CDO graph)
+    // to the FP arms mesh's head bone, so the eye rides the exact point CtrlRig_FPWarp pins
+    // the head at while it warps the body out of the eye line. bUsePawnControlRotation still
+    // owns look direction — only position comes from the head. Every number here is
+    // EditDefaultsOnly so the template's
     // ground truth (if the FP feature pack is ever re-added) can correct it as DATA, not code.
     // -------------------------------------------------------------------------
 
     /**
      * Bone/socket on the FP arms mesh the camera mounts to. "head" is a bone on
-     * SKM_Manny_Simple; SetupAttachment accepts a bone name or a socket name equally.
-     * If the assigned mesh lacks it, BeginPlay falls the camera back to a capsule seat
-     * (one LogVigilCombat Warning) rather than leaving the eye at the component origin.
+     * SKM_Manny_Simple; AttachToComponent accepts a bone name or a socket name equally.
+     * If the assigned mesh lacks it, EnforceFirstPersonCameraMount falls the camera back to a
+     * capsule seat (one LogVigilCombat Warning) rather than leaving the eye at the component origin.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson")
     FName CameraAttachSocket = TEXT("head");
@@ -1787,6 +1803,24 @@ private:
     /** Re-parents FirstPersonCamera onto CameraAttachBoneName. No-op if the name
      *  is None or the bone does not exist. */
     void AnchorCameraToBone();
+
+    /**
+     * Build the FP camera mount deterministically on the live instance, in order:
+     *   1. Re-seat FirstPersonArmsMesh under the TP body mesh (GetMesh()) at an IDENTITY
+     *      relative transform. This breaks any stale serialized parentage — the BP SCS has
+     *      the arms hanging off the camera — so the camera is guaranteed NOT to be an
+     *      ancestor of the arms before step 2, and CopyPoseFromMesh's identity-space
+     *      requirement (see the constructor) is restored.
+     *   2. Attach FirstPersonCamera to the arms' head bone (CameraAttachSocket) and offset
+     *      it by CameraHeadOffset. AttachToComponent's bool result is checked; if the head
+     *      bone is absent or the attach is refused, the camera falls back to a stable capsule
+     *      seat and ONE LogVigilCombat Warning fires.
+     *   3. Push FirstPersonFOV onto the FP-primitive render path.
+     * Every non-success path logs an FPCamera|MOUNT Warning with its reason — silence must
+     * never again read as success (the whole bug this PR closes). Idempotent; called from
+     * PostInitializeComponents.
+     */
+    void EnforceFirstPersonCameraMount();
 
     /**
      * Runs the automatic reload triggered by ConsumeRound emptying the magazine.
