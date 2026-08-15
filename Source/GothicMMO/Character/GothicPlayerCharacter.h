@@ -747,6 +747,22 @@ public:
     const UGothicWeaponData* GetActiveWeaponData() const;
 
     /**
+     * Resolves the weapon MUZZLE world location for the fire trace's second stage
+     * (GA_Fire runs the shot muzzle -> reticle aim point -> onward). Resolution chain:
+     *   1. MuzzleSocketName socket on the authoritative weapon static mesh,
+     *   2. same socket on the mirror weapon mesh,
+     *   3. authoritative component location + MuzzleForwardOffset along its forward.
+     * Returns false when no weapon mesh is present at all — the caller then falls back
+     * to the camera origin. bPreferFirstPerson picks the authoritative component: the
+     * owner FP gun (FPWeaponMesh) when the shot resolves for the locally-viewed pawn,
+     * the third-person mirror (ThirdPersonWeaponMesh) on the server for a remote pawn
+     * where the FP mesh is hidden. Hidden static-mesh components still resolve socket
+     * transforms, so this is correct on the authoritative server path either way.
+     * OutSource names which link fired, for the Fire|TRACE telemetry line.
+     */
+    bool ResolveMuzzleLocation(bool bPreferFirstPerson, FVector& OutLocation, const TCHAR*& OutSource) const;
+
+    /**
      * Shooter-LOCAL hit-stop. Called on the owning client from the confirmed-hit
      * path (AGothicEnemyBase::MulticastOnHit) when this pawn's shot lands. Reads the
      * active weapon's bHeavyWeapon / HitStop* tunables and briefly dilates ONLY this
@@ -1124,6 +1140,21 @@ protected:
     // -------------------------------------------------------------------------
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
     TObjectPtr<UStaticMeshComponent> FPWeaponMesh;
+
+    /** Socket on the weapon static mesh the fire trace leaves from (GA_Fire's
+     *  muzzle -> reticle second stage). Default "Muzzle"; if the authored weapon
+     *  meshes carry no such socket the resolution chain falls back to the weapon
+     *  component location plus MuzzleForwardOffset, then to the camera origin. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons")
+    FName MuzzleSocketName = TEXT("Muzzle");
+
+    /** Forward distance (cm) from the weapon component origin used to synthesize a
+     *  muzzle point when NO "Muzzle" socket exists on either weapon mesh. Whitebox
+     *  placeholder — a real "Muzzle" socket authored on the weapon meshes supersedes
+     *  it and is the exact-placement follow-up for the content lane. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons",
+              meta = (ClampMin = "0.0"))
+    float MuzzleForwardOffset = 60.f;
 
     /**
      * DEPRECATED / RETIRED — never driven. The legacy first-person gun pointer,

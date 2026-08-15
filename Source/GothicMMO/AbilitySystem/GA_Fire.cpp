@@ -626,7 +626,10 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         ? FMath::VRandCone(ViewForward, FMath::DegreesToRadians(SpreadDegrees))
         : ViewForward;
 
-    const FVector Start = ViewLocation;
+    // Not const: the muzzle re-origin below (two-stage hybrid trace) rewrites Start to
+    // the gun muzzle once the camera ray has found the aim point, so telemetry and every
+    // downstream reader report the origin the bullet ACTUALLY left from.
+    FVector Start = ViewLocation;
     FVector End = Start + (AimDir * EffectiveRange);
 
     FHitResult Hit;
@@ -681,6 +684,70 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
             }
         }
     }
+
+    // ── Muzzle re-origin (two-stage hybrid trace) ────────────────────────────
+    // Everything above was STAGE ONE: the camera/reticle ray (magnetism included)
+    // establishing WHERE the player is aiming — its first blocking hit, or its end at
+    // max range on a clean miss. That point is authoritative for accuracy and must not
+    // move. STAGE TWO re-runs the actual damage trace from the gun MUZZLE, aimed THROUGH
+    // that same point and extended onward to the weapon's full range, so the shot leaves
+    // the barrel (fixing gun/reticle parallax) while the reticle stays honest by
+    // construction. See the user directive: "a line trace from the muzzle of the gun to
+    // the reticle and onward."
+    const FVector CameraAimPoint = bHit ? Hit.ImpactPoint : End;
+
+    FVector MuzzleLocation = FVector::ZeroVector;
+    const TCHAR* MuzzleSource = TEXT("camera-fallback");
+    const bool bHaveMuzzle =
+        Char->ResolveMuzzleLocation(Char->IsLocallyControlled(), MuzzleLocation, MuzzleSource);
+
+    if (bHaveMuzzle)
+    {
+        const FVector ToAim = CameraAimPoint - MuzzleLocation;
+
+        // Degenerate direction (aim point sitting on top of the muzzle) or an aim point
+        // BEHIND the muzzle — extreme close range where the barrel has already passed the
+        // target. The muzzle ray would point the wrong way, so keep the camera trace
+        // result exactly as it stands. Dot against the camera AimDir answers "is the aim
+        // point still downrange of the muzzle".
+        const bool bBehind = FVector::DotProduct(ToAim, AimDir) <= 0.f;
+
+        if (!ToAim.IsNearlyZero() && !bBehind)
+        {
+            const FVector MuzzleDir = ToAim.GetSafeNormal();
+            const FVector MuzzleEnd = MuzzleLocation + (MuzzleDir * EffectiveRange);
+
+            FHitResult MuzzleHit;
+            // Same ignore set as stage one — the shooter, which also covers the player's
+            // own first-person arms/weapon meshes (they are components of Char, so the
+            // ray starting AT the gun can never catch the barrel it left).
+            FCollisionQueryParams MuzzleParams;
+            MuzzleParams.AddIgnoredActor(Char);
+
+            const bool bMuzzleHit = World->LineTraceSingleByChannel(
+                MuzzleHit, MuzzleLocation, MuzzleEnd, ECC_Weapon, MuzzleParams);
+
+            // Adopt the muzzle trace as the authoritative shot; Start/AimDir/End follow so
+            // adjudication, point-blank recovery, and telemetry all read the true origin.
+            Hit         = MuzzleHit;
+            bHit        = bMuzzleHit;
+            Start       = MuzzleLocation;
+            AimDir      = MuzzleDir;
+            End         = MuzzleEnd;
+            OriginSource = MuzzleSource;
+        }
+        else
+        {
+            // Close-range fallback: shot keeps the camera trace result.
+            OriginSource = TEXT("camera-closerange");
+        }
+    }
+
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|t=%.3f|%s|Fire|TRACE|origin=%s|muzzle=%s|aimPoint=%s|range=%.0f"),
+        World->GetTimeSeconds(), *GetNameSafe(Char), OriginSource,
+        bHaveMuzzle ? *MuzzleLocation.ToCompactString() : TEXT("none"),
+        *CameraAimPoint.ToCompactString(), EffectiveRange);
 
     // ── Fire telemetry ───────────────────────────────────────────────────────
     // Exactly one line per fire resolution, miss included, on every path out of

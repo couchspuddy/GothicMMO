@@ -2827,6 +2827,59 @@ const UGothicWeaponData* AGothicPlayerCharacter::GetActiveWeaponData() const
     return nullptr;
 }
 
+bool AGothicPlayerCharacter::ResolveMuzzleLocation(
+    bool bPreferFirstPerson, FVector& OutLocation, const TCHAR*& OutSource) const
+{
+    // Authoritative component first, mirror second. Locally-viewed pawn: the owner FP
+    // gun is the one the reticle lines up against, so it wins. Server copy of a remote
+    // pawn: the FP mesh is hidden (and points nowhere meaningful), so the third-person
+    // mirror — the gun that pawn actually presents to the world — is authoritative.
+    UStaticMeshComponent* Primary   = bPreferFirstPerson ? FPWeaponMesh : ThirdPersonWeaponMesh;
+    UStaticMeshComponent* Secondary = bPreferFirstPerson ? ThirdPersonWeaponMesh : FPWeaponMesh;
+
+    // A weapon component with an assigned mesh (an empty slot clears FPWeaponMesh's mesh
+    // to null) is required for either a socket lookup or the location fallback — a bare
+    // component with no mesh has neither a valid "Muzzle" socket nor a meaningful origin.
+    auto SocketLabel = [this](const UStaticMeshComponent* Comp) -> const TCHAR*
+    {
+        return (Comp == FPWeaponMesh) ? TEXT("fp-socket") : TEXT("tp-socket");
+    };
+
+    // Links 1 & 2 — named socket on the authoritative mesh, then the mirror. Hidden
+    // static-mesh components still resolve socket transforms, so this is valid on the
+    // server-for-remote path. Guard on DoesSocketExist because GetSocketLocation silently
+    // returns the component origin for a missing socket, which would masquerade as a hit.
+    if (Primary && Primary->GetStaticMesh() && Primary->DoesSocketExist(MuzzleSocketName))
+    {
+        OutLocation = Primary->GetSocketLocation(MuzzleSocketName);
+        OutSource   = SocketLabel(Primary);
+        return true;
+    }
+    if (Secondary && Secondary->GetStaticMesh() && Secondary->DoesSocketExist(MuzzleSocketName))
+    {
+        OutLocation = Secondary->GetSocketLocation(MuzzleSocketName);
+        OutSource   = SocketLabel(Secondary);
+        return true;
+    }
+
+    // Link 3 — no muzzle socket authored on either mesh: synthesize a muzzle a fixed
+    // distance forward of whichever weapon component carries a mesh.
+    UStaticMeshComponent* WeaponComp =
+        (Primary && Primary->GetStaticMesh())       ? Primary   :
+        (Secondary && Secondary->GetStaticMesh())   ? Secondary : nullptr;
+    if (WeaponComp)
+    {
+        OutLocation = WeaponComp->GetComponentLocation()
+                    + WeaponComp->GetForwardVector() * MuzzleForwardOffset;
+        OutSource   = TEXT("component-offset");
+        return true;
+    }
+
+    // No weapon mesh at all — caller falls back to the camera origin.
+    OutSource = TEXT("camera-fallback");
+    return false;
+}
+
 int32 AGothicPlayerCharacter::GetActiveGearPower() const
 {
     if (WeaponSlots.IsValidIndex(ActiveWeaponIndex))
