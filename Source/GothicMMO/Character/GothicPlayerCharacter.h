@@ -197,10 +197,18 @@ public:
      * FirstPersonCamera, so this is the arms' camera-relative resting seat: +X forward,
      * +Y right, +Z up. Applied in EnforceFirstPersonCameraMount (pre-BeginPlay) and again
      * in BeginPlay so a BP CDO override lands, and reconstituted every frame as the base of
-     * UpdateFirstPersonWeaponPose's arms write (ArmsOffset + sprint/kick delta). BP carries
-     * (-20,0,-165); that is the starting point for the framing/alignment tuning pass. */
+     * UpdateFirstPersonWeaponPose's arms write (ArmsOffset + sprint/kick delta).
+     *
+     * +X MUST be positive: the arms are a camera child, so an X at or behind the camera puts
+     * the mesh at/behind the near plane where it renders NOTHING — the exact defect the stale
+     * BP CDO (-20,0,-165) shipped (arms 20uu BEHIND the eye, invisible). The sane default here
+     * (forward-positive X, mesh dropped so a feet-origin full-body mannequin seats chest/arms
+     * at the frame bottom) is reasoned from the mannequin's proportions, not measured — its job
+     * is only to RENDER; exact framing is the tuner's. A BP CDO override still BEATS this C++
+     * default, so the post-merge editor pass must update the BP value too (EnforceFirstPerson-
+     * CameraMount logs a Warning when the live ArmsOffset.X <= 0 rather than silently clamping). */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Weapons|FirstPerson")
-    FVector ArmsOffset = FVector(-20.f, 0.f, -165.f);
+    FVector ArmsOffset = FVector(15.f, 0.f, -150.f);
 
     /** ACTIVE — the arms' camera-relative orientation. Yaw -90 faces the mesh down +X
      *  (the same convention the TP body uses). Base of the arms-write rotation compose in
@@ -1838,6 +1846,23 @@ private:
      * attach, so this runtime enforcement is load-bearing.
      */
     void EnforceFirstPersonCameraMount();
+
+    /**
+     * Permanently neutralize the DUPLICATE first-person gun.
+     *
+     * The C++ WeaponMeshComponent pointer is Blueprint-redirected onto the BP component
+     * "UWeaponMesh" (verified: ApplyWeaponAttachment seats the pointer at the camera/arms and
+     * the live table finds "UWeaponMesh" there, while the constructor-created native "WeaponMesh"
+     * subobject sits untouched on the TP body's HandGrip_R). Both carry a mesh and both are
+     * owner-only, so the owner sees TWO guns — the pointer-bound one plus the orphan riding the
+     * third-person hand animation. The pointer-bound component is THE gun (all equip/mirror/pose
+     * code drives it); the orphan is undeletable (banked trap), so it is hidden in place here:
+     * SetHiddenInGame(true)+SetVisibility(false). Found DEFENSIVELY by name among components —
+     * whichever weapon-mesh component is NOT the one the pointer resolves to gets hidden, so it
+     * is correct regardless of which way the redirect landed. Called from PostInitializeComponents
+     * after the BP hierarchy has serialized (so the redirect has resolved).
+     */
+    void NeutralizeDuplicateWeaponMesh();
 
     /**
      * Runs the automatic reload triggered by ConsumeRound emptying the magazine.
