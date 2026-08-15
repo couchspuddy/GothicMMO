@@ -24,6 +24,7 @@
 
 class UCameraComponent;
 class UStaticMeshComponent;
+class UStaticMesh;
 class USkeletalMeshComponent;
 class UAnimationAsset;
 class UInputMappingContext;
@@ -37,7 +38,7 @@ class AGothicPlayerState;
 struct FInputActionValue;
 
 /**
- * Which mount the WeaponMeshComponent (the owner-only first-person gun) is CURRENTLY
+ * Which mount FPWeaponMesh (the owner-only first-person gun) is CURRENTLY
  * using. Set by ApplyWeaponAttachment, read by UpdateFirstPersonWeaponPose to decide
  * whether the per-frame camera-space weapon write applies. Runtime state, not serialized.
  *
@@ -81,6 +82,14 @@ public:
      * and arms-pose work read the camera. See EnforceFirstPersonCameraMount.
      */
     virtual void PostInitializeComponents() override;
+
+    /**
+     * Design-time only. Applies PreviewWeaponMesh onto FPWeaponMesh so the BP editor
+     * viewport shows a gun in the hand without any runtime cost. Gated on a non-game
+     * world (editor/preview) — see the body — so a real spawn never runs it and the
+     * equip flow owns the runtime mesh.
+     */
+    virtual void OnConstruction(const FTransform& Transform) override;
 
     /**
      * Unbinds the HUD attribute delegates.
@@ -254,6 +263,19 @@ public:
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson")
     FName FPWeaponGripSocket = TEXT("HandGrip_R");
+
+    /**
+     * Editor-only design-time preview mesh for the first-person gun. When set, it is
+     * applied to FPWeaponMesh in OnConstruction so the BP editor viewport shows a gun
+     * in the hand at design time; the equip flow's real WeaponData->WeaponMesh replaces
+     * it the moment BeginPlay's RefreshWeaponVisuals runs. NO ConstructorHelpers / no
+     * hardcoded /Game path — assign SM_Pistol (or any silhouette) on
+     * BP_GothicPlayerCharacter. Applied ONLY in a non-game world (editor/preview), so it
+     * carries no boot risk and can never fight the runtime equip or a live unequip
+     * (an in-game empty slot clears FPWeaponMesh to null, never back to this preview).
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|FirstPerson")
+    TObjectPtr<UStaticMesh> PreviewWeaponMesh;
 
     // -------------------------------------------------------------------------
     // First-person camera mount (classic assembly)
@@ -1091,17 +1113,39 @@ protected:
     TObjectPtr<UCameraComponent> FirstPersonCamera;
 
     // -------------------------------------------------------------------------
-    // Weapon Mesh — attached to camera, swapped on weapon change
+    // First-person weapon — ONE honest, hand-born component
+    //
+    // FPWeaponMesh is the working first-person gun: a child of FirstPersonArmsMesh at
+    // FPWeaponGripSocket, created under a brand-new name with ZERO legacy serialization
+    // so no Blueprint pointer-redirect can hijack it (the exact failure the old
+    // WeaponMeshComponent pointer suffered — redirected onto the BP ghost "UWeaponMesh").
+    // Every driving system — RefreshWeaponVisuals (mesh/scale), ApplyWeaponAttachment,
+    // the sprint/kick pose, the #89 visibility gate, the census — drives THIS.
     // -------------------------------------------------------------------------
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
+    TObjectPtr<UStaticMeshComponent> FPWeaponMesh;
+
+    /**
+     * DEPRECATED / RETIRED — never driven. The legacy first-person gun pointer,
+     * Blueprint-redirect-bound to the BP ghost component "UWeaponMesh" (a camera-parented,
+     * serialized, undeletable orphan). All runtime code moved to FPWeaponMesh; this pointer
+     * is no longer read or written anywhere. Kept DECLARED — and its native "WeaponMesh"
+     * subobject still created in the constructor — on purpose: removing the UPROPERTY would
+     * change the layout the BP-derived BP_GothicPlayerCharacter serialized against (it
+     * carries the redirect), risking deserialization surprises. Whatever this resolves to
+     * (the ghost "UWeaponMesh") and the native "WeaponMesh" are BOTH hidden at runtime by
+     * NeutralizeDuplicateWeaponMesh, so neither renders a second gun.
+     */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Gothic|Weapons")
     TObjectPtr<UStaticMeshComponent> WeaponMeshComponent;
 
-    // The mount WeaponMeshComponent is CURRENTLY using, decided by ApplyWeaponAttachment
-    // and read by UpdateFirstPersonWeaponPose to gate the camera-space weapon write.
-    // Gates on the ACTUAL mount, never on the bAttachWeaponToCamera config flag, so a
-    // hand-mounted gun never gets camera-space transforms stomped onto it per frame.
-    // Defaults to Camera so the legacy pose write is the pre-attachment behavior.
-    EFPWeaponMount WeaponMountState = EFPWeaponMount::Camera;
+    // The mount FPWeaponMesh is CURRENTLY using, decided by ApplyWeaponAttachment and read
+    // by UpdateFirstPersonWeaponPose to gate the camera-space weapon write. Gates on the
+    // ACTUAL mount, never on the bAttachWeaponToCamera config flag, so a hand-mounted gun
+    // never gets camera-space transforms stomped onto it per frame. Defaults to ArmsSocket
+    // because the gun is BORN on the hand (constructor SetupAttachment) — the camera-space
+    // weapon write stays gated OFF unless a fallback camera mount is ever chosen.
+    EFPWeaponMount WeaponMountState = EFPWeaponMount::ArmsSocket;
 
     // First-person arms — skeletal mesh parented to the CAMERA (classic assembly), seated at
     // the camera-relative ArmsOffset/ArmsRotation, owner-only-see. As a camera child it
@@ -1166,7 +1210,7 @@ protected:
 
     /**
      * Timing-proof locality gate for the first-person-only meshes (FirstPersonArmsMesh
-     * and WeaponMeshComponent). Locally controlled → both shown; otherwise → both
+     * and FPWeaponMesh). Locally controlled → both shown; otherwise → both
      * SetHiddenInGame(true).
      *
      * The SetOnlyOwnerSee flags on those components are correct, but they resolve
@@ -1848,19 +1892,17 @@ private:
     void EnforceFirstPersonCameraMount();
 
     /**
-     * Permanently neutralize the DUPLICATE first-person gun.
+     * Permanently neutralize the RETIRED legacy first-person guns.
      *
-     * The C++ WeaponMeshComponent pointer is Blueprint-redirected onto the BP component
-     * "UWeaponMesh" (verified: ApplyWeaponAttachment seats the pointer at the camera/arms and
-     * the live table finds "UWeaponMesh" there, while the constructor-created native "WeaponMesh"
-     * subobject sits untouched on the TP body's HandGrip_R). Both carry a mesh and both are
-     * owner-only, so the owner sees TWO guns — the pointer-bound one plus the orphan riding the
-     * third-person hand animation. The pointer-bound component is THE gun (all equip/mirror/pose
-     * code drives it); the orphan is undeletable (banked trap), so it is hidden in place here:
-     * SetHiddenInGame(true)+SetVisibility(false). Found DEFENSIVELY by name among components —
-     * whichever weapon-mesh component is NOT the one the pointer resolves to gets hidden, so it
-     * is correct regardless of which way the redirect landed. Called from PostInitializeComponents
-     * after the BP hierarchy has serialized (so the redirect has resolved).
+     * The real gun is now FPWeaponMesh (born on the hand, a brand-new name). The two
+     * legacy weapon-mesh components — the BP ghost "UWeaponMesh" (the WeaponMeshComponent
+     * pointer's redirect target, camera-parented and undeletable) and the native
+     * constructor subobject "WeaponMesh" — are both dead weight that would each render a
+     * second owner-only gun. Neither is deletable (banked trap / BP-serialized redirect),
+     * so both are hidden in place here: SetHiddenInGame(true)+SetVisibility(false). Found
+     * by name among components; FPWeaponMesh and ThirdPersonWeaponMesh are explicitly
+     * skipped so the two live guns are never touched. Called from PostInitializeComponents
+     * after the BP hierarchy (and the redirect) has serialized.
      */
     void NeutralizeDuplicateWeaponMesh();
 
