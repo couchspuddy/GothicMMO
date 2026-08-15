@@ -2063,6 +2063,18 @@ void AGothicPlayerCharacter::PostInitializeComponents()
     // mesh is hidden before it can render even one frame; the owning pawn's later
     // PossessedBy/OnRep_Controller pass flips it visible once locality resolves true.
     UpdateFirstPersonVisibility();
+
+    // Force the FP arms to tick AFTER the TP body they copy. ABP_FP_Copy's
+    // CopyPoseFromMesh(bUseAttachedParent=true) sources GetMesh() (CharacterMesh0); with no
+    // tick ordering the arms can evaluate before the body in a frame and copy the PREVIOUS
+    // frame's pose, so during camera rotation the arms/gun trail the view on an arc (the
+    // classic CopyPose one-frame-lag artifact). This prerequisite pins the arms to read the
+    // current frame's source pose. The FP camera, parented to the arms' head socket, inherits
+    // the same ordering — its socket-relative transform resolves from the now-current pose.
+    if (FirstPersonArmsMesh && GetMesh())
+    {
+        FirstPersonArmsMesh->AddTickPrerequisiteComponent(GetMesh());
+    }
 }
 
 void AGothicPlayerCharacter::EnforceFirstPersonCameraMount()
