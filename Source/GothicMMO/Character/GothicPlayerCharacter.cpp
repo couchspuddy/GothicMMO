@@ -440,6 +440,10 @@ void AGothicPlayerCharacter::PossessedBy(AController* NewController)
     // when the PlayerState has not yet resolved; re-attaching here closes that gap
     // unconditionally now that the controller is known.
     ReapplyActiveWeaponAttachment();
+
+    // Same possession seam, same locality dependence: enforce the FP-mesh visibility
+    // gate now that the controller (hence IsLocallyControlled) is known.
+    UpdateFirstPersonVisibility();
 }
 
 void AGothicPlayerCharacter::OnRep_PlayerState()
@@ -460,6 +464,11 @@ void AGothicPlayerCharacter::OnRep_Controller()
     // mount. Mirrors the lazy-resolution pattern components use for the same
     // BeginPlay-precedes-possession disease.
     ReapplyActiveWeaponAttachment();
+
+    // This is also the moment the OWNING client's locality first resolves, and the
+    // moment a remote proxy's stays false — re-run the FP-mesh visibility gate so the
+    // local player's arms/gun show and every remote pawn's are hidden deterministically.
+    UpdateFirstPersonVisibility();
 }
 
 void AGothicPlayerCharacter::ReapplyActiveWeaponAttachment()
@@ -467,6 +476,43 @@ void AGothicPlayerCharacter::ReapplyActiveWeaponAttachment()
     if (WeaponSlots.IsValidIndex(ActiveWeaponIndex))
     {
         ApplyWeaponAttachment(WeaponSlots[ActiveWeaponIndex].WeaponData);
+    }
+}
+
+void AGothicPlayerCharacter::UpdateFirstPersonVisibility()
+{
+    // Deterministic locality enforcement for the first-person-only meshes. See the
+    // header for why SetOnlyOwnerSee alone leaks: it resolves against owner/connection
+    // state that isn't reliably settled on a freshly-replicated remote pawn, so a
+    // remote player's folded full-body FP mesh renders as a contorted figure until
+    // ownership resolves. bHiddenInGame doesn't depend on that resolution.
+    //
+    // Applied unconditionally on every machine — including a dedicated server. There,
+    // remote pawns being hidden is correct (nothing owner-sees them) and also keeps the
+    // CopyPose+warp-rig render output from being spent on views that can never matter;
+    // this touches VISIBILITY only, never ticking or VisibilityBasedAnimTickOption, so
+    // the FP mesh's pose evaluation is unchanged (out of scope by design).
+    const bool bLocal = IsLocallyControlled();
+    const bool bHidden = !bLocal;
+
+    if (WeaponMeshComponent)
+    {
+        WeaponMeshComponent->SetHiddenInGame(bHidden);
+    }
+    if (FirstPersonArmsMesh)
+    {
+        FirstPersonArmsMesh->SetHiddenInGame(bHidden);
+    }
+
+    // Log once per transition, not per call — this runs from several seams and per
+    // Tick-adjacent code would spam otherwise.
+    const int8 NewState = bLocal ? 1 : 0;
+    if (NewState != LastFPVisibilityLocal)
+    {
+        LastFPVisibilityLocal = NewState;
+        UE_LOG(LogVigilCombat, Verbose,
+            TEXT("VigilTimeline|t=%.3f|%s|FPVis|local=%d|hidden=%d"),
+            GASInitTimelineNow(this), *GetName(), NewState, bHidden ? 1 : 0);
     }
 }
 
@@ -2011,6 +2057,12 @@ void AGothicPlayerCharacter::PostInitializeComponents()
     // it before BeginPlay is what guarantees the eye is correctly seated before BeginPlay's
     // RefreshWeaponVisuals / arms-pose work reads the camera.
     EnforceFirstPersonCameraMount();
+
+    // Earliest deterministic pass at the FP-mesh visibility gate. On a remote proxy
+    // IsLocallyControlled() is already reliably false here, so the leaking full-body FP
+    // mesh is hidden before it can render even one frame; the owning pawn's later
+    // PossessedBy/OnRep_Controller pass flips it visible once locality resolves true.
+    UpdateFirstPersonVisibility();
 }
 
 void AGothicPlayerCharacter::EnforceFirstPersonCameraMount()
