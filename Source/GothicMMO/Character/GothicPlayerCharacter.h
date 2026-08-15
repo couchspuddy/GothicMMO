@@ -1158,11 +1158,33 @@ protected:
      */
     void ReapplyActiveWeaponAttachment();
 
+    /**
+     * Timing-proof locality gate for the first-person-only meshes (FirstPersonArmsMesh
+     * and WeaponMeshComponent). Locally controlled → both shown; otherwise → both
+     * SetHiddenInGame(true).
+     *
+     * The SetOnlyOwnerSee flags on those components are correct, but they resolve
+     * OnlyOwnerSee against owner/connection state that is not reliably settled on a
+     * freshly-replicated remote pawn — so another player's CtrlRig-folded full-body
+     * FP mesh leaks into view as a contorted figure before ownership resolves.
+     * bHiddenInGame does not depend on connection resolution and closes that hole;
+     * OnlyOwnerSee stays as belt-and-braces. Called from every seam where locality
+     * can change or be freshly resolved (PostInitializeComponents, PossessedBy,
+     * OnRep_Controller) — the same seams ReapplyActiveWeaponAttachment already uses.
+     * The third-person body and ThirdPersonWeaponMesh are untouched (OwnerNoSee, which
+     * remote players must keep seeing).
+     */
+    void UpdateFirstPersonVisibility();
+
     /** Drive the camera-mounted weapon's sprint pose and fire-kick recovery. Ticked
      *  on the local client only; does nothing when the weapon is hand-socketed. */
     void UpdateFirstPersonWeaponPose(float DeltaTime);
 
 private:
+    /** Last locality state UpdateFirstPersonVisibility logged, so the FPVis line fires
+     *  once per transition rather than per call. -1 = not yet resolved, 0/1 = remote/local. */
+    int8 LastFPVisibilityLocal = -1;
+
     /** 0..1 blend toward the sprint pose. */
     float SprintPoseAlpha = 0.f;
 
