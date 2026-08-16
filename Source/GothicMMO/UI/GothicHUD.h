@@ -115,6 +115,14 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
     void ShowDamageIndicator(float DamageAmount);
 
+    /**
+     * Local player's State.Stunned toggled — forwards to the active layout widget's
+     * OnStunnedStateChanged. Driven by AGothicPlayerCharacter::HandleStunTagChanged
+     * (the same tag listener the pawn uses to freeze movement); local player only.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|HUD")
+    void NotifyStunnedStateChanged(bool bStunned, float ExpectedDuration);
+
     UFUNCTION(BlueprintPure, Category = "Gothic|HUD")
     UGothicHUDWidget* GetHUDWidget() const { return ActiveHUDWidget; }
     

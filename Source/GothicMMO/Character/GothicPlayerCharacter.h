@@ -1798,6 +1798,24 @@ private:
     /** State.Stunned was added to or fully removed from the ASC. */
     void HandleStunTagChanged(const FGameplayTag CallbackTag, int32 NewCount);
 
+    /**
+     * Forwards the local player's stun state to the HUD widget. Local-only (no
+     * listen-server cross-talk: a remote pawn on the host is not locally
+     * controlled) and no-ops until the HUD widget exists. Called both from
+     * HandleStunTagChanged on every transition and once from the HUD-ready timer
+     * to re-baseline a fresh/respawned pawn's HUD so a stun indicator can never
+     * ride a stuck ON-state into the next life.
+     */
+    void PushStunStateToHUD(bool bStunned, float ExpectedDuration);
+
+    /**
+     * Seconds remaining on the active stun GE (GE_Stun_BestialLucid / GE_Stagger),
+     * read off the ASC by the granted State.Stunned tag. 0 when no duration GE
+     * backs the tag (e.g. a loose-tag stun, or the GE has not yet replicated to
+     * the owning client) — the HUD treats 0 as "unknown duration".
+     */
+    float GetStunRemainingDuration() const;
+
     /** Releases the move-input ignore on whichever controller received it. */
     void ClearStunMoveInputIgnore();
 
