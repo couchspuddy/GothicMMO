@@ -562,6 +562,14 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         AbilitySystemComponent->SetLooseGameplayTagCount(GothicTags::State_Reloading, 0);
         AbilitySystemComponent->SetLooseGameplayTagCount(GothicTags::State_Selah, 0);
 
+        // The movement half of the Selah lock is a plain pawn bool, not an ASC
+        // tag, so the clear above does not touch it. On a truly fresh pawn it is
+        // already false; on a REUSED pawn (checkpoint restart) a lock stranded
+        // from the previous life would ride in and freeze the new one. Clear the
+        // flag and its fallback timer to match the tag.
+        bSelahMomentLock = false;
+        GetWorldTimerManager().ClearTimer(SelahMomentLockHandle);
+
         // Same hazard, same fix, for the downed flag. A fresh pawn is never
         // downed, and the flag lives on the PlayerState — which survives the pawn
         // that WAS downed. OnReviveWindowExpired already clears it on the way out,
@@ -1429,6 +1437,22 @@ void AGothicPlayerCharacter::OnMove(const FInputActionValue& Value)
         }
     }
 
+    // Self-heal a stranded lock. bSelahMomentLock must never outlive its release
+    // timer: TriggerSelahMoment always arms SelahMomentLockHandle as the fallback,
+    // and EndSelahMomentLock clears them together. If the flag is set but the timer
+    // is gone, the release path was lost (a widget completion event that never
+    // arrived after its widget was torn down mid-cycle, a collect whose finalize
+    // engaged the lock while a second overlapping volume's fight was still live)
+    // and the player would be frozen for the rest of the run — the reported
+    // softlock. Releasing here bounds any strand to a single input event.
+    if (bSelahMomentLock && !GetWorldTimerManager().IsTimerActive(SelahMomentLockHandle))
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("VigilTimeline|t=%.3f|%s|Selah|LOCK_SELFHEAL|release-timer-inactive"),
+            GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetName());
+        EndSelahMomentLock();
+    }
+
     // The Selah moment holds you in place. Same reasoning as the cursor gate above:
     // refuse the input here, once, rather than in every system that could move.
     if (bSelahMomentLock)
@@ -2281,6 +2305,26 @@ void AGothicPlayerCharacter::RefreshMovementSpeed()
 
 void AGothicPlayerCharacter::TriggerSelahMoment()
 {
+    UWorld* World = GetWorld();
+
+    // Never engage a lock we cannot schedule a release for. The fallback timer IS
+    // the guarantee the player unfreezes; without a world to arm it on, engaging
+    // the lock would strand the player. Bail before touching any lock state.
+    if (!World)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("%s|Selah|LOCK_SKIP|no-world"), *GetName());
+        return;
+    }
+
+    // Arm the fallback release FIRST, then engage the lock — so the flag and its
+    // release timer are set as a matched pair and the flag can never exist without
+    // a pending release. Re-entrant-safe: a second finalize (two overlapping
+    // volumes paying out) simply refreshes the same handle rather than stacking.
+    World->GetTimerManager().SetTimer(
+        SelahMomentLockHandle, this, &AGothicPlayerCharacter::EndSelahMomentLock,
+        FMath::Max(0.1f, SelahMomentLockSeconds), false);
+
     // Hold the player still for the reveal. Movement and fire are refused while
     // this is set (see OnMove and UGA_Fire::CanActivateAbility); menus are not.
     bSelahMomentLock = true;
@@ -2302,12 +2346,9 @@ void AGothicPlayerCharacter::TriggerSelahMoment()
         Move->StopMovementImmediately();
     }
 
-    if (UWorld* World = GetWorld())
-    {
-        World->GetTimerManager().SetTimer(
-            SelahMomentLockHandle, this, &AGothicPlayerCharacter::EndSelahMomentLock,
-            FMath::Max(0.1f, SelahMomentLockSeconds), false);
-    }
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("VigilTimeline|t=%.3f|%s|Selah|LOCK_ENGAGE|fallback=%.1fs"),
+        World->GetTimeSeconds(), *GetName(), FMath::Max(0.1f, SelahMomentLockSeconds));
 
     // Blueprint handles the visual and audio — call the event
     OnSelahMoment();
@@ -2315,18 +2356,27 @@ void AGothicPlayerCharacter::TriggerSelahMoment()
 
 void AGothicPlayerCharacter::EndSelahMomentLock()
 {
+    const bool bWasLocked = bSelahMomentLock;
+
     bSelahMomentLock = false;
 
-    // Close the server-side window opened in TriggerSelahMoment. Reached only via the
-    // timer that TriggerSelahMoment set on the authority, so this too runs server-side.
+    // Close the server-side window opened in TriggerSelahMoment. Reached via the
+    // fallback timer, the widget's OnSelahMomentComplete, the OnMove self-heal, and
+    // the fresh-pawn / respawn cleanup — so it must be idempotent and clear ALL of
+    // its state unconditionally (flag, ASC tag, timer). The ASC clear is absolute
+    // (State.Dead idiom) and null-guarded because the ASC outlives the pawn.
     if (HasAuthority() && AbilitySystemComponent)
     {
         AbilitySystemComponent->SetLooseGameplayTagCount(GothicTags::State_Selah, 0);
     }
 
-    if (UWorld* World = GetWorld())
+    GetWorldTimerManager().ClearTimer(SelahMomentLockHandle);
+
+    if (bWasLocked)
     {
-        World->GetTimerManager().ClearTimer(SelahMomentLockHandle);
+        UE_LOG(LogVigilCombat, Log,
+            TEXT("VigilTimeline|t=%.3f|%s|Selah|LOCK_RELEASE"),
+            GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetName());
     }
 }
 

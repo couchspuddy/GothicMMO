@@ -88,6 +88,36 @@ void AGothicEncounterVolume::BeginPlay()
     UE_LOG(LogTemp, Verbose,
         TEXT("Selah[%s]: BeginPlay — roster=%d, bound=%d, RemainingEnemyCount=%d"),
         *GetName(), EncounterEnemies.Num(), BoundCount, RemainingEnemyCount);
+
+    // Cross-volume breakout gate. With one set, this volume's reinforcement wave
+    // waits for the referenced volume to break out (the Feral Retained leaping to
+    // the next area). Self-reference is meaningless — a volume cannot gate on its
+    // own breakout — so ignore it. If the gate has somehow already broken out by
+    // the time we register (out-of-order BeginPlay, or a re-registered volume),
+    // treat the gate as open from the start, mirroring the IsRewarded/IsBrokenOut
+    // late-registration pattern the gates use.
+    if (WaveBreakoutGateVolume && WaveBreakoutGateVolume != this)
+    {
+        if (WaveBreakoutGateVolume->IsBrokenOut())
+        {
+            bWaveGateOpen = true;
+        }
+        else
+        {
+            WaveBreakoutGateVolume->OnEncounterBreakout.AddDynamic(
+                this, &AGothicEncounterVolume::HandleGateVolumeBreakout);
+            UE_LOG(LogVigilCombat, Verbose,
+                TEXT("VigilTimeline|t=%.3f|%s|WaveGate|BOUND|gate=%s"),
+                GetWorld()->GetTimeSeconds(), *GetName(),
+                *GetNameSafe(WaveBreakoutGateVolume));
+        }
+    }
+    else
+    {
+        // No gate (or a self-reference): nothing to wait on, reinforcements fire
+        // on attrition exactly as before.
+        bWaveGateOpen = true;
+    }
 }
 
 void AGothicEncounterVolume::HandleTriggerBeginOverlap(
@@ -193,6 +223,23 @@ void AGothicEncounterVolume::HandleEnemyDied(AGothicEnemyBase* DeadEnemy)
     if (ReinforceAtLivingCount > 0 && WaveStage == 0 && PendingWaveSpawnPoints.Num() > 0
         && RemainingEnemyCount <= ReinforceAtLivingCount)
     {
+        // Cross-volume gate: attrition is met, but a gate volume that has not yet
+        // broken out holds the wave. Remember the attrition was satisfied and bail
+        // WITHOUT advancing WaveStage or falling through to the roster-cleared
+        // branch below — the encounter must not raise its Selah prompt while its
+        // reinforcement wave is still owed, or a player could collect and finalize
+        // before the held wave ever arrives. HandleGateVolumeBreakout springs it.
+        if (!bWaveGateOpen)
+        {
+            bWaveBreakoutPending = true;
+            UE_LOG(LogVigilCombat, Verbose,
+                TEXT("VigilTimeline|t=%.3f|%s|WaveGate|HELD|living=%d|gate=%s"),
+                GetWorld()->GetTimeSeconds(), *GetName(), RemainingEnemyCount,
+                *GetNameSafe(WaveBreakoutGateVolume));
+            OnEncounterMemberDied.Broadcast(DeadEnemy);
+            return;
+        }
+
         WaveStage = 2; // same stage the interrupt wave uses, so Wave 3 still follows
         UE_LOG(LogTemp, Verbose, TEXT("Selah[%s]: reinforcements at %d living"),
             *GetName(), RemainingEnemyCount);
@@ -737,6 +784,35 @@ void AGothicEncounterVolume::NotifyBreakout()
     bBrokenOut = true;
     UE_LOG(LogTemp, Verbose, TEXT("Selah[%s]: BREAK-OUT announced"), *GetName());
     OnEncounterBreakout.Broadcast(this);
+}
+
+void AGothicEncounterVolume::HandleGateVolumeBreakout(AGothicEncounterVolume* Gate)
+{
+    // Authority-only and idempotent — the gate's breakout is server-side, and a
+    // re-fired delegate (a re-activated GA_FeralBreakout) must not spring the wave
+    // twice.
+    if (!HasAuthority() || bWaveGateOpen)
+    {
+        return;
+    }
+
+    bWaveGateOpen = true;
+
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("VigilTimeline|t=%.3f|%s|WaveGate|OPEN|gate=%s|pending=%d"),
+        GetWorld()->GetTimeSeconds(), *GetName(), *GetNameSafe(Gate),
+        bWaveBreakoutPending ? 1 : 0);
+
+    // Attrition was already satisfied while we waited (the gated roster is long
+    // dead by the time she leaps): spring the held reinforcement wave now. If it
+    // was NOT yet satisfied the gate is simply open, and the ordinary
+    // attrition-driven branch in HandleEnemyDied fires the wave when the count drops.
+    if (bWaveBreakoutPending && WaveStage == 0 && PendingWaveSpawnPoints.Num() > 0)
+    {
+        bWaveBreakoutPending = false;
+        WaveStage = 2; // same stage the interrupt wave uses, so Wave 3 still follows
+        SpawnWaveFromPoints(PendingWaveSpawnPoints);
+    }
 }
 
 void AGothicEncounterVolume::FinalizeCollection()
