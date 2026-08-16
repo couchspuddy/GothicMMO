@@ -11,6 +11,7 @@
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AI/GothicEnemySpawnPoint.h"
 #include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "GothicEnemySpawnPoint.h"
 #include "Engine/World.h"
@@ -394,11 +395,29 @@ AGothicEnemyBase* AGothicEncounterVolume::SpawnEnemyFromRequest(
         // every spawn would silently fall back to the raw Origin.
         const float QueryExtentXY = FMath::Max(Scatter, 100.f);
 
+        // Projection lands SpawnLocation on the navmesh surface (floor + a small
+        // nav offset), but SpawnActor places the capsule CENTRE at that point —
+        // burying the enemy's lower half in the floor, where
+        // AdjustIfPossibleButDontSpawnIfColliding refuses the spawn and burns a
+        // retry. Lift the projected point by the enemy's capsule half-height so
+        // the capsule bottom rests on the surface. Read it off the class CDO;
+        // fall back to a sane player-height constant if the CDO/capsule can't be
+        // resolved — never leave the spawn sitting at raw nav level.
+        float CapsuleLift = 90.f;
+        if (const AGothicEnemyBase* EnemyCDO = Point->EnemyClass->GetDefaultObject<AGothicEnemyBase>())
+        {
+            if (const UCapsuleComponent* Capsule = EnemyCDO->GetCapsuleComponent())
+            {
+                CapsuleLift = Capsule->GetScaledCapsuleHalfHeight();
+            }
+        }
+
         FNavLocation Projected;
         if (NavSys->ProjectPointToNavigation(
                 SpawnLocation, Projected, FVector(QueryExtentXY, QueryExtentXY, 300.f)))
         {
             SpawnLocation = Projected.Location;
+            SpawnLocation.Z += CapsuleLift;
         }
         // One WIDER retry before giving up: a point that just missed the nav
         // mesh (a spawn point authored a little off its floor, or a scatter
@@ -408,6 +427,7 @@ AGothicEnemyBase* AGothicEncounterVolume::SpawnEnemyFromRequest(
                 SpawnLocation, Projected, FVector(QueryExtentXY * 3.f, QueryExtentXY * 3.f, 500.f)))
         {
             SpawnLocation = Projected.Location;
+            SpawnLocation.Z += CapsuleLift;
         }
         else if (RetriesRemaining > 0)
         {
