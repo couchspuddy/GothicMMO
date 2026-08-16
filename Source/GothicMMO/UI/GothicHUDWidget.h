@@ -102,6 +102,26 @@ public:
     UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
     void OnMagazineEmpty();
 
+    /**
+     * The LOCAL player's State.Stunned toggled. Until this hook existed no UI code
+     * read the tag at all, so the boss AOE stun (2s, movement frozen, look free)
+     * landed with zero on-screen indication. Implement the tell in Blueprint —
+     * a vignette/icon on true, cleared on false.
+     *
+     * @param bStunned          True when the tag was gained, false when fully removed.
+     * @param ExpectedDuration  Seconds remaining on the stun GE at the moment it
+     *                          landed, for driving a draining indicator. 0 on the
+     *                          clear transition, and 0 on gain if no duration GE
+     *                          could be read (e.g. a loose-tag stun) — treat 0 as
+     *                          "unknown duration, show a static tell."
+     */
+    UFUNCTION(BlueprintImplementableEvent, Category = "Gothic|HUD")
+    void OnStunnedStateChanged(bool bStunned, float ExpectedDuration);
+
+    /** Last stun state pushed from C++. Available to Blueprint getters/bindings. */
+    UPROPERTY(BlueprintReadOnly, Category = "Gothic|HUD")
+    bool bCachedStunned = false;
+
     UPROPERTY(BlueprintReadOnly, Category = "Gothic|HUD|Ammo")
     int32 CachedMagazineAmmo = 0;
 

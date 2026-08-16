@@ -231,6 +231,15 @@ void AGothicHUD::ShowDamageIndicator(float DamageAmount)
     }
 }
 
+void AGothicHUD::NotifyStunnedStateChanged(bool bStunned, float ExpectedDuration)
+{
+    if (ActiveHUDWidget)
+    {
+        ActiveHUDWidget->bCachedStunned = bStunned;
+        ActiveHUDWidget->OnStunnedStateChanged(bStunned, ExpectedDuration);
+    }
+}
+
 void AGothicHUD::CreateAndShowLayout(TSubclassOf<UGothicHUDWidget> WidgetClass)
 {
     if (!WidgetClass)

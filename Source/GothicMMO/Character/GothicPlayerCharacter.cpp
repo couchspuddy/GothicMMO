@@ -402,6 +402,18 @@ void AGothicPlayerCharacter::BeginPlay()
             GothicHUD->UpdateHealth(AttributeSet->GetHealth(), AttributeSet->GetMaxHealth());
         }
 
+        // Re-baseline the stun indicator on a fresh/respawned pawn. The tag event
+        // only fires on a CHANGE, so without this a HUD that survives a death mid-
+        // stun (the widget is owned by the PlayerController, not the pawn) would
+        // keep the previous life's indicator lit. Reads the current tag off the
+        // ASC — honest true (with remaining time) or an explicit clear.
+        if (AbilitySystemComponent)
+        {
+            const bool bStunnedNow = AbilitySystemComponent->HasMatchingGameplayTag(
+                FGameplayTag::RequestGameplayTag(FName("State.Stunned")));
+            PushStunStateToHUD(bStunnedNow, bStunnedNow ? GetStunRemainingDuration() : 0.f);
+        }
+
         // Apply the active weapon's crosshair on spawn. The HUD boots on Melee by
         // default and the starting weapon is equipped before the HUD widget exists,
         // so without this the crosshair stays Melee until the first weapon swap.
@@ -1173,6 +1185,63 @@ void AGothicPlayerCharacter::HandleStunTagChanged(const FGameplayTag CallbackTag
 
     UE_LOG(LogTemp, Verbose, TEXT("Stun[%s]: %s"),
         *GetName(), bStunned ? TEXT("halted") : TEXT("resumed"));
+
+    // HUD tell — local player only. Runs on the owning client (where the HUD
+    // lives); on a dedicated server this pawn is not locally controlled and
+    // PushStunStateToHUD no-ops. Read the GE's remaining time only on the gain
+    // transition so the widget can drain an indicator; clear pushes 0.
+    const float ExpectedDuration = bStunned ? GetStunRemainingDuration() : 0.f;
+    PushStunStateToHUD(bStunned, ExpectedDuration);
+
+    if (IsLocallyControlled())
+    {
+        UE_LOG(LogVigilCombat, Log,
+            TEXT("VigilTimeline|t=%.3f|%s|Stun|HUD_%s|remaining=%.2f"),
+            GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetName(),
+            bStunned ? TEXT("STUNNED") : TEXT("CLEARED"), ExpectedDuration);
+    }
+}
+
+void AGothicPlayerCharacter::PushStunStateToHUD(bool bStunned, float ExpectedDuration)
+{
+    if (!IsLocallyControlled())
+    {
+        return;
+    }
+
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    AGothicHUD* GothicHUD = PC ? Cast<AGothicHUD>(PC->GetHUD()) : nullptr;
+    if (GothicHUD)
+    {
+        // No-ops inside the HUD until the layout widget exists; the HUD-ready
+        // timer re-pushes the current state once it does.
+        GothicHUD->NotifyStunnedStateChanged(bStunned, ExpectedDuration);
+    }
+}
+
+float AGothicPlayerCharacter::GetStunRemainingDuration() const
+{
+    if (!AbilitySystemComponent)
+    {
+        return 0.f;
+    }
+
+    // Match any active effect whose granted (owning) tags include State.Stunned —
+    // the stun GEs grant it. Duration GEs replicate to the owning client, so this
+    // is valid on the machine the HUD lives on. Take the longest remaining if more
+    // than one stun overlaps.
+    FGameplayTagContainer StunTags;
+    StunTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Stunned")));
+
+    const FGameplayEffectQuery Query =
+        FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(StunTags);
+
+    float MaxRemaining = 0.f;
+    for (float Remaining : AbilitySystemComponent->GetActiveEffectsTimeRemaining(Query))
+    {
+        MaxRemaining = FMath::Max(MaxRemaining, Remaining);
+    }
+    return MaxRemaining;
 }
 
 void AGothicPlayerCharacter::ClearStunMoveInputIgnore()
