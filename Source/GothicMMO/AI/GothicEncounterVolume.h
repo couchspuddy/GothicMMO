@@ -196,6 +196,26 @@ protected:
 	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter|Waves", meta = (ClampMin = "0"))
 	int32 ReinforceAtLivingCount = 0;
 
+	/**
+	 * Optional cross-volume gate. When set, this volume's REINFORCEMENT wave
+	 * (the PendingWaveSpawnPoints spawned via ReinforceAtLivingCount) is HELD —
+	 * even once the living count has dropped to the threshold — until the
+	 * referenced volume broadcasts its breakout (OnEncounterBreakout). On that
+	 * breakout, if the attrition condition is already satisfied (it will be — the
+	 * gated roster is long dead by the time the mini-boss leaps), the pending wave
+	 * springs immediately.
+	 *
+	 * The user-ruled design for Eagle's Landing Encounter 2: EV2 points at EV3
+	 * (the Feral Retained's perch), so EV2's reinforcements do not pour in until
+	 * she smashes off to the next area at 35% HP. Set the reference in the editor
+	 * lane; leaving it null reproduces the ungated reinforcement behaviour exactly.
+	 *
+	 * Reinforcement mode only (ReinforceAtLivingCount > 0). It has no effect on the
+	 * interrupted-Selah fake-out path, whose waves are gated on a collect attempt.
+	 */
+	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter|Waves")
+	TObjectPtr<AGothicEncounterVolume> WaveBreakoutGateVolume = nullptr;
+
 	/** Full length of the Selah collection channel — the time the fill-bar takes
 	 *  to complete a real (uninterrupted) collection and pay out. */
 	UPROPERTY(EditInstanceOnly, Category = "Gothic|Encounter|Waves")
@@ -289,6 +309,23 @@ private:
 
 	UFUNCTION()
 	void HandleEnemyDied(AGothicEnemyBase* DeadEnemy);
+
+	/**
+	 * Bound to WaveBreakoutGateVolume->OnEncounterBreakout when that gate is set.
+	 * Opens the gate; if attrition was already met while we waited (bWaveBreakoutPending),
+	 * springs the held reinforcement wave right then.
+	 */
+	UFUNCTION()
+	void HandleGateVolumeBreakout(AGothicEncounterVolume* Gate);
+
+	/** True once WaveBreakoutGateVolume has broken out (or immediately, if no gate
+	 *  is set / the gate had already broken out at BeginPlay). While false the
+	 *  reinforcement wave is held. */
+	bool bWaveGateOpen = false;
+
+	/** Set when the reinforcement attrition threshold is reached WHILE the wave is
+	 *  still gated. The signal that the wave should spring the instant the gate opens. */
+	bool bWaveBreakoutPending = false;
 
 
 	// AGothicEncounterVolume.h — add to private section
