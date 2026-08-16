@@ -22,6 +22,7 @@
 #include "AI/GothicCombatStateComponent.h"
 #include "UI/GothicHUDWidget.h"
 #include "UI/GothicInventoryWidget.h"
+#include "Blueprint/UserWidget.h"              // Selah name-cycle widget — teardown poll
 #include "Camera/CameraComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -569,6 +570,8 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         // flag and its fallback timer to match the tag.
         bSelahMomentLock = false;
         GetWorldTimerManager().ClearTimer(SelahMomentLockHandle);
+        SelahMomentWidget.Reset();
+        bSelahMomentWidgetRegistered = false;
 
         // Same hazard, same fix, for the downed flag. A fresh pawn is never
         // downed, and the flag lives on the PlayerState — which survives the pawn
@@ -2317,13 +2320,24 @@ void AGothicPlayerCharacter::TriggerSelahMoment()
         return;
     }
 
-    // Arm the fallback release FIRST, then engage the lock — so the flag and its
-    // release timer are set as a matched pair and the flag can never exist without
-    // a pending release. Re-entrant-safe: a second finalize (two overlapping
-    // volumes paying out) simply refreshes the same handle rather than stacking.
+    // A fresh moment starts with no widget yet — OnSelahMoment below creates it and
+    // is expected to hand it back via RegisterSelahMomentWidget. Reset the tracking
+    // BEFORE arming anything so a second overlapping payout cannot inherit the first
+    // moment's stale widget pointer.
+    SelahMomentWidget.Reset();
+    bSelahMomentWidgetRegistered = false;
+    SelahMomentLockStartTime = World->GetTimeSeconds();
+
+    // Arm the release poll FIRST, then engage the lock — so the flag and its release
+    // driver are set as a matched pair and the flag can never exist without a
+    // pending release. This is a REPEATING poll, not a single-shot fallback: each
+    // tick both watches the registered widget for teardown (release the instant the
+    // visible beat is gone) and enforces SelahMomentLockSeconds as the hard ceiling.
+    // Re-entrant-safe: a second finalize simply re-arms the same handle rather than
+    // stacking, and the reset above re-baselines the ceiling.
     World->GetTimerManager().SetTimer(
-        SelahMomentLockHandle, this, &AGothicPlayerCharacter::EndSelahMomentLock,
-        FMath::Max(0.1f, SelahMomentLockSeconds), false);
+        SelahMomentLockHandle, this, &AGothicPlayerCharacter::PollSelahMomentLock,
+        0.25f, /*bLoop=*/true, /*FirstDelay=*/0.25f);
 
     // Hold the player still for the reveal. Movement and fire are refused while
     // this is set (see OnMove and UGA_Fire::CanActivateAbility); menus are not.
@@ -2347,11 +2361,68 @@ void AGothicPlayerCharacter::TriggerSelahMoment()
     }
 
     UE_LOG(LogVigilCombat, Log,
-        TEXT("VigilTimeline|t=%.3f|%s|Selah|LOCK_ENGAGE|fallback=%.1fs"),
+        TEXT("VigilTimeline|t=%.3f|%s|Selah|LOCK_ENGAGE|ceiling=%.1fs"),
         World->GetTimeSeconds(), *GetName(), FMath::Max(0.1f, SelahMomentLockSeconds));
 
-    // Blueprint handles the visual and audio — call the event
+    // Blueprint handles the visual and audio — and is expected to call
+    // RegisterSelahMomentWidget with the name-cycle widget it creates here, so the
+    // poll can release the lock the moment that widget is torn down.
     OnSelahMoment();
+}
+
+void AGothicPlayerCharacter::RegisterSelahMomentWidget(UUserWidget* Widget)
+{
+    // Only meaningful while a lock is live; a stray call outside the beat is ignored
+    // so it cannot arm a phantom teardown-release against the next moment.
+    if (!bSelahMomentLock)
+    {
+        return;
+    }
+
+    SelahMomentWidget = Widget;
+    bSelahMomentWidgetRegistered = (Widget != nullptr);
+
+    UE_LOG(LogVigilCombat, Log,
+        TEXT("VigilTimeline|t=%.3f|%s|Selah|WIDGET_REGISTER|valid=%d"),
+        GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetName(),
+        bSelahMomentWidgetRegistered ? 1 : 0);
+}
+
+void AGothicPlayerCharacter::PollSelahMomentLock()
+{
+    // A poll that fires with no lock live is a stale timer — clear it and go.
+    if (!bSelahMomentLock)
+    {
+        GetWorldTimerManager().ClearTimer(SelahMomentLockHandle);
+        return;
+    }
+
+    // Teardown IS a release path: once a widget has been registered for this moment,
+    // its going invalid (destroyed on level travel, respawn, an interrupted collect,
+    // or a second overlapping payout tearing it down) means the visible justification
+    // for the lock is gone — release now rather than waiting out the ceiling. Note we
+    // only trust this after a registration; an un-wired Blueprint never registers, so
+    // bSelahMomentWidgetRegistered stays false and we fall through to the ceiling.
+    if (bSelahMomentWidgetRegistered && !SelahMomentWidget.IsValid())
+    {
+        UE_LOG(LogVigilCombat, Log,
+            TEXT("VigilTimeline|t=%.3f|%s|Selah|LOCK_RELEASE|widget-gone"),
+            GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f, *GetName());
+        EndSelahMomentLock();
+        return;
+    }
+
+    // Hard ceiling — the last-resort backstop for a moment whose widget was never
+    // registered and whose OnSelahMomentComplete never arrived.
+    const float Now     = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+    const float Ceiling = FMath::Max(0.1f, SelahMomentLockSeconds);
+    if (Now - SelahMomentLockStartTime >= Ceiling)
+    {
+        UE_LOG(LogVigilCombat, Warning,
+            TEXT("VigilTimeline|t=%.3f|%s|Selah|LOCK_RELEASE|ceiling elapsed=%.2f"),
+            Now, *GetName(), Now - SelahMomentLockStartTime);
+        EndSelahMomentLock();
+    }
 }
 
 void AGothicPlayerCharacter::EndSelahMomentLock()
@@ -2372,6 +2443,16 @@ void AGothicPlayerCharacter::EndSelahMomentLock()
 
     GetWorldTimerManager().ClearTimer(SelahMomentLockHandle);
 
+    // Drop the widget tracking so a torn-down widget from this moment can never fire
+    // a phantom teardown-release against the next one.
+    SelahMomentWidget.Reset();
+    bSelahMomentWidgetRegistered = false;
+
+    // The canonical "lock actually released at t=X" marker (grep: Selah|LOCK_RELEASE).
+    // Entry paths that carry a reason — the poll's widget-gone / ceiling lines and
+    // OnMove's LOCK_SELFHEAL — log that reason just before landing here; a bare
+    // LOCK_RELEASE with no preceding reason line is the normal widget-completion path
+    // (Blueprint's OnSelahMomentComplete calling in directly).
     if (bWasLocked)
     {
         UE_LOG(LogVigilCombat, Log,
