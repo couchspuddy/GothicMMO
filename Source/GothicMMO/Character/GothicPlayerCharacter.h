@@ -33,6 +33,7 @@ class UGothicInputHandlerComponent;
 class UGothicHintManagerComponent;
 class UGothicAbilitySet;
 class UGothicInventoryWidget;
+class UUserWidget;
 class UGA_TheLovedAndTheLost;
 class AGothicPlayerState;
 struct FInputActionValue;
@@ -696,16 +697,37 @@ public:
     void EndSelahMomentLock();
 
     /**
-     * Fallback duration for the lock, in seconds.
+     * Hand the C++ lock the name-cycle widget it is waiting on, so teardown can be
+     * a release path and not only completion.
      *
-     * A timer rather than purely waiting on the widget, because the widget lives
-     * on the client and can be destroyed mid-cycle (level travel, a respawn, an
-     * interrupted collection). If its completion event never arrives, this is what
-     * stops the player being frozen for the rest of the run. Keep it comfortably
-     * longer than the name cycle — the widget normally releases the lock first.
+     * Call this from OnSelahMoment right after Create Widget (before or after Add
+     * To Viewport, either order works). The lock polls the widget's validity: the
+     * instant the widget is destroyed — level travel, a respawn, an interrupted
+     * collection, or a second overlapping payout tearing the first one down — the
+     * lock releases within one poll tick instead of running the full ceiling. This
+     * is what enforces the invariant that a movement lock never outlives the visible
+     * beat that justifies it. Passing nullptr is harmless (the poll falls back to
+     * the ceiling), so an un-wired Blueprint degrades safely to the old behavior,
+     * just with the tighter ceiling below.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Gothic|Selah")
+    void RegisterSelahMomentWidget(UUserWidget* Widget);
+
+    /**
+     * Hard ceiling for the lock, in seconds — a last-resort backstop, NOT the
+     * expected duration.
+     *
+     * The lock normally ends when the name-cycle widget finishes (its
+     * OnSelahMomentComplete) or the moment the widget is torn down (the validity
+     * poll armed by RegisterSelahMomentWidget). This ceiling only fires if BOTH of
+     * those are lost — e.g. a Blueprint that never registered its widget and never
+     * calls OnSelahMomentComplete. Kept just above the real name cycle so a lost
+     * release costs a short freeze, not an eight-second one. The true cycle length
+     * lives in the UMG widget (invisible from C++); 5s is a conservative guess —
+     * retune once the widget's cycle duration is known.
      */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Selah")
-    float SelahMomentLockSeconds = 8.f;
+    float SelahMomentLockSeconds = 5.f;
 
 
     /** True if the active weapon has at least one round in its magazine. */
@@ -1875,7 +1897,27 @@ private:
      *  Local only — the moment is a per-player beat, not shared world state. */
     bool bSelahMomentLock = false;
 
+    /** Drives the repeating validity poll that both watches the widget for teardown
+     *  and enforces SelahMomentLockSeconds as the hard ceiling. */
     FTimerHandle SelahMomentLockHandle;
+
+    /** The name-cycle widget this lock is waiting on, handed in by
+     *  RegisterSelahMomentWidget. Weak so a widget torn down mid-cycle simply goes
+     *  invalid — the signal the poll releases on. */
+    TWeakObjectPtr<UUserWidget> SelahMomentWidget;
+
+    /** True once a widget has been registered for the CURRENT lock. Distinguishes
+     *  "registered then destroyed" (release now) from "never registered" (a
+     *  Blueprint that hasn't wired RegisterSelahMomentWidget yet — wait for the
+     *  ceiling). Reset every TriggerSelahMoment and cleared in EndSelahMomentLock. */
+    bool bSelahMomentWidgetRegistered = false;
+
+    /** World time the current lock engaged, so the poll can enforce the ceiling. */
+    float SelahMomentLockStartTime = 0.f;
+
+    /** Repeating poll body: releases the lock the instant a registered widget goes
+     *  invalid, or once SelahMomentLockSeconds have elapsed. */
+    void PollSelahMomentLock();
 
     // ── Hit-stop (feel pass) ─────────────────────────────────────────────
     /** Restores CustomTimeDilation to 1 at the end of the hit-stop window. */
