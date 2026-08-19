@@ -34,16 +34,8 @@ crossing it corrupts uncommitted work. See AGENTS.md rule 1.
 ## Repository layout
 
 ```
-GothicMMO.uproject          UE5 project descriptor (Git-LFS pointer)
-GothicMMO.slnx / *.slnx     Solution files (generated tooling)
-CLAUDE.md / AGENTS.md       Agent contracts (this file + source-lane rules)
-
 Source/
-  GothicMMO.Target.cs           Game target (TargetType.Game, BuildSettings V7)
-  GothicMMOEditor.Target.cs     Editor target
   GothicMMO/
-    GothicMMO.Build.cs          Module deps: GameplayAbilities, EnhancedInput,
-                                ReplicationGraph, AIModule, Niagara, UMG, OnlineSubsystem…
     AbilitySystem/    GAS core — GothicAttributeSet (the damage choke point),
                       GothicAbilitySystemComponent, GothicAbilitySet, GothicGameplayTags,
                       and the GA_* abilities (Fire, Lunge, Slicer, Read, Reckoning,
@@ -62,15 +54,12 @@ Content/              *** DO NOT EDIT FROM THE SOURCE LANE *** — Blueprints, l
                       (L_TitleScreen, L_Hearth, L_Palewood, L_EaglesLanding), assets, Paragon
                       character kits. Binary assets are Git-LFS (.uasset/.umap).
 
-Config/               DefaultEngine/Editor/Game/Input/GameplayTags .ini
 Plugins/
   VigDevTools/        Custom MCP toolsets (Python) for live editor GAS/AI/encounter diagnostics
   unreal-mcp-main/    The unreal-mcp server plugin (editor control)
 docs/                 Design bible (29 .md specs) + PRODUCTION_STATUS_TRACKER.md
 .mcp.json             Registers the unreal-mcp HTTP server at 127.0.0.1:8000
 ```
-
-Scale: ~78 `.cpp` / ~80 `.h` under `Source/GothicMMO/`; 29 design docs.
 
 ---
 
