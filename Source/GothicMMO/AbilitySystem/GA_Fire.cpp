@@ -281,7 +281,7 @@ void UGA_Fire::ApplyCooldown(
     }
 
     Spec.Data->SetSetByCallerMagnitude(
-        FGameplayTag::RequestGameplayTag(FName("Data.Cooldown")), FireInterval);
+        GothicTags::Data_Cooldown, FireInterval);
 
     ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, Spec);
 }

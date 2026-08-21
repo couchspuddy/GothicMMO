@@ -24,6 +24,9 @@ namespace GothicTags
 		"the non-gun ability input path cancels the sprint rather than being blocked by it. "
 		"Loose tags do NOT replicate, and neither does bIsSprinting — this is owning-client state, "
 		"which is where the activation gate has to fire anyway.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_InCombat, "State.InCombat",
+		"Enemy is in combat. Read every frame by UGothicEnemyAnimInstance to drive the "
+		"combat-idle blend; replicated so remote clients see it without an extra RPC.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Read, "State.Read",
 		"The Read's CASTER window (GA_Read applies GE_ReadState, a duration GE). Drives the HUD proc "
 		"icon via AGothicPlayerCharacter::IsReadActive and NOTHING else — the damage payoff is gated on "
@@ -53,6 +56,8 @@ namespace GothicTags
 		"SetByCaller channel for SuperMeter gain on super-gain GEs.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Data_RampMagnitude, "Data.RampMagnitude",
 		"SetByCaller channel for The Loved and The Lost's ramp GE magnitude.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Data_Cooldown, "Data.Cooldown",
+		"SetByCaller cooldown duration in seconds. GA_Fire sets it from the active weapon's rounds per minute.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Data_VitalHit, "Data.VitalHit",
 		"SetByCaller flag (1/0) stamped by GA_Fire so the damage choke point knows a hit "
 		"was vital. Read by the flinch and shape passes; consumed by no GE modifier.");
@@ -60,6 +65,9 @@ namespace GothicTags
 	// ── Events ───────────────────────────────────────────────────────────────
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Kill_Confirmed, "Event.Kill.Confirmed",
 		"Sent to the killer's ASC from GothicAttributeSet on a confirmed kill. Drives Not At All.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Montage_HitWindow, "Event.Montage.HitWindow",
+		"Raised by an AnimNotify_SendGameplayEvent at a montage's swing contact frame; "
+		"UGothicGameplayAbility waits on it to open the melee hit window mid-montage.");
 
 	// ── Tutorial hints ───────────────────────────────────────────────────────
 	// The DevComment on each is the TRIGGER — where the hint is raised from —

@@ -67,7 +67,7 @@ void UGothicEnemyAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
             GothicTags::State_Dead);
 
         bIsInCombat = CachedASC->HasMatchingGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.InCombat")));
+            GothicTags::State_InCombat);
 
         bIsStunned = CachedASC->HasMatchingGameplayTag(
             GothicTags::State_Stunned);

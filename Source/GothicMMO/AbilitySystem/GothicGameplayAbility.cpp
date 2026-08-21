@@ -87,7 +87,7 @@ bool UGothicGameplayAbility::PlayOptionalMontage()
     UAbilityTask_WaitGameplayEvent* EventTask =
         UAbilityTask_WaitGameplayEvent::WaitGameplayEvent(
             this,
-            FGameplayTag::RequestGameplayTag(FName("Event.Montage.HitWindow")));
+            GothicTags::Event_Montage_HitWindow);
 
     EventTask->EventReceived.AddDynamic(this, &UGothicGameplayAbility::OnMontageHitWindow);
     EventTask->ReadyForActivation();
