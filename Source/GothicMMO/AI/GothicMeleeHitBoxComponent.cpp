@@ -245,7 +245,7 @@ void UGothicMeleeHitboxComponent::OnHitboxOverlap(
     if (Spec.IsValid())
     {
         Spec.Data->SetSetByCallerMagnitude(
-            FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
+            GothicTags::Data_Damage,
             BaseDamage);
 
         OwnerASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);

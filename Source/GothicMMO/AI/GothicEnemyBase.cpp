@@ -3,6 +3,7 @@
 #include "AI/GothicEnemyBase.h"
 
 #include "GothicMMO.h"                          // LogVigilCombat
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "TimerManager.h"
 #include "AI/GothicEnemyAIController.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
@@ -212,13 +213,13 @@ void AGothicEnemyBase::BeginPlay()
     if (AbilitySystemComponent)
     {
         AbilitySystemComponent->RegisterGameplayTagEvent(
-            FGameplayTag::RequestGameplayTag(FName("State.Stunned")),
+            GothicTags::State_Stunned,
             EGameplayTagEventType::NewOrRemoved)
             .AddUObject(this, &AGothicEnemyBase::HandleStunTagChanged);
 
         // Make State.Read.Marked visible on the enemy wearing it.
         AbilitySystemComponent->RegisterGameplayTagEvent(
-            FGameplayTag::RequestGameplayTag(FName("State.Read.Marked")),
+            GothicTags::State_Read_Marked,
             EGameplayTagEventType::NewOrRemoved)
             .AddUObject(this, &AGothicEnemyBase::HandleReadMarkTagChanged);
     }
@@ -625,7 +626,7 @@ void AGothicEnemyBase::OnDeath_Implementation(AActor* Killer)
     // dropping loot twice and (now) decrementing the encounter roster twice. Two
     // damage instances landing in the same frame is enough to trigger it.
     if (AbilitySystemComponent && AbilitySystemComponent->HasMatchingGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
+            GothicTags::State_Dead))
     {
         return;
     }

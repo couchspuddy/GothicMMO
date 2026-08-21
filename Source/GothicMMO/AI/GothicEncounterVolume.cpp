@@ -9,6 +9,7 @@
 #include "Game/GothicGameInstance.h"
 #include "Character/GothicPlayerCharacter.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "AI/GothicEnemySpawnPoint.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -889,7 +890,7 @@ void AGothicEncounterVolume::FinalizeCollection()
             if (Spec.IsValid())
             {
                 Spec.Data->SetSetByCallerMagnitude(
-                    FGameplayTag::RequestGameplayTag(FName("Data.Selah")), CachedTotalSelah);
+                    GothicTags::Data_Selah, CachedTotalSelah);
                 ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
             }
         }

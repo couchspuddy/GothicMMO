@@ -7,6 +7,7 @@
 #include "Materials/MaterialInterface.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "Character/GothicPlayerCharacter.h"
 #include "GameFramework/WorldSettings.h"
@@ -505,7 +506,7 @@ int32 AGothicRotundaPillar::ApplyCollapseDamageAtImpact()
         if (Spec.IsValid())
         {
             Spec.Data->SetSetByCallerMagnitude(
-                FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
+                GothicTags::Data_Damage,
                 Magnitude);
             TargetASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
 

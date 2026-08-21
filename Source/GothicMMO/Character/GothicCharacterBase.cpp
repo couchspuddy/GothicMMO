@@ -4,6 +4,7 @@
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "GameplayEffectTypes.h"
 #include "Components/CapsuleComponent.h"
 #include "AI/GothicCombatStateComponent.h"
@@ -137,12 +138,12 @@ void AGothicCharacterBase::OnDeath_Implementation(AActor* Killer)
     if (AbilitySystemComponent)
     {
         if (AbilitySystemComponent->HasMatchingGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
+            GothicTags::State_Dead))
         {
             return;
         }
         AbilitySystemComponent->AddLooseGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Dead")));
+            GothicTags::State_Dead);
 
         AbilitySystemComponent->CancelAllAbilities();
     }

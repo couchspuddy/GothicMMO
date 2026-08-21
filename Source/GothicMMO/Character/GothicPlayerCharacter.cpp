@@ -410,7 +410,7 @@ void AGothicPlayerCharacter::BeginPlay()
         if (AbilitySystemComponent)
         {
             const bool bStunnedNow = AbilitySystemComponent->HasMatchingGameplayTag(
-                FGameplayTag::RequestGameplayTag(FName("State.Stunned")));
+                GothicTags::State_Stunned);
             PushStunStateToHUD(bStunnedNow, bStunnedNow ? GetStunRemainingDuration() : 0.f);
         }
 
@@ -566,7 +566,7 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
     if (HasAuthority() && AbilitySystemComponent)
     {
         AbilitySystemComponent->SetLooseGameplayTagCount(
-            FGameplayTag::RequestGameplayTag(FName("State.Dead")), 0);
+            GothicTags::State_Dead, 0);
 
         // Same outlives-the-pawn hazard for the two vulnerability windows the pack
         // surge decorator reads. Both are applied on this authority ASC (reload via
@@ -1103,7 +1103,7 @@ void AGothicPlayerCharacter::BindStunTagListener()
     // keep calling the OLD pawn's handler between its death and its GC.
     BoundStunTagASC = AbilitySystemComponent;
     StunTagChangedHandle = AbilitySystemComponent->RegisterGameplayTagEvent(
-        FGameplayTag::RequestGameplayTag(FName("State.Stunned")),
+        GothicTags::State_Stunned,
         EGameplayTagEventType::NewOrRemoved)
         .AddUObject(this, &AGothicPlayerCharacter::HandleStunTagChanged);
 }
@@ -1119,7 +1119,7 @@ void AGothicPlayerCharacter::UnbindStunTagListener()
     if (ASC && StunTagChangedHandle.IsValid())
     {
         ASC->RegisterGameplayTagEvent(
-            FGameplayTag::RequestGameplayTag(FName("State.Stunned")),
+            GothicTags::State_Stunned,
             EGameplayTagEventType::NewOrRemoved).Remove(StunTagChangedHandle);
     }
 
@@ -1149,7 +1149,7 @@ void AGothicPlayerCharacter::HandleStunTagChanged(const FGameplayTag CallbackTag
             }
             else if (!AbilitySystemComponent ||
                      !AbilitySystemComponent->HasMatchingGameplayTag(
-                         FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
+                         GothicTags::State_Dead))
             {
                 // Restore — but never over the death path. OnDeath's
                 // DisableMovement also parks the pawn in MOVE_None, and a
@@ -1231,7 +1231,7 @@ float AGothicPlayerCharacter::GetStunRemainingDuration() const
     // is valid on the machine the HUD lives on. Take the longest remaining if more
     // than one stun overlaps.
     FGameplayTagContainer StunTags;
-    StunTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Stunned")));
+    StunTags.AddTag(GothicTags::State_Stunned);
 
     const FGameplayEffectQuery Query =
         FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(StunTags);
@@ -3518,7 +3518,7 @@ bool AGothicPlayerCharacter::IsReckoningActive() const
 {
     return AbilitySystemComponent &&
         AbilitySystemComponent->HasMatchingGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Reckoning")));
+            GothicTags::State_Reckoning);
 }
 
 bool AGothicPlayerCharacter::IsNotAtAllGranted() const
@@ -3549,7 +3549,7 @@ void AGothicPlayerCharacter::OnDeath_Implementation(AActor* Killer)
     // AGothicEnemyBase guards its own override the same way and for the same
     // reason.
     if (AbilitySystemComponent && AbilitySystemComponent->HasMatchingGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
+            GothicTags::State_Dead))
     {
         return;
     }
