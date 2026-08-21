@@ -2,6 +2,7 @@
 
 #include "AbilitySystem/GA_Slicer.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "AI/GothicEnemyBase.h"
 #include "AbilitySystem/AGothicSlicerProjectile.h"
 #include "AbilitySystemBlueprintLibrary.h"
@@ -129,7 +130,7 @@ void UGA_Slicer::HandleSlicerHit(AActor* HitActor, FVector HitLocation)
                 if (DamageSpec.IsValid())
                 {
                     DamageSpec.Data->SetSetByCallerMagnitude(
-                        FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
+                        GothicTags::Data_Damage,
                         ScaledDamage);
 
                     SourceASC->ApplyGameplayEffectSpecToTarget(*DamageSpec.Data.Get(), TargetASC);

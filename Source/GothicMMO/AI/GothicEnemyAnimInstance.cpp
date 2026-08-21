@@ -3,6 +3,7 @@
 #include "AI/GothicEnemyAnimInstance.h"
 #include "AI/GothicEnemyBase.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameplayTagContainer.h"
 #include "KismetAnimationLibrary.h"
@@ -63,16 +64,16 @@ void UGothicEnemyAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
     if (CachedASC)
     {
         bIsDead = CachedASC->HasMatchingGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Dead")));
+            GothicTags::State_Dead);
 
         bIsInCombat = CachedASC->HasMatchingGameplayTag(
             FGameplayTag::RequestGameplayTag(FName("State.InCombat")));
 
         bIsStunned = CachedASC->HasMatchingGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Stunned")));
+            GothicTags::State_Stunned);
 
         bIsAttacking = CachedASC->HasMatchingGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Attacking")));
+            GothicTags::State_Attacking);
     }
 
 }

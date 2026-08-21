@@ -2,6 +2,7 @@
 
 #include "AI/AnimNotify_GroundPoundImpact.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -80,7 +81,7 @@ void UAnimNotify_GroundPoundImpact::Notify(
         if (Spec.IsValid())
         {
             Spec.Data->SetSetByCallerMagnitude(
-                FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
+                GothicTags::Data_Damage,
                 ImpactDamage);
 
             BossASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), PlayerASC);

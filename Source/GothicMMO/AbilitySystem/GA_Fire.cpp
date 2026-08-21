@@ -70,8 +70,8 @@ UGA_Fire::UGA_Fire()
 
     // The gating OnFire() never had. A dead or stunned player could previously
     // still trace and deal damage.
-    ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Dead")));
-    ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Stunned")));
+    ActivationBlockedTags.AddTag(GothicTags::State_Dead);
+    ActivationBlockedTags.AddTag(GothicTags::State_Stunned);
 
     // Sprinting costs you the gun. This is the whole of the fire block — the
     // trigger is dead while the tag is held, with no queue and no auto-unsprint:
@@ -874,7 +874,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
             Hit.GetActor()->FindComponentByClass<UGothicVitalPointComponent>())
     {
         const bool bReckoning = SourceASC->HasMatchingGameplayTag(
-            FGameplayTag::RequestGameplayTag(FName("State.Reckoning")));
+            GothicTags::State_Reckoning);
         const float RadiusBonus = SourceASC->GetNumericAttribute(
             UGothicAttributeSet::GetVitalPointRadiusAttribute());
 
@@ -942,7 +942,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
         // window, which made it a flat damage cooldown rather than an act of
         // reading one opponent.
         if (TargetASC->HasMatchingGameplayTag(
-                FGameplayTag::RequestGameplayTag(FName("State.Read.Marked"))))
+                GothicTags::State_Read_Marked))
         {
             FinalDamage *= ReadVitalDamageMultiplier;
             bReadAmplified = true;
@@ -983,7 +983,7 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     }
 
     Spec.Data->SetSetByCallerMagnitude(
-        FGameplayTag::RequestGameplayTag(FName("Data.Damage")), FinalDamage);
+        GothicTags::Data_Damage, FinalDamage);
 
     // Stamp vital-ness onto the spec so the choke point can branch the flinch and
     // shape passes on it. GA_Fire is the only site that resolves a vital today, so

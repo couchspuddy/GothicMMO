@@ -13,9 +13,9 @@ UGA_HuntersStrike::UGA_HuntersStrike()
 {
     AbilitySlot = EGothicAbilitySlot::Ability1;
 
-    ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Dead")));
-    ActivationBlockedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Stunned")));
-    ActivationOwnedTags.AddTag(FGameplayTag::RequestGameplayTag(FName("State.Attacking")));
+    ActivationBlockedTags.AddTag(GothicTags::State_Dead);
+    ActivationBlockedTags.AddTag(GothicTags::State_Stunned);
+    ActivationOwnedTags.AddTag(GothicTags::State_Attacking);
 }
 
 void UGA_HuntersStrike::ActivateAbility(

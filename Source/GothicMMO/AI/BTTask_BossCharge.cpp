@@ -2,6 +2,7 @@
 
 #include "AI/BTTask_BossCharge.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
+#include "AbilitySystem/GothicGameplayTags.h"
 #include "AI/GothicEnemyAIController.h"
 #include "AI/GothicBossArenaManager.h"
 #include "AI/GothicRotundaPillar.h"
@@ -313,7 +314,7 @@ void UBTTask_BossCharge::ApplyChargeDamage(
         if (Spec.IsValid())
         {
             Spec.Data->SetSetByCallerMagnitude(
-                FGameplayTag::RequestGameplayTag(FName("Data.Damage")),
+                GothicTags::Data_Damage,
                 ChargeDamage);
 
             BossASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);

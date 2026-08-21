@@ -365,7 +365,7 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
             {
                 UAbilitySystemComponent* TargetASC = GothicChar->GetAbilitySystemComponent();
                 if (TargetASC && !TargetASC->HasMatchingGameplayTag(
-                    FGameplayTag::RequestGameplayTag(FName("State.Dead"))))
+                    GothicTags::State_Dead))
                 {
                     // GothicAttributeSet.cpp — replace the direct call
                     IGothicCombatInterface::Execute_OnDeath(GothicChar,
@@ -380,7 +380,7 @@ if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
 
                         UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(
                             SourceActor,
-                            FGameplayTag::RequestGameplayTag(FName("Event.Kill.Confirmed")),
+                            GothicTags::Event_Kill_Confirmed,
                             KillEventPayload);
                     }
                 }
