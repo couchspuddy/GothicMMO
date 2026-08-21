@@ -32,6 +32,11 @@ namespace GothicTags
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Reckoning);
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Sprinting);
 
+	// Enemy combat state. Set on the enemy ASC by the AI layer and read every
+	// frame by UGothicEnemyAnimInstance to drive the combat-idle blend. Replicated
+	// tag, so remote clients get it without an extra RPC.
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_InCombat);
+
 	// The Read (GA_Read). State_Read is the caster window, State_Read_Marked rides
 	// the single prey. Both existed as string-lookup tags before this — formalised
 	// here per the file's own rule (RequestGameplayTag(FName(...)) is a review
@@ -50,6 +55,7 @@ namespace GothicTags
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Selah);
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_SuperMeter);
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_RampMagnitude);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Cooldown);
 
 	// Marks a damage spec as a VITAL hit so the choke point
 	// (UGothicAttributeSet::PostGameplayEffectExecute) can branch on it — the flinch
@@ -62,6 +68,11 @@ namespace GothicTags
 
 	// ── Events ───────────────────────────────────────────────────────────────
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Kill_Confirmed);
+
+	// Anim-notify event raised at a montage's swing contact frame
+	// (AnimNotify_SendGameplayEvent). UGothicGameplayAbility waits on it to open
+	// the melee hit window mid-montage.
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Montage_HitWindow);
 
 	// ── Tutorial hints ───────────────────────────────────────────────────────
 	// Identity for one teachable action, and nothing more. The tag is the key
