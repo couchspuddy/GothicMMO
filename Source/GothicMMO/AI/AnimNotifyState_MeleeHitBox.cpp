@@ -1,7 +1,7 @@
 ﻿// AnimNotifyState_MeleeHitbox.cpp
 
-#include "AI/AnimNotifyState_MeleeHitbox.h"
-#include "AI/GothicMeleeHitboxComponent.h"
+#include "AI/AnimNotifyState_MeleeHitBox.h"
+#include "AI/GothicMeleeHitBoxComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 
 void UAnimNotifyState_MeleeHitbox::NotifyBegin(

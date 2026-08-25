@@ -21,7 +21,7 @@
 #include "CoreMinimal.h"
 #include "BehaviorTree/BTService.h"
 #include "BehaviorTree/BehaviorTreeTypes.h"
-#include "GothicBTService_NearbyTerrainCheck.generated.h"
+#include "GothicBTService_NearbyTerraincheck.generated.h"
 
 UCLASS(meta = (DisplayName = "Gothic Nearby Terrain Check"))
 class GOTHICMMO_API UGothicBTService_NearbyTerrainCheck : public UBTService

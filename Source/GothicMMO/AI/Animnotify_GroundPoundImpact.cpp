@@ -1,6 +1,6 @@
 // AnimNotify_GroundPoundImpact.cpp
 
-#include "AI/AnimNotify_GroundPoundImpact.h"
+#include "AI/Animnotify_GroundPoundImpact.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicGameplayTags.h"
 #include "AbilitySystemBlueprintLibrary.h"

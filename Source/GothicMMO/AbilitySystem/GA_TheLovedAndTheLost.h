@@ -27,7 +27,7 @@
 
 #include "CoreMinimal.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
-#include "GA_TheLovedAndTheLost.generated.h"
+#include "GA_TheLovedandTheLost.generated.h"
 
 UCLASS()
 class GOTHICMMO_API UGA_TheLovedAndTheLost : public UGothicGameplayAbility

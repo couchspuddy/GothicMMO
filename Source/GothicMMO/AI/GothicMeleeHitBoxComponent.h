@@ -22,7 +22,7 @@
 #include "CoreMinimal.h"
 #include "Components/BoxComponent.h"
 #include "GameplayTagContainer.h"
-#include "GothicMeleeHitboxComponent.generated.h"
+#include "GothicMeleeHitBoxComponent.generated.h"
 
 class UGameplayEffect;
 

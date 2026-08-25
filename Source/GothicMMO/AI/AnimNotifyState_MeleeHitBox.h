@@ -18,7 +18,7 @@
 
 #include "CoreMinimal.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
-#include "AnimNotifyState_MeleeHitbox.generated.h"
+#include "AnimNotifyState_MeleeHitBox.generated.h"
 
 UCLASS(meta=(DisplayName = "Melee Hitbox Window"))
 class GOTHICMMO_API UAnimNotifyState_MeleeHitbox : public UAnimNotifyState

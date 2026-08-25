@@ -1,6 +1,6 @@
 ﻿// GothicBTService_NearbyTerrainCheck.cpp
 
-#include "AI/GothicBTService_NearbyTerrainCheck.h"
+#include "AI/GothicBTService_NearbyTerraincheck.h"
 #include "AIController.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"

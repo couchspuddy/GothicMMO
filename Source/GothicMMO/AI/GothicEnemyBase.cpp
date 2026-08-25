@@ -7,7 +7,7 @@
 #include "TimerManager.h"
 #include "AI/GothicEnemyAIController.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
-#include "AI/GothicMeleeHitboxComponent.h"
+#include "AI/GothicMeleeHitBoxComponent.h"
 #include "AI/GothicVitalPointComponent.h"
 #include "AI/GothicPackSubsystem.h"
 #include "AI/GothicEnemyDataAsset.h"

@@ -1,6 +1,6 @@
 // GA_TheLovedAndTheLost.cpp
 
-#include "AbilitySystem/GA_TheLovedAndTheLost.h"
+#include "AbilitySystem/GA_TheLovedandTheLost.h"
 #include "AbilitySystem/GothicGameplayTags.h"
 #include "AbilitySystemComponent.h"
 #include "GameplayEffect.h"

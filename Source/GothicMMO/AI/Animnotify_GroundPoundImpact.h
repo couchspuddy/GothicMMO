@@ -13,7 +13,7 @@
 
 #include "CoreMinimal.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
-#include "AnimNotify_GroundPoundImpact.generated.h"
+#include "Animnotify_GroundPoundImpact.generated.h"
 
 class UGameplayEffect;
 

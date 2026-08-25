@@ -1,6 +1,6 @@
 // GothicMeleeHitboxComponent.cpp
 
-#include "AI/GothicMeleeHitboxComponent.h"
+#include "AI/GothicMeleeHitBoxComponent.h"
 #include "GothicMMO.h"                      // LogVigilCombat
 #include "AI/GothicEnemyBase.h"
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
