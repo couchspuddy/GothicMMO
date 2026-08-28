@@ -4,7 +4,7 @@
 #include "AI/GothicEnemyBase.h"
 #include "AIController.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
-#include "UObject/Enum.h"
+#include "UObject/Class.h"
 
 UGothicBTDecorator_HasAffix::UGothicBTDecorator_HasAffix()
 {
