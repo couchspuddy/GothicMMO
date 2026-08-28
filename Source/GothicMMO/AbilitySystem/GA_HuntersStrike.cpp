@@ -159,20 +159,4 @@ void UGA_HuntersStrike::PerformMeleeTrace()
             }
         }
     }
-
-    // Whiff — the swing damaged no one. Open the Retaliator counter-window on the
-    // player ASC (a timed loose tag, self-clearing) so a Retaliator affix can punish
-    // the opening. "Connected with nothing" is read as "no target took damage":
-    // AlreadyHit is the distinct set of enemies actually damaged above, so an empty
-    // set is a clean whiff (a swing that only grazed an immune target counts as a
-    // whiff too, which is the intended reading). Runs on the authority path only —
-    // PerformMeleeTrace is HasAuthority-gated by both callers.
-    if (AlreadyHit.Num() == 0)
-    {
-        if (UGothicAbilitySystemComponent* GothicASC =
-                Cast<UGothicAbilitySystemComponent>(GetAbilitySystemComponentFromActorInfo()))
-        {
-            GothicASC->ApplyTimedLooseTag(GothicTags::State_Whiffed, WhiffTagDuration);
-        }
-    }
 }

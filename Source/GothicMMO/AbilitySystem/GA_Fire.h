@@ -180,6 +180,17 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Reaction", meta = (ClampMin = "0.0"))
     float FiringTagDuration = 0.4f;
 
+    /**
+     * How long State.Whiffed is held on the player ASC when a shot's trace hits
+     * nothing — a wasted shot, one of the openings the Retaliator affix punishes
+     * (alongside State.Reloading / State.Sprinting). Applied on the AUTHORITY path,
+     * and independent of the State.Firing window: both can be live at once, they
+     * answer different questions. Tags only this pass — GA_EnemyRetaliate is not
+     * authored here.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Reaction", meta = (ClampMin = "0.0"))
+    float WhiffTagDuration = 0.4f;
+
     /** Ceiling on AbilityHaste's cooldown reduction, so stacked rolls can never
      *  drive the fire interval to zero. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Scaling", meta = (ClampMin = 0, ClampMax = 90))

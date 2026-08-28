@@ -32,10 +32,12 @@ namespace GothicTags
 		"just restarts the window (UGothicAbilitySystemComponent::ApplyTimedLooseTag never stacks "
 		"the count). Cleared on respawn like State.Sprinting — the ASC outlives the pawn.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Whiffed, "State.Whiffed",
-		"The Retaliator counter-window (ENEMY_AFFIXES.md Retaliator row): a melee swing that "
-		"connected with nothing. GA_HuntersStrike applies it (WhiffTagDuration, 0.4s default) on "
-		"the AUTHORITY ASC when its trace damages no target, so a Retaliator affix can punish the "
-		"opening. Timed loose tag via ApplyTimedLooseTag; cleared on respawn (the ASC outlives the pawn).");
+		"A wasted SHOT — one of the openings the Retaliator affix punishes, alongside "
+		"State.Reloading and State.Sprinting (the Retaliator does NOT react to melee whiffs). "
+		"GA_Fire applies it (WhiffTagDuration, 0.4s default) on the AUTHORITY ASC when a shot's "
+		"final trace hits NOTHING (a pure trace-miss, not a damage check — a shot that hit geometry "
+		"or an immune target is not a whiff). Timed loose tag via ApplyTimedLooseTag, independent of "
+		"the State.Firing window; cleared on respawn (the ASC outlives the pawn).");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_InCombat, "State.InCombat",
 		"Enemy is in combat. Read every frame by UGothicEnemyAnimInstance to drive the "
 		"combat-idle blend; replicated so remote clients see it without an extra RPC.");

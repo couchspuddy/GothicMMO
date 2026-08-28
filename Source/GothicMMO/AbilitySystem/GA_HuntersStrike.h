@@ -87,14 +87,6 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike|Reaction", meta = (ClampMin = "0.0"))
     float AttackingTagDuration = 0.4f;
 
-    /**
-     * How long State.Whiffed is held on the player ASC when the swing's trace damages
-     * nothing — the Retaliator counter-window (ENEMY_AFFIXES.md Retaliator row). Tags
-     * only this pass: GA_EnemyRetaliate is not authored here.
-     */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike|Reaction", meta = (ClampMin = "0.0"))
-    float WhiffTagDuration = 0.4f;
-
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     TSubclassOf<UGameplayEffect> SuperGainOnHitEffect;
 
