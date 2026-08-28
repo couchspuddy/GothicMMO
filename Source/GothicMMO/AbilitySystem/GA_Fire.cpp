@@ -228,6 +228,18 @@ void UGA_Fire::ActivateAbility(
     // hits nothing is still just as loud.
     if (HasAuthority(&ActivationInfo))
     {
+        // Reactive "is shooting" window on the player ASC. GA_Fire owns no
+        // ActivationOwnedTags and EndAbility()s on this same frame, so without this a
+        // reactive enemy affix's deferred BT re-check would never observe the shot.
+        // On the authority ASC because loose tags do not replicate and the affix
+        // decorators read the player tag server-side; the timer is ASC/world-anchored
+        // so removal fires after this instance is gone, and re-firing just restarts it.
+        if (UGothicAbilitySystemComponent* GothicASC =
+                Cast<UGothicAbilitySystemComponent>(GetAbilitySystemComponentFromActorInfo()))
+        {
+            GothicASC->ApplyTimedLooseTag(GothicTags::State_Firing, FiringTagDuration);
+        }
+
         ReportFireNoise(Char);
         PerformFireTrace(Char);
     }

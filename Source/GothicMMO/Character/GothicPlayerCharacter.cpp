@@ -575,6 +575,15 @@ void AGothicPlayerCharacter::InitGASFromPlayerState()
         AbilitySystemComponent->SetLooseGameplayTagCount(GothicTags::State_Reloading, 0);
         AbilitySystemComponent->SetLooseGameplayTagCount(GothicTags::State_Selah, 0);
 
+        // The reactive action-tag windows (State.Firing / State.Whiffed /
+        // State.Attacking) have the same outlives-the-pawn hazard. Their removal
+        // timers are world-anchored and DO fire across a death (the ASC survives on
+        // the PlayerState), so a normal death/respawn already self-clears — but a
+        // pawn that died mid-window and gets a REUSED pawn back before the timer
+        // elapses would inherit the open count. Cancel the timers and zero the counts
+        // here so the fresh pawn always starts clean.
+        AbilitySystemComponent->ClearTimedLooseTags();
+
         // The movement half of the Selah lock is a plain pawn bool, not an ASC
         // tag, so the clear above does not touch it. On a truly fresh pawn it is
         // already false; on a REUSED pawn (checkpoint restart) a lock stranded

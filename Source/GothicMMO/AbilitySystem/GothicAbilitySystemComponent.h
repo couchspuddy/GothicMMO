@@ -97,6 +97,40 @@ public:
     void GrantStartupAbilities(const TArray<TSubclassOf<UGothicGameplayAbility>>& AbilitiesToGrant, int32 Level = 1);
 
     /**
+     * Applies Tag as a self-managed timed loose tag: takes exactly ONE loose count
+     * the first time a window opens and schedules its removal after Duration, on the
+     * WORLD timer manager rather than any ability instance's.
+     *
+     * Two properties this exists for:
+     *   - It OUTLIVES the ability. GA_Fire and GA_HuntersStrike's instant path
+     *     EndAbility() on the same frame they fire; a timer set on the ability
+     *     instance would be torn down with it and the tag would either never clear
+     *     or (worse) never open long enough for a deferred BT re-check to see it.
+     *     The world timer manager and this ASC (on the PlayerState) both survive the
+     *     pawn, so the removal is guaranteed to run — see ClearTimedLooseTags for the
+     *     one case (a mid-window respawn) the timer alone does not need to cover but
+     *     is swept anyway.
+     *   - It NEVER STACKS the count. A re-apply while the window is still open just
+     *     restarts the timer, so rapid fire cannot leak counts. Because it is a
+     *     count-based +1/-1 (not an absolute SetLooseGameplayTagCount), it also
+     *     coexists with an ActivationOwnedTags instance of the same tag — a future
+     *     montage path can hold State.Attacking through ActivationOwnedTags while
+     *     this window's +1/-1 rides alongside without stripping it.
+     *
+     * Server-side intent: reactive enemy affixes read the player tag on the
+     * authority, so call this on the authority ASC (loose tags do not replicate).
+     */
+    void ApplyTimedLooseTag(const FGameplayTag& Tag, float Duration);
+
+    /**
+     * Cancels every in-flight timed loose-tag window (its pending removal timer and
+     * the one count it holds). Called from the fresh-pawn cleanup sweep so a window
+     * that was open when a pawn died cannot ride its stale count into the next life —
+     * the same outlives-the-pawn hazard State.Dead/State.Sprinting are swept for.
+     */
+    void ClearTimedLooseTags();
+
+    /**
      * Attempts to activate the ability bound to the given slot.
      * Called by input handling in the player controller.
      * Returns false if no ability is bound, ability is on cooldown, or
@@ -151,6 +185,16 @@ private:
      * (UGA_Fire::CanActivateAbility), not a way to cancel out of one.
      */
     void CancelSprintForNonGunInput(const FGameplayTag& InputTag);
+
+    /** Timer callback for ApplyTimedLooseTag — removes the window's single loose
+     *  count and forgets the handle. Bound with CreateUObject so a destroyed ASC
+     *  simply never fires it. */
+    void HandleTimedLooseTagExpired(FGameplayTag Tag);
+
+    /** One in-flight removal timer per open window, keyed by tag. Plain member (not
+     *  a UPROPERTY): FGameplayTag/FTimerHandle are value types with no UObject to
+     *  keep alive, same as LastObservedCooldownTotals below. */
+    TMap<FGameplayTag, FTimerHandle> TimedLooseTagHandles;
 
 public:
 

@@ -169,6 +169,17 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Scaling", meta = (ClampMin = 1))
     float ReadVitalDamageMultiplier = 1.5f;
 
+    /**
+     * How long State.Firing is held on the player ASC as a timed loose tag per shot,
+     * so reactive enemy affixes have an observable "is shooting" window. GA_Fire
+     * carries no ActivationOwnedTags and resolves in one frame, so nothing else
+     * survives a deferred BT re-check. Applied on the AUTHORITY path; rapid fire just
+     * restarts the window (UGothicAbilitySystemComponent::ApplyTimedLooseTag never
+     * stacks the count).
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Reaction", meta = (ClampMin = "0.0"))
+    float FiringTagDuration = 0.4f;
+
     /** Ceiling on AbilityHaste's cooldown reduction, so stacked rolls can never
      *  drive the fire interval to zero. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Fire|Scaling", meta = (ClampMin = 0, ClampMax = 90))
