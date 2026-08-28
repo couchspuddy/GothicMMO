@@ -61,6 +61,36 @@ enum class EGothicEnemyRole : uint8
 };
 
 /**
+ * Behavioural affix — a modular fighting-style tag layered on top of Tier/Shape/
+ * Role that dictates HOW an enemy closes distance, threatens, and reacts, so two
+ * enemies sharing a Shape and weapon still create different combat spaces (see
+ * docs/ENEMY_AFFIXES.md). This is the full designed catalogue; only ONE of these
+ * (Evader) has any behaviour C++ this pass — GothicBTTask_EvadeStep. The rest are
+ * DATA VALUES only: authoring one on an asset has no engine effect until its own
+ * BT node / ability is built and wired. None is the no-affix default.
+ *
+ * Pool gating (which affixes a given Shape may draw) and the Elite-only
+ * SecondaryAffix rule are CURATION CONVENTIONS, deliberately not enforced in code
+ * — see the field comments below and the doc's Axis Map.
+ */
+UENUM(BlueprintType)
+enum class EGothicEnemyAffix : uint8
+{
+    None        UMETA(DisplayName = "None"),
+    Charger     UMETA(DisplayName = "Charger"),
+    Flanker     UMETA(DisplayName = "Flanker"),
+    Prowler     UMETA(DisplayName = "Prowler"),
+    Leaper      UMETA(DisplayName = "Leaper"),
+    GuardBreaker UMETA(DisplayName = "Guard-Breaker"),
+    VitalHunter UMETA(DisplayName = "Vital-Hunter"),
+    Harasser    UMETA(DisplayName = "Harasser"),
+    BleedWeaver UMETA(DisplayName = "Bleed-Weaver"),
+    Bracer      UMETA(DisplayName = "Bracer"),
+    Evader      UMETA(DisplayName = "Evader"),
+    Retaliator  UMETA(DisplayName = "Retaliator"),
+};
+
+/**
  * The classification + tuning for one enemy kind. Everything is EditDefaultsOnly:
  * the asset IS the data, there are no per-instance overrides here.
  */
@@ -85,6 +115,29 @@ public:
     /** Combat role. Selects the Behaviour Tree via RoleBehaviorTrees. */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy|Class")
     EGothicEnemyRole Role = EGothicEnemyRole::Swarmer;
+
+    // -------------------------------------------------------------------------
+    // Affixes — the enemy's fighting style. Drawn (by curation convention) from
+    // this enemy's Lore-Shaped pool; only Evader has behaviour code this pass.
+    // See docs/ENEMY_AFFIXES.md "Proposed Architecture".
+    // -------------------------------------------------------------------------
+
+    /** Primary behavioural affix. None = no affix. */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy|Affix")
+    EGothicEnemyAffix PrimaryAffix = EGothicEnemyAffix::None;
+
+    // Engine-Tier-Elite only by design intent — not enforced in code, a curation
+    // rule. "Elite" here is Engine Tier (durability), independent of Lore Tier —
+    // see Axis Map. A Lore-Tier-Retained authored at Engine-Tier-Elite (an "Elite
+    // Retained") is the case this exists for.
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Gothic|Enemy|Affix")
+    EGothicEnemyAffix SecondaryAffix = EGothicEnemyAffix::None;
+
+    /** True when either affix slot is configured to Affix. Used by
+     *  GothicBTDecorator_HasAffix to gate an affix branch in a shared tree. */
+    bool HasAffix(EGothicEnemyAffix Affix) const
+    { return Affix != EGothicEnemyAffix::None
+        && (PrimaryAffix == Affix || SecondaryAffix == Affix); }
 
     // -------------------------------------------------------------------------
     // Base attributes — applied to the ASC at spawn (server), base values.
