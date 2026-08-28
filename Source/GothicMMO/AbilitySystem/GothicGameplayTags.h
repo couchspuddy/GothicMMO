@@ -32,6 +32,17 @@ namespace GothicTags
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Reckoning);
 	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Sprinting);
 
+	// Reactive "action tags" — short timed loose windows applied to the PLAYER ASC
+	// so reactive enemy affixes (Evader/Retaliator/Harasser) have an observable
+	// trigger window to gate on. An instant ability (GA_HuntersStrike's fallback,
+	// GA_Fire) resolves and EndAbility()s in one frame, so its ActivationOwnedTags
+	// live one frame and a deferred BT re-check always misses them — these outlive
+	// at least one re-evaluation. Applied and self-removed via
+	// UGothicAbilitySystemComponent::ApplyTimedLooseTag (world-timer anchored so the
+	// removal fires after the ability is gone; cleared on respawn like State.Dead).
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Firing);
+	GOTHICMMO_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Whiffed);
+
 	// Enemy combat state. Set on the enemy ASC by the AI layer and read every
 	// frame by UGothicEnemyAnimInstance to drive the combat-idle blend. Replicated
 	// tag, so remote clients get it without an extra RPC.

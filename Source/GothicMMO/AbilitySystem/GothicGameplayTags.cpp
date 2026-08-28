@@ -24,6 +24,20 @@ namespace GothicTags
 		"the non-gun ability input path cancels the sprint rather than being blocked by it. "
 		"Loose tags do NOT replicate, and neither does bIsSprinting — this is owning-client state, "
 		"which is where the activation gate has to fire anyway.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Firing, "State.Firing",
+		"Short reactive window on the PLAYER ASC while shooting — GA_Fire applies it per shot "
+		"(~0.4s, tunable) on the AUTHORITY ASC so reactive enemy affixes have an observable "
+		"trigger window; GA_Fire's ActivationOwnedTags carry nothing, and the shot resolves and "
+		"EndAbility()s in one frame, so nothing else survives a deferred BT re-check. Rapid fire "
+		"just restarts the window (UGothicAbilitySystemComponent::ApplyTimedLooseTag never stacks "
+		"the count). Cleared on respawn like State.Sprinting — the ASC outlives the pawn.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Whiffed, "State.Whiffed",
+		"A wasted SHOT — one of the openings the Retaliator affix punishes, alongside "
+		"State.Reloading and State.Sprinting (the Retaliator does NOT react to melee whiffs). "
+		"GA_Fire applies it (WhiffTagDuration, 0.4s default) on the AUTHORITY ASC when a shot's "
+		"final trace hits NOTHING (a pure trace-miss, not a damage check — a shot that hit geometry "
+		"or an immune target is not a whiff). Timed loose tag via ApplyTimedLooseTag, independent of "
+		"the State.Firing window; cleared on respawn (the ASC outlives the pawn).");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_InCombat, "State.InCombat",
 		"Enemy is in combat. Read every frame by UGothicEnemyAnimInstance to drive the "
 		"combat-idle blend; replicated so remote clients see it without an extra RPC.");

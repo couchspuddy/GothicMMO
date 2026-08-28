@@ -75,6 +75,18 @@ protected:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     FGameplayTagContainer ImmunityTags;
 
+    /**
+     * How long State.Attacking is held on the player ASC as a timed loose tag on the
+     * INSTANT-FALLBACK path (no montage assigned), so it survives at least one enemy
+     * BT re-evaluation. Without it the fallback resolves and EndAbility()s in one
+     * frame, ActivationOwnedTags' State.Attacking lives exactly that frame, and
+     * GothicBTDecorator_PlayerHasAnyTag's deferred re-check always sees it already
+     * gone (PIE-verified). Applied count-based, so it rides alongside the
+     * ActivationOwnedTags instance a future montage path would hold without stripping it.
+     */
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike|Reaction", meta = (ClampMin = "0.0"))
+    float AttackingTagDuration = 0.4f;
+
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hunter's Strike")
     TSubclassOf<UGameplayEffect> SuperGainOnHitEffect;
 

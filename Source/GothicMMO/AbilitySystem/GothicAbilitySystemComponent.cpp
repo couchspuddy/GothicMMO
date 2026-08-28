@@ -2,6 +2,7 @@
 
 #include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicGameplayAbility.h"
+#include "AbilitySystem/GothicGameplayTags.h"   // reactive action-tag windows
 #include "Character/GothicPlayerCharacter.h"  // CancelSprintForAbility — the sprint opportunity cost
 #include "Game/GothicPlayerState.h"          // IsDowned — the input gate in AbilityInputTagPressed
 #include "AbilitySystemBlueprintLibrary.h"
@@ -15,6 +16,65 @@ UGothicAbilitySystemComponent::UGothicAbilitySystemComponent()
 {
     SetIsReplicated(true);
     ReplicationMode = EGameplayEffectReplicationMode::Full;
+}
+
+void UGothicAbilitySystemComponent::ApplyTimedLooseTag(const FGameplayTag& Tag, float Duration)
+{
+    UWorld* World = GetWorld();
+    if (!World || !Tag.IsValid() || Duration <= 0.f)
+    {
+        return;
+    }
+
+    FTimerManager& TimerManager = World->GetTimerManager();
+    FTimerHandle& Handle = TimedLooseTagHandles.FindOrAdd(Tag);
+
+    // Take the window's single count only when no window is already open. A re-apply
+    // while the timer is still live falls through to the SetTimer below and simply
+    // extends it — the count stays at 1 (plus any independent ActivationOwnedTags
+    // count, which this never touches).
+    if (!TimerManager.IsTimerActive(Handle))
+    {
+        AddLooseGameplayTag(Tag);
+    }
+
+    FTimerDelegate Del = FTimerDelegate::CreateUObject(
+        this, &UGothicAbilitySystemComponent::HandleTimedLooseTagExpired, Tag);
+    TimerManager.SetTimer(Handle, Del, Duration, /*bLoop=*/false);
+
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|ASC=%s|Event=TimedTagOpen|tag=%s|dur=%.2f|count=%d"),
+        *GetNameSafe(this), *Tag.ToString(), Duration, GetTagCount(Tag));
+}
+
+void UGothicAbilitySystemComponent::HandleTimedLooseTagExpired(FGameplayTag Tag)
+{
+    // Remove exactly the one count this window took. A montage path holding the same
+    // tag through ActivationOwnedTags keeps its own count — this -1 pays off only the
+    // window's +1.
+    RemoveLooseGameplayTag(Tag);
+    TimedLooseTagHandles.Remove(Tag);
+
+    UE_LOG(LogVigilCombat, Verbose,
+        TEXT("VigilTimeline|ASC=%s|Event=TimedTagExpire|tag=%s|count=%d"),
+        *GetNameSafe(this), *Tag.ToString(), GetTagCount(Tag));
+}
+
+void UGothicAbilitySystemComponent::ClearTimedLooseTags()
+{
+    UWorld* World = GetWorld();
+    for (TPair<FGameplayTag, FTimerHandle>& Pair : TimedLooseTagHandles)
+    {
+        if (World)
+        {
+            World->GetTimerManager().ClearTimer(Pair.Value);
+        }
+        // Pay off the window's count. Absolute zero (not a single Remove) so a tag
+        // somehow left with a count >1 is fully cleared — belt and braces to match
+        // the fresh-pawn sweep's State.Dead/State.Reloading idiom.
+        SetLooseGameplayTagCount(Pair.Key, 0);
+    }
+    TimedLooseTagHandles.Reset();
 }
 
 void UGothicAbilitySystemComponent::GrantStartupAbilities(

@@ -228,6 +228,18 @@ void UGA_Fire::ActivateAbility(
     // hits nothing is still just as loud.
     if (HasAuthority(&ActivationInfo))
     {
+        // Reactive "is shooting" window on the player ASC. GA_Fire owns no
+        // ActivationOwnedTags and EndAbility()s on this same frame, so without this a
+        // reactive enemy affix's deferred BT re-check would never observe the shot.
+        // On the authority ASC because loose tags do not replicate and the affix
+        // decorators read the player tag server-side; the timer is ASC/world-anchored
+        // so removal fires after this instance is gone, and re-firing just restarts it.
+        if (UGothicAbilitySystemComponent* GothicASC =
+                Cast<UGothicAbilitySystemComponent>(GetAbilitySystemComponentFromActorInfo()))
+        {
+            GothicASC->ApplyTimedLooseTag(GothicTags::State_Firing, FiringTagDuration);
+        }
+
         ReportFireNoise(Char);
         PerformFireTrace(Char);
     }
@@ -803,6 +815,19 @@ void UGA_Fire::PerformFireTrace(AGothicPlayerCharacter* Char)
     if (!bHit || !Hit.GetActor())
     {
         EmitFireTimeline(nullptr, bHit ? Hit.ImpactPoint : End, /*bVital=*/ false, /*RawDamage=*/ 0.f);
+
+        // Whiff — a wasted shot, one of the openings the Retaliator affix punishes.
+        // Open State.Whiffed on the player ASC (a timed loose tag, self-clearing) so
+        // the affix has an observable window. Signal used is the PURE trace-miss:
+        // this branch is the bullet's final (post-muzzle-re-origin) trace hitting
+        // NOTHING at all — not a damage check — so a shot that connected with world
+        // geometry or an immune target is NOT a whiff (it hit something). Runs on the
+        // authority path only; PerformFireTrace is called under HasAuthority.
+        if (UGothicAbilitySystemComponent* GothicASC =
+                Cast<UGothicAbilitySystemComponent>(GetAbilitySystemComponentFromActorInfo()))
+        {
+            GothicASC->ApplyTimedLooseTag(GothicTags::State_Whiffed, WhiffTagDuration);
+        }
 
         // A miss breaks the Oversurge streak. Done here rather than on the
         // damage path so shooting a wall counts as a miss too -- the streak is

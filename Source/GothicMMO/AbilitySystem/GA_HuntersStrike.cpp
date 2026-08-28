@@ -1,6 +1,7 @@
 // GA_HuntersStrike.cpp
 
 #include "AbilitySystem/GA_HuntersStrike.h"
+#include "AbilitySystem/GothicAbilitySystemComponent.h"
 #include "AbilitySystem/GothicAttributeSet.h"
 #include "AbilitySystem/GothicGameplayTags.h"
 #include "AI/GothicEnemyBase.h"
@@ -43,6 +44,18 @@ void UGA_HuntersStrike::ActivateAbility(
     // No montage assigned — instant fallback (same as before montage support)
     if (GetOwningActorFromActorInfo()->HasAuthority())
     {
+        // ActivationOwnedTags' State.Attacking lives exactly one frame here — the
+        // ability EndAbility()s below on this same frame — so a deferred enemy BT
+        // re-check always misses it. Apply it as a timed loose tag on the player ASC
+        // so the reaction window survives at least one re-evaluation. Anchored on the
+        // ASC/world timer (not this instance), so the removal fires even though we end
+        // now; count-based, so it does not clash with the ActivationOwnedTags instance.
+        if (UGothicAbilitySystemComponent* GothicASC =
+                Cast<UGothicAbilitySystemComponent>(GetAbilitySystemComponentFromActorInfo()))
+        {
+            GothicASC->ApplyTimedLooseTag(GothicTags::State_Attacking, AttackingTagDuration);
+        }
+
         PerformMeleeTrace();
     }
 
